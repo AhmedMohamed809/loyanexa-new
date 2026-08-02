@@ -21,8 +21,13 @@ seven sub-projects, each with its own spec → plan → build cycle:
 | 5 | Merchant dashboard — Next.js | No |
 | 6 | Live updates — PassKit endpoints, APNs, BullMQ broadcasts | **Yes** |
 | 7 | Landing site | No |
+| 8 | **Optional** Flutter merchant app — opens straight to the camera after login | No |
 
 This document specifies **sub-project 1 only**.
+
+Sub-project 8 is an *addition*, never a replacement: the browser stamp screen must remain
+fully sufficient on its own, or the product loses the constraint it is differentiated on
+(§0). It is also why §8.15 must not depend on `BarcodeDetector` — see §12 below.
 
 ## 2 · Correction to BUILD.md §19
 
@@ -215,3 +220,30 @@ Publishing access is pending the business profile re-review.
 - **Creating a loyalty class through the Business Console UI failed silently** — no error, no
   class. Creating it through the REST API returned a real status. Prefer the API for
   anything verifiable.
+
+## 12 · Merchant stamping — decided 2026-08-02
+
+Not part of this slice (it lands in sub-project 3), recorded here because it changes §0,
+§8.15 and §19 of `BUILD.md`.
+
+**`BarcodeDetector` cannot carry the stamp screen.** Per MDN compat data:
+
+| Platform | Support |
+|---|---|
+| Chrome Android | 83+ |
+| Chrome macOS / ChromeOS | 88+ |
+| Chrome Windows / Linux | none |
+| Safari, iOS and macOS | behind a `Shape Detection API` preference — effectively unavailable |
+| Firefox, all platforms | none |
+
+A café stamping on an iPad would fall through to §8.15's manual-entry path, i.e. typing a
+code per customer — worse than the competitor app the product is built to displace.
+
+**Decision:** the stamp screen uses `getUserMedia` with a **WASM QR decoder** (~40 KB) as
+the path that always works, optionally using `BarcodeDetector` as a fast path where it
+exists. This affects only the merchant stamp screen; the customer enrol page stays at its
+~4 KB budget.
+
+**Decision:** an **optional** Flutter merchant app becomes sub-project 8, built after the
+platform ships. Browser stamping remains the guaranteed, fully sufficient path. An app that
+becomes required would forfeit §0, which is the product's entire differentiation.

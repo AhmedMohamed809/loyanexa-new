@@ -4,8 +4,12 @@ Read `docs/BUILD.md` first — it is the complete specification.
 
 ## Hard rules
 
-- **No mobile app, ever.** Not for the customer, not for the merchant. Stamping is a
-  browser page using `BarcodeDetector` with a manual-entry fallback.
+- **No app is ever *required*.** Not for the customer, not for the merchant. The whole
+  business must be runnable from a browser on any device with nothing installed.
+  An **optional** Flutter merchant app is planned as sub-project 8 — an addition for
+  high-volume merchants, never a replacement and never a prerequisite.
+- **Stamping uses `getUserMedia` + a WASM QR decoder**, not `BarcodeDetector`, which is
+  missing on iOS/iPadOS, all Firefox, and Chrome on Windows/Linux. See `BUILD.md` §8.15.
 - **The customer enrol page stays plain HTML/CSS/JS.** No framework, no bundler. It is one
   form opened on café wifi and enrolment rate is the metric the business rests on. Target
   ~4 KB.

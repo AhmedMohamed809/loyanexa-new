@@ -29,11 +29,16 @@ start prototype\index.html         # Windows
 
 ## The constraint that defines the product
 
-**Nobody installs an app.** The customer scans a printed QR and the card lands in the wallet
-already on their phone. The merchant stamps from a browser page using the device camera.
+**Nobody is ever required to install an app.** The customer scans a printed QR and the card
+lands in the wallet already on their phone. The merchant stamps from a browser page using
+the device camera.
 
 Competitors require merchants to download a scanner app. We do not. Reject any proposal
-that introduces one.
+that makes an app **mandatory** for either party — the whole business must stay runnable
+from a browser, on any device, with nothing installed.
+
+An **optional** Flutter merchant app is planned later, for high-volume merchants who want
+the camera to open straight after login. Addition, never replacement.
 
 ---
 
