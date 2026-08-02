@@ -26,6 +26,14 @@ import {
   fillDisc,
   encodePNG,
 } from '../packages/image/src/index.ts';
+import {
+  buildPass,
+  PASS_MEMBERS,
+  type PassCredentials,
+  type PassContent,
+  type PassImages,
+  type PkPassJson,
+} from '../packages/pass/src/buildPass.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -128,68 +136,41 @@ const terms = [
   'The company reserves the right to amend these terms.',
 ].join(' ');
 
-interface PkPassField {
-  key: string;
-  label: string;
-  value: string;
-}
+const credentials: PassCredentials = {
+  teamId: TEAM_ID,
+  passTypeId: PASS_TYPE_ID,
+  certPath: CERT_PATH,
+  keyPath: KEY_PATH,
+  wwdrPath: WWDR_PATH,
+};
 
-interface PkPassJson {
-  formatVersion: number;
-  passTypeIdentifier: string;
-  teamIdentifier: string;
-  organizationName: string;
-  description: string;
-  logoText: string;
-  serialNumber: string;
-  backgroundColor: string;
-  foregroundColor: string;
-  labelColor: string;
-  storeCard: {
-    headerFields: PkPassField[];
-    primaryFields: PkPassField[];
-    secondaryFields: PkPassField[];
-    backFields: PkPassField[];
-  };
-  barcodes: Array<{
-    format: string;
-    message: string;
-    messageEncoding: string;
-    altText: string;
-  }>;
-}
-
-const pass: PkPassJson = {
-  formatVersion: 1,
-  passTypeIdentifier: PASS_TYPE_ID,
-  teamIdentifier: TEAM_ID,
+const content: PassContent = {
+  serialNumber,
   organizationName: 'LoyaNexa Demo Cafe',
   description: 'LoyaNexa loyalty card',
   logoText: 'LoyaNexa',
-  serialNumber,
-  backgroundColor: 'rgb(32,55,87)', // #203757 brand navy
-  foregroundColor: 'rgb(255,255,255)',
-  labelColor: 'rgb(196,206,219)',
-  storeCard: {
-    headerFields: [{ key: 'stamps', label: 'STAMPS', value: `${FILLED} of ${GOAL}` }],
-    primaryFields: [],
-    secondaryFields: [{ key: 'reward', label: 'REWARD', value: 'Free coffee' }],
-    backFields: [{ key: 'terms', label: 'Terms', value: terms }],
-  },
-  barcodes: [
-    {
-      format: 'PKBarcodeFormatQR',
-      message: serialNumber,
-      messageEncoding: 'iso-8859-1',
-      altText: 'scan here',
-    },
-  ],
+  backgroundColor: NAVY, // #203757 brand navy
+  foregroundColor: '#FFFFFF',
+  labelColor: '#C4CEDB', // rgb(196,206,219)
+  headerFields: [{ key: 'stamps', label: 'STAMPS', value: `${FILLED} of ${GOAL}` }],
+  secondaryFields: [{ key: 'reward', label: 'REWARD', value: 'Free coffee' }],
+  backFields: [{ key: 'terms', label: 'Terms', value: terms }],
+  barcodeMessage: serialNumber,
+};
+
+const images: PassImages = {
+  'icon.png': icon1x,
+  'icon@2x.png': icon2x,
+  'strip.png': stripSet['strip.png'],
+  'strip@2x.png': stripSet['strip@2x.png'],
+  'strip@3x.png': stripSet['strip@3x.png'],
 };
 
 // ---------------------------------------------------------------------------
 // 4-6. Stage the bundle, hash it into manifest.json (SHA-1 — PassKit
 //      requires it here, not a security choice), sign, and zip with the
-//      files at the archive root (cd into staging before zipping).
+//      files at the archive root — all via @loyanexa/pass's buildPass, the
+//      one implementation this script and the demo server both call.
 // ---------------------------------------------------------------------------
 // Verified once by downloading the certificate and hashing it (fingerprint
 // cross-checked against Apple's published Root CA SHA-256, B0:B1:73:0E:CB:
@@ -206,45 +187,10 @@ function mkTmpDir(prefix: string): string {
 }
 
 async function buildAndVerify(): Promise<0 | 1> {
-  const staging = mkTmpDir('loyanexa-pkpass-');
-  const files = {
-    'pass.json': Buffer.from(JSON.stringify(pass), 'utf8'),
-    'icon.png': icon1x,
-    'icon@2x.png': icon2x,
-    'strip.png': stripSet['strip.png'],
-    'strip@2x.png': stripSet['strip@2x.png'],
-    'strip@3x.png': stripSet['strip@3x.png'],
-  };
-  for (const [name, buf] of Object.entries(files)) {
-    writeFileSync(path.join(staging, name), buf);
-  }
-
-  const manifest: Record<string, string> = {};
-  for (const [name, buf] of Object.entries(files)) {
-    manifest[name] = createHash('sha1').update(buf).digest('hex');
-  }
-  writeFileSync(path.join(staging, 'manifest.json'), JSON.stringify(manifest));
-
-  execFileSync('openssl', [
-    'smime', '-binary', '-sign',
-    '-certfile', WWDR_PATH,
-    '-signer', CERT_PATH,
-    '-inkey', KEY_PATH,
-    '-in', path.join(staging, 'manifest.json'),
-    '-outform', 'DER',
-    '-out', path.join(staging, 'signature'),
-    '-noattr',
-  ]);
-  console.log('Signed manifest.json -> signature');
-
+  const pkpass = buildPass(credentials, content, images);
   const pkpassTmp = path.join(tmpdir(), 'LoyaNexa-demo.pkpass');
-  rmSync(pkpassTmp, { force: true });
-  execFileSync(
-    'zip',
-    ['-X', pkpassTmp, 'pass.json', 'manifest.json', 'signature', 'icon.png', 'icon@2x.png', 'strip.png', 'strip@2x.png', 'strip@3x.png'],
-    { cwd: staging }
-  );
-  console.log(`Zipped bundle -> ${pkpassTmp}`);
+  writeFileSync(pkpassTmp, pkpass);
+  console.log(`Built and signed bundle -> ${pkpassTmp}`);
 
   // -------------------------------------------------------------------------
   // 7. Verify before declaring success. Everything below re-reads the actual
@@ -258,7 +204,7 @@ async function buildAndVerify(): Promise<0 | 1> {
   const listing = execFileSync('unzip', ['-l', pkpassTmp], { encoding: 'utf8' });
   console.log(listing);
   const names = execFileSync('unzip', ['-Z1', pkpassTmp], { encoding: 'utf8' }).trim().split('\n');
-  const expectedMembers = Object.keys(files).concat(['manifest.json', 'signature']);
+  const expectedMembers = [...PASS_MEMBERS];
   const missing = expectedMembers.filter((m) => !names.includes(m));
   const hasDirPrefix = names.some((n) => n.includes('/'));
   const listingOk = missing.length === 0 && !hasDirPrefix && names.length === expectedMembers.length;

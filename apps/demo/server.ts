@@ -14,7 +14,13 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import querystring from 'node:querystring';
 import { fileURLToPath } from 'node:url';
-import { Prisma, type Card } from '@prisma/client';
+import { Prisma, type Card, type Pass } from '@prisma/client';
+import {
+  buildPass,
+  type PassCredentials,
+  type PassContent,
+  type PassImages,
+} from '../../packages/pass/src/buildPass.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -54,9 +60,18 @@ loadEnvFile(path.join(ROOT, '.env'));
 // syntax these packages are written in.
 // ---------------------------------------------------------------------------
 const { prisma } = await import('../../packages/db/src/index.ts');
-const { renderStrip, renderQrPng, MIN_GOAL, MAX_GOAL } = await import(
-  '../../packages/image/src/index.ts'
-);
+const {
+  renderStrip,
+  renderQrPng,
+  MIN_GOAL,
+  MAX_GOAL,
+  renderAllDensities,
+  MemoryStore,
+  Surface,
+  parseHexColor,
+  fillDisc,
+  encodePNG,
+} = await import('../../packages/image/src/index.ts');
 
 const PORT = 8088;
 
@@ -160,6 +175,106 @@ function sendPng(res: http.ServerResponse, buffer: Buffer): void {
 
 function sendNotFound(res: http.ServerResponse, message = 'Not found'): void {
   sendHtml(res, 404, layout('Not found', `<div class="panel"><h1>404</h1><p>${escapeHtml(message)}</p><p><a class="btn" href="/">Back to cards</a></p></div>`));
+}
+
+/** A friendly, customer-facing 404 for the enrol page — no merchant chrome. */
+function sendEnrolNotFound(res: http.ServerResponse, code: string): void {
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Card not found · LoyaNexa</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    background: #203757;
+    color: #fff;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px;
+    text-align: center;
+  }
+  h1 { font-size: 22px; margin: 0 0 10px; }
+  p { line-height: 1.5; opacity: 0.85; margin: 0; }
+</style>
+</head>
+<body>
+  <div>
+    <h1>This card link isn't active</h1>
+    <p>We couldn't find a loyalty card for &ldquo;${escapeHtml(code)}&rdquo;. Please check the code on your receipt or ask the shop for a new link.</p>
+  </div>
+</body>
+</html>`;
+  res.writeHead(404, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Content-Length': Buffer.byteLength(html),
+  });
+  res.end(html);
+}
+
+// ---------------------------------------------------------------------------
+// Apple Wallet credentials — read from .env at call time (never inlined,
+// copied or committed), and only when a pass is actually being issued. A
+// misconfigured/missing cert should not take down the rest of the demo.
+// ---------------------------------------------------------------------------
+function resolveAppleCredentials(): PassCredentials {
+  const need = (key: string): string => {
+    const v = process.env[key];
+    if (!v) throw new Error(`.env is missing ${key}`);
+    return v;
+  };
+  const certPath = path.resolve(ROOT, need('APPLE_SIGNER_CERT_PATH'));
+  const keyPath = path.resolve(ROOT, need('APPLE_SIGNER_KEY_PATH'));
+  const wwdrPath = path.resolve(ROOT, need('APPLE_WWDR_CERT_PATH'));
+  for (const p of [certPath, keyPath, wwdrPath]) {
+    if (!fs.existsSync(p)) throw new Error(`missing cert file: ${p}`);
+  }
+  return {
+    teamId: need('APPLE_TEAM_ID'),
+    passTypeId: need('APPLE_PASS_TYPE_ID'),
+    certPath,
+    keyPath,
+    wwdrPath,
+  };
+}
+
+/** A shared strip-render cache, reused across every pass issuance (BUILD.md §10 — the strip cache is a 455x measured win; do not re-render per request). */
+const PASS_STRIP_STORE = new MemoryStore();
+
+/** icon.png / icon@2x.png — the merchant's own card colours, not ours (same principle as the enrol page). */
+function makeCardIcon(size: number, bgColor: string, accentColor: string): Buffer {
+  const surface = new Surface(size, size);
+  surface.fill(parseHexColor(bgColor, 1));
+  fillDisc(surface, size / 2, size / 2, size * 0.36, parseHexColor(accentColor, 1));
+  return encodePNG(surface.toRGBA(), size, size);
+}
+
+/** Auto-generated terms per BUILD.md §8.6 — built from the card's own settings, the merchant writes nothing. */
+function buildTermsText(card: Card): string {
+  const expiry =
+    card.expiryType === 'duration'
+      ? `${card.expiryDays ?? 0} days`
+      : card.expiryType === 'fixed'
+        ? (card.expiryDate?.toISOString().slice(0, 10) ?? 'unlimited')
+        : 'unlimited';
+  return [
+    '1 stamp per visit.',
+    `Collect ${card.stampsGoal} stamps to get a reward.`,
+    `Card, stamps and rewards expiry: ${expiry}.`,
+    'Stamps and rewards cannot be exchanged, returned or bought for cash.',
+    'Cards cannot be transferred or combined with other cards.',
+    'The company reserves the right to amend these terms.',
+  ].join(' ');
+}
+
+/** A filesystem/header-safe filename stem from the card's own name. */
+function passFilenameStem(name: string): string {
+  const slug = name.trim().replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '');
+  return slug || 'card';
 }
 
 // ---------------------------------------------------------------------------
@@ -642,6 +757,252 @@ async function handleCardDetail(res: http.ServerResponse, id: string): Promise<v
 }
 
 // ---------------------------------------------------------------------------
+// Short-link code parsing — Card.linkCode is an Int, so a valid code is
+// digits only. Anything else (favicon.ico, robots.txt, ...) is just "no
+// such card", not a crash.
+// ---------------------------------------------------------------------------
+function parseLinkCode(code: string): number | undefined {
+  if (!/^\d+$/.test(code)) return undefined;
+  return Number.parseInt(code, 10);
+}
+
+// ---------------------------------------------------------------------------
+// Route: GET /:code — the customer enrol page. BUILD.md §8.16: the
+// highest-value page in the product. Full-bleed in the merchant's own card
+// colours (not ours — that is the point), the reward as the headline, two
+// supporting lines, an empty-card strip preview, a consent checkbox and one
+// primary "Add to Apple Wallet" button. Plain HTML/CSS, no framework, no
+// external assets, no JavaScript — the checkbox uses the `required`
+// attribute so the browser itself blocks submission until it is ticked.
+// Name and phone are both optional, marked as such, never required.
+// ---------------------------------------------------------------------------
+function renderEnrolPage(card: Card): string {
+  const stripQs = new URLSearchParams({
+    goal: String(card.stampsGoal),
+    filled: '0', // the enrol page always shows an empty card, not the pass's starter stamps
+    bg: card.bgColor,
+    active: card.stampActive,
+    inactive: card.stampInactive,
+    scale: '2',
+  });
+  const fg = card.fgColor || '#FFFFFF';
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(card.name)} · Join the loyalty card</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    background: ${card.bgColor};
+    color: ${fg};
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 420px; margin: 0 auto; padding: 40px 20px 48px; text-align: center; }
+  h1 { font-size: 28px; line-height: 1.25; margin: 0 0 16px; }
+  p.lede { font-size: 16px; line-height: 1.5; margin: 0 0 4px; opacity: 0.92; }
+  .strip { margin: 24px 0; border-radius: 14px; overflow: hidden; background: rgba(255,255,255,0.08); padding: 10px; }
+  .strip img { display: block; width: 100%; height: auto; }
+  form { text-align: start; margin-top: 20px; }
+  .field { margin-bottom: 14px; }
+  label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  label .opt { font-weight: 400; opacity: 0.7; }
+  input[type="text"], input[type="tel"] {
+    width: 100%;
+    border: 1px solid rgba(255,255,255,0.35);
+    border-radius: 10px;
+    padding: 12px 14px;
+    font-size: 16px;
+    background: rgba(255,255,255,0.08);
+    color: inherit;
+  }
+  input::placeholder { color: inherit; opacity: 0.55; }
+  .consent { display: flex; align-items: flex-start; gap: 10px; margin: 18px 0 22px; font-size: 13px; line-height: 1.5; opacity: 0.92; }
+  .consent input { margin-top: 3px; }
+  button.cta {
+    display: block;
+    width: 100%;
+    border: none;
+    border-radius: 100px;
+    padding: 16px 20px;
+    font-size: 17px;
+    font-weight: 700;
+    color: #fff;
+    background: ${card.stampActive};
+    cursor: pointer;
+  }
+  button.cta:active { opacity: 0.9; }
+  .powered { margin-top: 28px; font-size: 12px; opacity: 0.6; }
+</style>
+</head>
+<body>
+<main>
+  <h1>${escapeHtml(card.rewardText)}</h1>
+  <p class="lede">Show this page at ${escapeHtml(card.name)} every visit to collect a stamp.</p>
+  <p class="lede">Collect ${card.stampsGoal} stamps to get your reward.</p>
+  <div class="strip">
+    <img src="/preview.png?${stripQs.toString()}" alt="${escapeHtml(card.name)} empty stamp card" width="375" height="144">
+  </div>
+  <form method="POST" action="/${card.linkCode}/pass">
+    <div class="field">
+      <label for="name">Name <span class="opt">(optional)</span></label>
+      <input type="text" id="name" name="name" maxlength="80" autocomplete="name" placeholder="Your name">
+    </div>
+    <div class="field">
+      <label for="phone">Phone <span class="opt">(optional)</span></label>
+      <input type="tel" id="phone" name="phone" maxlength="30" autocomplete="tel" placeholder="Your phone number">
+    </div>
+    <label class="consent">
+      <input type="checkbox" name="consent" required>
+      <span>I agree to join ${escapeHtml(card.name)}'s loyalty card and receive updates about my rewards.</span>
+    </label>
+    <button class="cta" type="submit">Add to Apple Wallet</button>
+  </form>
+  <p class="powered">Powered by LoyaNexa</p>
+</main>
+</body>
+</html>`;
+}
+
+async function handleEnrolPage(res: http.ServerResponse, code: string): Promise<void> {
+  const linkCode = parseLinkCode(code);
+  if (linkCode === undefined) {
+    sendEnrolNotFound(res, code);
+    return;
+  }
+  const card = await prisma.card.findUnique({ where: { linkCode } });
+  if (!card) {
+    sendEnrolNotFound(res, code);
+    return;
+  }
+  sendHtml(res, 200, renderEnrolPage(card));
+}
+
+// ---------------------------------------------------------------------------
+// Route: POST /:code/pass — issue a real, signed .pkpass for this card and
+// hand it back with the exact MIME type iOS uses to decide whether to offer
+// it to Wallet. No webServiceURL / authenticationToken: BUILD.md §9.3 says
+// webServiceURL must be HTTPS or Apple fails silently, and there is no
+// HTTPS endpoint here — a pass that omits both installs cleanly and just
+// doesn't live-update, which beats a placeholder that silently breaks.
+// ---------------------------------------------------------------------------
+async function handleIssuePass(req: http.IncomingMessage, res: http.ServerResponse, code: string): Promise<void> {
+  const linkCode = parseLinkCode(code);
+  if (linkCode === undefined) {
+    sendEnrolNotFound(res, code);
+    return;
+  }
+  const card = await prisma.card.findUnique({ where: { linkCode } });
+  if (!card) {
+    sendEnrolNotFound(res, code);
+    return;
+  }
+
+  let fields: querystring.ParsedUrlQuery = {};
+  try {
+    fields = await readUrlencodedBody(req);
+  } catch {
+    // A malformed/oversized body should not block enrolment — name and
+    // phone are optional, so fall back to "none supplied" rather than 4xx.
+    fields = {};
+  }
+  const custName = String(fields.name ?? '').trim().slice(0, 80);
+  const custPhone = String(fields.phone ?? '').trim().slice(0, 30);
+
+  const credentials = resolveAppleCredentials();
+
+  const stamps = card.starterStamps;
+  const stripSet = await renderAllDensities(PASS_STRIP_STORE, {
+    goal: card.stampsGoal,
+    filled: stamps,
+    shape: 'circle',
+    bgColor: card.bgColor,
+    bgOpacity: 1,
+    activeColor: card.stampActive,
+    inactiveColor: card.stampInactive,
+  });
+  const images: PassImages = {
+    'icon.png': makeCardIcon(29, card.bgColor, card.stampActive),
+    'icon@2x.png': makeCardIcon(58, card.bgColor, card.stampActive),
+    'strip.png': stripSet['strip.png'],
+    'strip@2x.png': stripSet['strip@2x.png'],
+    'strip@3x.png': stripSet['strip@3x.png'],
+  };
+
+  let pass: Pass | undefined;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const serial = crypto.randomBytes(14).toString('base64url').slice(0, 18); // 18 random base64url chars
+    const shortCode = generateShortCode(); // 8 uppercase hex chars
+    const authToken = crypto.randomBytes(24).toString('base64url'); // 32 random chars
+    try {
+      pass = await prisma.pass.create({
+        data: {
+          serial,
+          shortCode,
+          cardId: card.id,
+          merchantId: card.merchantId,
+          authToken,
+          stamps,
+          custName,
+          custPhone,
+        },
+      });
+      break;
+    } catch (err) {
+      // P2002: unique constraint failed (serial or shortCode collision) — retry with fresh values.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002' && attempt < 4) continue;
+      throw err;
+    }
+  }
+  if (!pass) {
+    // Unreachable in practice, same shape as the card-creation loop above.
+    throw new Error('pass creation loop exited without creating a pass or throwing');
+  }
+
+  const content: PassContent = {
+    serialNumber: pass.serial,
+    organizationName: card.name,
+    description: `${card.name} loyalty card`,
+    logoText: card.name,
+    backgroundColor: card.bgColor,
+    foregroundColor: card.fgColor,
+    primaryFields: [{ key: 'reward', label: 'REWARD', value: card.rewardText }],
+    secondaryFields: [
+      { key: 'rewards', label: 'REWARDS', value: `${pass.rewards} rewards` },
+      {
+        key: 'stampsRemaining',
+        label: 'STAMPS REMAINING',
+        value: `${Math.max(card.stampsGoal - stamps, 0)} stamps`,
+      },
+    ],
+    backFields: [{ key: 'terms', label: 'Terms', value: buildTermsText(card) }],
+    barcodeMessage: pass.serial,
+  };
+
+  const pkpass = buildPass(credentials, content, images);
+
+  await prisma.stampEvent.create({
+    data: {
+      merchantId: card.merchantId,
+      cardId: card.id,
+      serial: pass.serial,
+      kind: 'ENROLL',
+    },
+  });
+
+  res.writeHead(200, {
+    'Content-Type': 'application/vnd.apple.pkpass',
+    'Content-Length': pkpass.length,
+    'Content-Disposition': `attachment; filename="${passFilenameStem(card.name)}.pkpass"`,
+    'Cache-Control': 'no-store',
+  });
+  res.end(pkpass);
+}
+
+// ---------------------------------------------------------------------------
 // Route: GET /preview.png — on-the-fly strip render. Every input clamped or
 // substituted with a safe default before it reaches renderStrip.
 // ---------------------------------------------------------------------------
@@ -719,6 +1080,22 @@ const server = http.createServer(async (req, res) => {
     const cardId = cardMatch?.[1];
     if (req.method === 'GET' && cardId !== undefined) {
       await handleCardDetail(res, cardId);
+      return;
+    }
+
+    // From here down are the public, unauthenticated short-link routes.
+    // BUILD.md §12 / §18 item 10: the bare `GET /:code` catch-all must be
+    // registered dead last, or it shadows every route above it — every
+    // literal path (including this section's own POST /:code/pass, which
+    // is a distinct two-segment pattern) is matched first.
+    const passIssueMatch = pathname.match(/^\/([^/]+)\/pass$/);
+    if (req.method === 'POST' && passIssueMatch) {
+      await handleIssuePass(req, res, passIssueMatch[1]!);
+      return;
+    }
+    const enrolMatch = pathname.match(/^\/([^/]+)$/);
+    if (req.method === 'GET' && enrolMatch) {
+      await handleEnrolPage(res, enrolMatch[1]!);
       return;
     }
 
