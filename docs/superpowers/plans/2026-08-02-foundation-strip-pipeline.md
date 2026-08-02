@@ -1428,11 +1428,13 @@ export function slotPositions(goal: number, width: number, height: number): Slot
   const rows = slotRows(goal);
   const widest = Math.max(...rows);
 
-  // Horizontal budget: n slots plus (n+1) gaps, where a gap is 0.6 of a diameter.
+  // A gap is GAP_RATIO of a diameter, i.e. 2 * GAP_RATIO * r. A row of n slots
+  // needs n diameters plus (n + 1) gaps — the +1 covers the margin at each end.
+  // Keep the `* 2` here in step with `gap` below; dropping it overflows the
+  // canvas at goal 20.
   const GAP_RATIO = 0.6;
-  const rByWidth = width / (2 * widest + GAP_RATIO * (widest + 1));
-  // Vertical budget: same rule down the rows.
-  const rByHeight = height / (2 * rows.length + GAP_RATIO * (rows.length + 1));
+  const rByWidth = width / (2 * widest + 2 * GAP_RATIO * (widest + 1));
+  const rByHeight = height / (2 * rows.length + 2 * GAP_RATIO * (rows.length + 1));
   const r = Math.min(rByWidth, rByHeight);
 
   const gap = r * GAP_RATIO * 2;
@@ -1719,7 +1721,7 @@ git commit -m "feat(image): stamp strip renderer"
 ```ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { stripCacheKey, MemoryStore, cachedStrip } from '../src/stripCache.ts';
+import { stripCacheKey, MemoryStore, cachedStrip, type StripStore } from '../src/stripCache.ts';
 import { renderStrip, type StripSpec } from '../src/strip.ts';
 
 const base: StripSpec = {
@@ -1786,15 +1788,16 @@ test('cached bytes are byte-identical to a fresh render', async () => {
 });
 
 test('a repeat request does not re-render', async () => {
-  const store = new MemoryStore();
-  let renders = 0;
-  const counting: typeof store = {
-    get: (k) => { return store.get(k); },
-    set: (k, v) => { renders++; return store.set(k, v); },
-  } as unknown as MemoryStore;
+  const inner = new MemoryStore();
+  let writes = 0;
+  // Typed as the interface, not the class, so no cast is needed.
+  const counting: StripStore = {
+    get: (k) => inner.get(k),
+    set: (k, v) => { writes++; return inner.set(k, v); },
+  };
   await cachedStrip(counting, base);
   await cachedStrip(counting, base);
-  assert.equal(renders, 1, 'second call must be served from the store');
+  assert.equal(writes, 1, 'the second call must be served from the store');
 });
 
 test('the store is bounded and evicts least-recently-used', async () => {
