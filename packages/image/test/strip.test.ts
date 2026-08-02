@@ -64,16 +64,31 @@ test('reports a bad goal, not a bad filled, when both are off', () => {
   assert.throws(() => renderStrip({ ...base, goal: 2, filled: 5 }), /between 3 and 20/);
 });
 
+function solidCover(width: number, height: number, rgba: [number, number, number, number]) {
+  const data = new Uint8Array(width * height * 4);
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = rgba[0]; data[i + 1] = rgba[1]; data[i + 2] = rgba[2]; data[i + 3] = rgba[3];
+  }
+  return { rgba: data, width, height, hash: 'test-cover' };
+}
+
 test('background opacity is applied once, even with a cover image', () => {
-  const cover = {
-    rgba: new Uint8Array(4 * 4 * 4).fill(255),
-    width: 4,
-    height: 4,
-    hash: 'test-cover',
-  };
+  // An opaque red cover over a navy background: checking alpha alone cannot
+  // tell whether the cover code ran at all, because the flat-colour fallback
+  // alone would also land at alpha~128 here (this exact gap once let the
+  // `if (spec.cover)` block be deleted without failing this test). The RGB
+  // assertion is the one that actually exercises the cover path.
+  const cover = solidCover(4, 4, [255, 0, 0, 255]);
   const img = decodePNG(renderStrip({ ...base, cover, bgOpacity: 0.5 }));
+  const corner = [...img.rgba.subarray(0, 3)];
+  assert.deepEqual(corner, [255, 0, 0], `expected corner RGB to be the cover's red, got ${corner}`);
   const alpha = img.rgba[3]!;
   assert.ok(Math.abs(alpha - 128) <= 2, `expected corner alpha ~128, got ${alpha}`);
+});
+
+test('a spec with a cover differs from the same spec without one', () => {
+  const cover = solidCover(4, 4, [255, 0, 0, 255]);
+  assert.notDeepEqual(renderStrip(base), renderStrip({ ...base, cover }));
 });
 
 test('a logo stamp renders differently from a plain disc', () => {

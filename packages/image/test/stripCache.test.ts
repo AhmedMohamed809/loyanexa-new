@@ -12,6 +12,7 @@ const base: StripSpec = {
 
 const logoA = { rgba: new Uint8Array(16 * 16 * 4).fill(255), width: 16, height: 16, hash: 'logo-a' };
 const logoB = { rgba: new Uint8Array(16 * 16 * 4).fill(255), width: 16, height: 16, hash: 'logo-b' };
+const coverA = { rgba: new Uint8Array(16 * 16 * 4).fill(255), width: 16, height: 16, hash: 'cover-a' };
 
 test('the key is a stable hex SHA-256', () => {
   const k = stripCacheKey(base);
@@ -32,7 +33,7 @@ test('every visual field changes the key', () => {
     { ...base, goal: 9 }, { ...base, filled: 4 }, { ...base, shape: 'square' },
     { ...base, bgColor: '#000000' }, { ...base, bgOpacity: 0.5 },
     { ...base, activeColor: '#000000' }, { ...base, inactiveColor: '#000000' },
-    { ...base, scale: 2 }, { ...base, logo: logoA },
+    { ...base, scale: 2 }, { ...base, logo: logoA }, { ...base, cover: coverA },
   ];
   const keys = new Set(variants.map(stripCacheKey));
   keys.add(stripCacheKey(base));
@@ -77,6 +78,21 @@ test('a repeat request does not re-render', async () => {
   await cachedStrip(counting, base);
   await cachedStrip(counting, base);
   assert.equal(writes, 1, 'the second call must be served from the store');
+});
+
+test('two concurrent requests for the same uncached spec render only once', async () => {
+  const inner = new MemoryStore();
+  let writes = 0;
+  const counting: StripStore = {
+    get: (k) => inner.get(k),
+    set: (k, v) => { writes++; return inner.set(k, v); },
+  };
+  const [a, b] = await Promise.all([
+    cachedStrip(counting, base),
+    cachedStrip(counting, base),
+  ]);
+  assert.equal(writes, 1, 'concurrent misses on the same key must render only once');
+  assert.deepEqual(a, b);
 });
 
 test('the store is bounded and evicts least-recently-used', async () => {
