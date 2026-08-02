@@ -11,6 +11,13 @@ primary_region = "lhr"
 
 [build]
 
+# Applies pending Prisma migrations before any new machine takes traffic.
+# `migrate deploy` only replays already-generated migrations — unlike
+# `migrate dev` it never prompts, never resets, and never invents a new one,
+# which is what makes it safe to run unattended against a live database.
+[deploy]
+  release_command = "npx prisma migrate deploy --schema packages/db/prisma/schema.prisma"
+
 [env]
   PORT = "8080"
 
