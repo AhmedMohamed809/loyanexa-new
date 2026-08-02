@@ -58,6 +58,24 @@ test('rejects a goal outside 3..20', () => {
   assert.throws(() => renderStrip({ ...base, goal: 2, filled: 0 }), /between 3 and 20/);
 });
 
+test('reports a bad goal, not a bad filled, when both are off', () => {
+  // filled: 5 happens to fit inside the bogus 0..2 window a naive filled-first
+  // check would use — this must still report the goal problem, not filled.
+  assert.throws(() => renderStrip({ ...base, goal: 2, filled: 5 }), /between 3 and 20/);
+});
+
+test('background opacity is applied once, even with a cover image', () => {
+  const cover = {
+    rgba: new Uint8Array(4 * 4 * 4).fill(255),
+    width: 4,
+    height: 4,
+    hash: 'test-cover',
+  };
+  const img = decodePNG(renderStrip({ ...base, cover, bgOpacity: 0.5 }));
+  const alpha = img.rgba[3]!;
+  assert.ok(Math.abs(alpha - 128) <= 2, `expected corner alpha ~128, got ${alpha}`);
+});
+
 test('a logo stamp renders differently from a plain disc', () => {
   const logo = {
     rgba: new Uint8Array(32 * 32 * 4).fill(255),

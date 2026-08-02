@@ -34,9 +34,6 @@ export interface StripSpec {
 }
 
 export function renderStrip(spec: StripSpec): Buffer {
-  if (!Number.isInteger(spec.filled) || spec.filled < 0 || spec.filled > spec.goal) {
-    throw new RangeError(`filled must be an integer in 0..${spec.goal}, got ${spec.filled}`);
-  }
   if (spec.bgOpacity < 0 || spec.bgOpacity > 1) {
     throw new RangeError(`bgOpacity must be 0..1, got ${spec.bgOpacity}`);
   }
@@ -45,25 +42,38 @@ export function renderStrip(spec: StripSpec): Buffer {
   const height = BASE_HEIGHT * spec.scale;
   const surface = new Surface(width, height);
 
+  // slotPositions validates `goal` — do this before validating `filled` against
+  // it, so an out-of-range goal is reported as a goal problem, not a filled one.
+  const positions = slotPositions(spec.goal, width, height);
+  if (!Number.isInteger(spec.filled) || spec.filled < 0 || spec.filled > spec.goal) {
+    throw new RangeError(`filled must be an integer in 0..${spec.goal}, got ${spec.filled}`);
+  }
+
   // 1. Background — the merchant's cover image if there is one, else flat colour.
-  surface.fill(parseHexColor(spec.bgColor, spec.bgOpacity));
+  surface.fill(parseHexColor(spec.bgColor, 1));
   if (spec.cover) {
     const cover = resizeRGBA(spec.cover, width, height);
-    const alpha = spec.bgOpacity;
     for (let i = 0; i < width * height; i++) {
       const o = i * 4;
       surface.blend(i % width, Math.floor(i / width), {
         r: cover.rgba[o]!, g: cover.rgba[o + 1]!, b: cover.rgba[o + 2]!,
-        a: (cover.rgba[o + 3]! / 255) * alpha,
+        a: cover.rgba[o + 3]! / 255,
       }, 1);
     }
+  }
+  // Apply background opacity once, to the composed background layer. Doing it
+  // during the fill and again during the cover blend compounds it.
+  if (spec.bgOpacity < 1) {
+    const data = surface.data;
+    for (let i = 3; i < data.length; i += 4) data[i] = data[i]! * spec.bgOpacity;
   }
 
   // 2. Slots.
   const active = parseHexColor(spec.activeColor);
   const inactive = parseHexColor(spec.inactiveColor);
-  const positions = slotPositions(spec.goal, width, height);
-  const maskedLogo = spec.logo
+  // Circular masking only makes sense for round slots; square slots do not
+  // currently support logo stamps, so skip the (otherwise wasted) mask work.
+  const maskedLogo = spec.logo && spec.shape === 'circle'
     ? circularMask(spec.logo, Math.max(2, Math.round(positions[0]!.r * 2)), Math.max(1, positions[0]!.r * 0.12))
     : undefined;
 
