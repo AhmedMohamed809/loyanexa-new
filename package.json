@@ -1,0 +1,14 @@
+{
+  "name": "loyanexa",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*"],
+  "engines": { "node": ">=25" },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.base.json",
+    "test": "node --test 'packages/*/test/*.test.ts'",
+    "test:i18n": "node scripts/check-i18n.mjs",
+    "bench": "node packages/image/bench/strip.bench.mjs"
+  },
+  "devDependencies": { "typescript": "^5.7.0", "@types/node": "^25" }
+}
