@@ -85,7 +85,7 @@ scripts/check-i18n.mjs                CI-facing key-set comparison
 - Consumes: nothing.
 - Produces: `npm run typecheck`, `npm test`, `npm run test:i18n`, `npm run bench`. Workspace `@loyanexa/image` resolvable, with `exports` pointing at `./src/index.ts` (no build step — Node strips types).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `packages/image/test/smoke.test.ts`:
 
@@ -99,12 +99,12 @@ test('package exposes its name', () => {
 });
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `node --test packages/image/test/smoke.test.ts`
 Expected: FAIL — cannot find module `../src/index.ts`.
 
-- [ ] **Step 3: Create the workspace root**
+- [x] **Step 3: Create the workspace root**
 
 `package.json`:
 
@@ -171,7 +171,7 @@ Expected: FAIL — cannot find module `../src/index.ts`.
 export const PACKAGE_NAME = '@loyanexa/image';
 ```
 
-- [ ] **Step 4: Install and run**
+- [x] **Step 4: Install and run**
 
 Run: `npm install && npm test`
 Expected: PASS, 1 test.
@@ -179,7 +179,7 @@ Expected: PASS, 1 test.
 Run: `npm run typecheck`
 Expected: no output, exit 0.
 
-- [ ] **Step 5: Add CI**
+- [x] **Step 5: Add CI**
 
 `.github/workflows/ci.yml`:
 
@@ -208,7 +208,7 @@ The secret guard runs **before** the other checks so a leak fails fast and loudl
 
 > `npm run test:i18n` and `npm run bench` reference files created in Tasks 15 and 14. CI will fail on those two steps until then; that is expected and is fixed by the end of the plan. Do not stub them.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add package.json package-lock.json tsconfig.base.json packages/image .github
@@ -227,7 +227,7 @@ git commit -m "chore(repo): npm workspaces monorepo, strict tsconfig, CI"
 - Consumes: nothing.
 - Produces: `crc32(buf: Uint8Array): number` — unsigned 32-bit, PNG polynomial.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `packages/image/test/crc.test.ts`:
 
@@ -251,12 +251,12 @@ test('IEND chunk body has the well-known CRC', () => {
 });
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `node --test packages/image/test/crc.test.ts`
 Expected: FAIL — cannot find module `../src/png/crc.ts`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `packages/image/src/png/crc.ts`:
 
@@ -280,12 +280,12 @@ export function crc32(buf: Uint8Array): number {
 }
 ```
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Run: `node --test packages/image/test/crc.test.ts`
 Expected: PASS, 3 tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add packages/image/src/png/crc.ts packages/image/test/crc.test.ts
@@ -304,7 +304,7 @@ git commit -m "feat(image): CRC32 for PNG chunks"
 - Consumes: `crc32` from Task 2.
 - Produces: `encodePNG(rgba: Uint8Array, width: number, height: number): Buffer` — 8-bit RGBA, colour type 6, non-interlaced, filter type 0 on every scanline.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `packages/image/test/encode.test.ts`:
 
@@ -372,12 +372,12 @@ test('is deterministic', () => {
 });
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `node --test packages/image/test/encode.test.ts`
 Expected: FAIL — cannot find module `../src/png/encode.ts`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `packages/image/src/png/encode.ts`:
 
@@ -431,12 +431,12 @@ export function encodePNG(rgba: Uint8Array, width: number, height: number): Buff
 }
 ```
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Run: `node --test packages/image/test/encode.test.ts`
 Expected: PASS, 6 tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add packages/image/src/png/encode.ts packages/image/test/encode.test.ts
@@ -455,7 +455,7 @@ git commit -m "feat(image): pure-JS PNG encoder over node:zlib"
 - Consumes: `encodePNG` from Task 3 (tests only).
 - Produces: `decodePNG(buf: Uint8Array): DecodedImage` where `DecodedImage = { width: number; height: number; rgba: Uint8Array }`. Handles 8-bit colour types 0, 2, 3 and 6, honours `tRNS`, throws on interlaced or non-8-bit input.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `packages/image/test/decode.test.ts`:
 
@@ -490,12 +490,12 @@ test('rejects a truncated file', () => {
 });
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `node --test packages/image/test/decode.test.ts`
 Expected: FAIL — cannot find module `../src/png/decode.ts`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `packages/image/src/png/decode.ts`:
 
@@ -627,12 +627,12 @@ export function decodePNG(buf: Uint8Array): DecodedImage {
 }
 ```
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Run: `node --test packages/image/test/decode.test.ts`
 Expected: PASS, 4 tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add packages/image/src/png/decode.ts packages/image/test/decode.test.ts
@@ -654,7 +654,7 @@ git commit -m "feat(image): PNG decoder for merchant logo uploads"
 
 > Nothing in this slice renders a JPEG — merchant uploads land in sub-project 3. It is built here because it belongs to this package and is three lines, and because `decodeImage` is the entry point the upload path will import.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `packages/image/test/jpeg.test.ts`:
 
@@ -694,12 +694,12 @@ test('decodeImage rejects an unknown format', () => {
 });
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `npm install jpeg-js --workspace @loyanexa/image && node --test packages/image/test/jpeg.test.ts`
 Expected: FAIL — cannot find module `../src/jpeg.ts`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `packages/image/src/jpeg.ts`:
 
@@ -720,12 +720,12 @@ export function decodeImage(buf: Uint8Array): DecodedImage {
 }
 ```
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Run: `node --test packages/image/test/jpeg.test.ts`
 Expected: PASS, 4 tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add packages/image/src/jpeg.ts packages/image/package.json package-lock.json packages/image/test/jpeg.test.ts
@@ -747,7 +747,7 @@ git commit -m "feat(image): JPEG decoding and format sniffing"
   - `parseHexColor(hex: string, alpha?: number): RGBA` — accepts `#rgb`, `#rrggbb`, with or without `#`
   - `class Surface` with `width`, `height`, `data: Uint8ClampedArray`, `fill(c: RGBA): void`, `blend(x: number, y: number, c: RGBA, coverage: number): void`, `toRGBA(): Uint8Array`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `packages/image/test/surface.test.ts`:
 
@@ -807,12 +807,12 @@ test('blend ignores out-of-bounds and zero coverage', () => {
 });
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `node --test packages/image/test/surface.test.ts`
 Expected: FAIL — cannot find module `../src/raster/surface.ts`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `packages/image/src/raster/surface.ts`:
 
@@ -884,12 +884,12 @@ export class Surface {
 }
 ```
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Run: `node --test packages/image/test/surface.test.ts`
 Expected: PASS, 8 tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add packages/image/src/raster/surface.ts packages/image/test/surface.test.ts
@@ -913,7 +913,7 @@ git commit -m "feat(image): RGBA surface with source-over blending"
 
 All take centre and radius in pixels and anti-alias by analytic edge coverage: `coverage = clamp(r + 0.5 − distance, 0, 1)`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `packages/image/test/shapes.test.ts`:
 
@@ -980,12 +980,12 @@ test('radius 0 gives square corners', () => {
 });
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `node --test packages/image/test/shapes.test.ts`
 Expected: FAIL — cannot find module `../src/raster/shapes.ts`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `packages/image/src/raster/shapes.ts`:
 
@@ -1077,12 +1077,12 @@ export function fillRoundedRect(
 }
 ```
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Run: `node --test packages/image/test/shapes.test.ts`
 Expected: PASS, 6 tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add packages/image/src/raster/shapes.ts packages/image/test/shapes.test.ts
@@ -1105,7 +1105,7 @@ git commit -m "feat(image): anti-aliased disc, ring and rounded rect"
   - `resizeRGBA(src: DecodedImage, width: number, height: number): DecodedImage` — box filter
   - `circularMask(src: DecodedImage, size: number, rimWidth?: number): DecodedImage` — square output, alpha ramped at the circle edge, with an inset rim so a pale logo still reads as a stamp (`BUILD.md` §9.2)
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `packages/image/test/resize.test.ts`:
 
@@ -1193,12 +1193,12 @@ test('draws a rim so a pale logo still reads as a stamp', () => {
 });
 ```
 
-- [ ] **Step 2: Run them and watch them fail**
+- [x] **Step 2: Run them and watch them fail**
 
 Run: `node --test packages/image/test/resize.test.ts packages/image/test/mask.test.ts`
 Expected: FAIL — cannot find those modules.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `packages/image/src/raster/resize.ts`:
 
@@ -1287,12 +1287,12 @@ export function circularMask(src: DecodedImage, size: number, rimWidth = 0): Dec
 }
 ```
 
-- [ ] **Step 4: Run them and watch them pass**
+- [x] **Step 4: Run them and watch them pass**
 
 Run: `node --test packages/image/test/resize.test.ts packages/image/test/mask.test.ts`
 Expected: PASS, 8 tests total.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add packages/image/src/raster/resize.ts packages/image/src/raster/mask.ts packages/image/test/resize.test.ts packages/image/test/mask.test.ts
@@ -1316,7 +1316,7 @@ git commit -m "feat(image): box resize and circular logo mask with rim"
 
 This is the single definition referred to by the Global Constraints. The dashboard preview imports it rather than reimplementing it.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `packages/image/test/layout.test.ts`:
 
@@ -1386,12 +1386,12 @@ test('positions scale linearly with the canvas', () => {
 });
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `node --test packages/image/test/layout.test.ts`
 Expected: FAIL — cannot find module `../src/layout.ts`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `packages/image/src/layout.ts`:
 
@@ -1456,12 +1456,12 @@ export function slotPositions(goal: number, width: number, height: number): Slot
 }
 ```
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Run: `node --test packages/image/test/layout.test.ts`
 Expected: PASS, 8 tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add packages/image/src/layout.ts packages/image/test/layout.test.ts
@@ -1486,7 +1486,7 @@ git commit -m "feat(image): single source of truth for stamp slot layout"
 
 **`StripSpec` carries no customer, pass or merchant identifier.** That is the cache thesis, enforced by the type.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `packages/image/test/strip.test.ts`:
 
@@ -1562,12 +1562,12 @@ test('a logo stamp renders differently from a plain disc', () => {
 });
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `node --test packages/image/test/strip.test.ts`
 Expected: FAIL — cannot find module `../src/strip.ts`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `packages/image/src/strip.ts`:
 
@@ -1686,12 +1686,12 @@ export function renderStrip(spec: StripSpec): Buffer {
 }
 ```
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Run: `node --test packages/image/test/strip.test.ts`
 Expected: PASS, 9 tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add packages/image/src/strip.ts packages/image/test/strip.test.ts
@@ -1714,7 +1714,7 @@ git commit -m "feat(image): stamp strip renderer"
   - `class MemoryStore implements StripStore` — bounded LRU, `constructor(maxEntries = 256)`, exposes `size`
   - `cachedStrip(store: StripStore, spec: StripSpec): Promise<Buffer>`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `packages/image/test/stripCache.test.ts`:
 
@@ -1813,12 +1813,12 @@ test('the store is bounded and evicts least-recently-used', async () => {
 });
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `node --test packages/image/test/stripCache.test.ts`
 Expected: FAIL — cannot find module `../src/stripCache.ts`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `packages/image/src/stripCache.ts`:
 
@@ -1898,12 +1898,12 @@ export async function cachedStrip(store: StripStore, spec: StripSpec): Promise<B
 }
 ```
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Run: `node --test packages/image/test/stripCache.test.ts`
 Expected: PASS, 9 tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add packages/image/src/stripCache.ts packages/image/test/stripCache.test.ts
@@ -1928,7 +1928,7 @@ git commit -m "feat(image): content-addressed strip cache with bounded LRU"
   - `renderAllDensities(store: StripStore, spec: Omit<StripSpec, 'scale'>): Promise<StripSet>`
   - `index.ts` re-exports the public API.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `packages/image/test/densities.test.ts`:
 
@@ -1971,12 +1971,12 @@ test('the public entry point re-exports the API', async () => {
 });
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `node --test packages/image/test/densities.test.ts`
 Expected: FAIL — cannot find module `../src/densities.ts`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `packages/image/src/densities.ts`:
 
@@ -2066,7 +2066,7 @@ console.log(`5,000 cached fetches               ${cachedTotal.toFixed(0)} ms`);
 console.log(`same uncached would be roughly     ${((uncached * 5000) / 1000).toFixed(0)} s`);
 ```
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Run: `rm packages/image/test/smoke.test.ts && node --test 'packages/image/test/*.test.ts'`
 Expected: PASS, all image tests.
@@ -2077,7 +2077,7 @@ Expected: timings printed; no assertions.
 Run: `npm run typecheck`
 Expected: exit 0.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add packages/image/src/densities.ts packages/image/src/index.ts packages/image/bench packages/image/test
@@ -2099,7 +2099,7 @@ git commit -m "feat(image): three-density rendering, public API, benchmark"
 - Consumes: nothing.
 - Produces: `prisma` (a `PrismaClient` singleton) from `@loyanexa/db`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `packages/db/test/schema.test.ts`:
 
@@ -2140,12 +2140,12 @@ test('serials and short codes are unique', () => {
 });
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `node --test packages/db/test/schema.test.ts`
 Expected: FAIL — no such file `../prisma/schema.prisma`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `packages/db/package.json`:
 
@@ -2315,7 +2315,7 @@ export const prisma: PrismaClient = globalForPrisma.prisma ?? new PrismaClient()
 if (process.env['NODE_ENV'] !== 'production') globalForPrisma.prisma = prisma;
 ```
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Run: `npm install --workspace @loyanexa/db && node --test packages/db/test/schema.test.ts`
 Expected: PASS, 5 tests.
@@ -2330,7 +2330,7 @@ npx --workspace @loyanexa/db prisma migrate dev --name init
 
 Expected: `The schema at prisma/schema.prisma is valid`, then a migration applied and the client generated.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add packages/db package-lock.json
@@ -2358,7 +2358,7 @@ git commit -m "feat(db): Prisma schema with strip-cache image hashes"
 
 The Arabic dictionary is typed as `Record<MessageKey, string>`, so a missing key is a **compile error**; `scripts/check-i18n.mjs` catches the reverse case (an extra Arabic key) at runtime for CI.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 `packages/i18n/test/parity.test.ts`:
 
@@ -2399,12 +2399,12 @@ test('Arabic-Indic numerals under ar only', () => {
 });
 ```
 
-- [ ] **Step 2: Run it and watch it fail**
+- [x] **Step 2: Run it and watch it fail**
 
 Run: `node --test packages/i18n/test/parity.test.ts`
 Expected: FAIL — cannot find module `../src/en.ts`.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `packages/i18n/package.json`:
 
@@ -2511,7 +2511,7 @@ if (failed) process.exit(1);
 console.log(`i18n parity OK — ${enKeys.size} keys in both dictionaries`);
 ```
 
-- [ ] **Step 4: Run it and watch it pass**
+- [x] **Step 4: Run it and watch it pass**
 
 Run: `node --test packages/i18n/test/parity.test.ts`
 Expected: PASS, 6 tests.
@@ -2524,7 +2524,7 @@ Prove the gate actually bites — temporarily delete a key from `ar.ts`:
 Run: `npm run test:i18n`
 Expected: `missing from ar: …`, exit 1. Restore the key afterwards.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add packages/i18n scripts/check-i18n.mjs
@@ -2543,7 +2543,7 @@ git commit -m "feat(i18n): ar/en dictionaries with a CI parity gate"
 - Consumes: everything.
 - Produces: a repository where `npm ci && npm run typecheck && npm test && npm run test:i18n` all pass from clean.
 
-- [ ] **Step 1: Verify from a clean checkout**
+- [x] **Step 1: Verify from a clean checkout**
 
 ```bash
 rm -rf node_modules packages/*/node_modules
@@ -2555,7 +2555,7 @@ npm run test:i18n
 
 Expected: all four exit 0. Record the total test count.
 
-- [ ] **Step 2: Verify no secret material is tracked**
+- [x] **Step 2: Verify no secret material is tracked**
 
 ```bash
 git ls-files | grep -E '(^certs/|\.env$|\.pem$|\.p8$|\.cer$|service-account.*\.json$)' && echo "LEAK" || echo "clean"
@@ -2563,7 +2563,7 @@ git ls-files | grep -E '(^certs/|\.env$|\.pem$|\.p8$|\.cer$|service-account.*\.j
 
 Expected: `clean`.
 
-- [ ] **Step 3: Update the README status**
+- [x] **Step 3: Update the README status**
 
 Replace the `## Status` section of `README.md` with:
 
@@ -2581,14 +2581,15 @@ npm ci && npm test
 ```
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add README.md docs/superpowers/plans/2026-08-02-foundation-strip-pipeline.md
 git commit -m "docs(repo): record sub-project 1 as built"
 ```
 
-- [ ] **Step 5: Open the pull request**
+- [ ] **Step 5: Open the pull request** (deliberately not run here — a whole-branch review
+  happens first; the repository owner decides when to push and open the PR)
 
 ```bash
 git push -u origin HEAD

@@ -62,10 +62,15 @@ wallet work, FCM), is in [`docs/BUILD.md`](docs/BUILD.md) §2.
 
 ## Status
 
-Specification complete · prototype complete · production build not started.
+Specification complete · prototype complete · **sub-project 1 built**.
 
-Build order is in `docs/BUILD.md` §15. Phase 0 (Apple and Google credentials) has external
-waiting time — start it before writing code.
+`@loyanexa/image` renders stamp strips at three densities with a content-addressed
+cache; `@loyanexa/db` holds the Prisma schema; `@loyanexa/i18n` holds the dictionaries
+with a CI parity gate. Next: sub-project 2, the pass engine.
+
+```bash
+npm ci && npm test
+```
 
 ---
 
