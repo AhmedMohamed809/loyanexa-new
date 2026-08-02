@@ -14,6 +14,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import querystring from 'node:querystring';
 import { fileURLToPath } from 'node:url';
+import { Prisma, type Card } from '@prisma/client';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -22,8 +23,8 @@ const ROOT = path.resolve(__dirname, '../..');
 // .env — parsed by hand, no dotenv dependency. Sets process.env values that
 // aren't already set (so a real shell env always wins). Never logs values.
 // ---------------------------------------------------------------------------
-function loadEnvFile(envPath) {
-  let text;
+function loadEnvFile(envPath: string): void {
+  let text: string;
   try {
     text = fs.readFileSync(envPath, 'utf8');
   } catch {
@@ -63,35 +64,37 @@ const PORT = 8088;
 // Small helpers
 // ---------------------------------------------------------------------------
 
-function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/g, (c) => ({
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#39;',
-  })[c]);
+const HTML_ESCAPES: Record<string, string> = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+};
+
+function escapeHtml(value: unknown): string {
+  return String(value).replace(/[&<>"']/g, (c) => HTML_ESCAPES[c] ?? c);
 }
 
-function clampInt(raw, min, max, fallback) {
+function clampInt(raw: unknown, min: number, max: number, fallback: number): number {
   const n = Number.parseInt(String(raw), 10);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(max, Math.max(min, n));
 }
 
 const HEX_RE = /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
-function validHex(raw, fallback) {
+function validHex(raw: unknown, fallback: string): string {
   const v = String(raw ?? '').trim();
   if (!HEX_RE.test(v)) return fallback;
   return v.startsWith('#') ? v : `#${v}`;
 }
 
 /** A representative "some stamps punched" count for demo thumbnails/previews. */
-function defaultFilled(goal) {
+function defaultFilled(goal: number): number {
   return Math.max(1, Math.floor(goal / 3));
 }
 
-function findLanUrl(port) {
+function findLanUrl(port: number): string {
   const nets = os.networkInterfaces();
   for (const ifaceName of Object.keys(nets)) {
     for (const net of nets[ifaceName] ?? []) {
@@ -104,15 +107,27 @@ function findLanUrl(port) {
 }
 const LAN_URL = findLanUrl(PORT);
 
+/** An Error carrying an HTTP status code, as produced by readUrlencodedBody. */
+type HttpError = Error & { statusCode: number };
+function isHttpError(e: unknown): e is HttpError {
+  return e instanceof Error && typeof (e as { statusCode?: unknown }).statusCode === 'number';
+}
+
 /** Reads and caps a request body; returns the parsed urlencoded object. */
-function readUrlencodedBody(req, maxBytes = 64 * 1024) {
+function readUrlencodedBody(
+  req: http.IncomingMessage,
+  maxBytes = 64 * 1024
+): Promise<querystring.ParsedUrlQuery> {
   return new Promise((resolve, reject) => {
     let size = 0;
-    const chunks = [];
-    req.on('data', (chunk) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => {
       size += chunk.length;
       if (size > maxBytes) {
-        reject(Object.assign(new Error('request body too large'), { statusCode: 413 }));
+        const err: HttpError = Object.assign(new Error('request body too large'), {
+          statusCode: 413,
+        });
+        reject(err);
         req.destroy();
         return;
       }
@@ -126,7 +141,7 @@ function readUrlencodedBody(req, maxBytes = 64 * 1024) {
   });
 }
 
-function sendHtml(res, status, html) {
+function sendHtml(res: http.ServerResponse, status: number, html: string): void {
   res.writeHead(status, {
     'Content-Type': 'text/html; charset=utf-8',
     'Content-Length': Buffer.byteLength(html),
@@ -134,7 +149,7 @@ function sendHtml(res, status, html) {
   res.end(html);
 }
 
-function sendPng(res, buffer) {
+function sendPng(res: http.ServerResponse, buffer: Buffer): void {
   res.writeHead(200, {
     'Content-Type': 'image/png',
     'Content-Length': buffer.length,
@@ -143,7 +158,7 @@ function sendPng(res, buffer) {
   res.end(buffer);
 }
 
-function sendNotFound(res, message = 'Not found') {
+function sendNotFound(res: http.ServerResponse, message = 'Not found'): void {
   sendHtml(res, 404, layout('Not found', `<div class="panel"><h1>404</h1><p>${escapeHtml(message)}</p><p><a class="btn" href="/">Back to cards</a></p></div>`));
 }
 
@@ -167,7 +182,7 @@ async function getOrCreateMerchant() {
 }
 
 /** Atomically allocate the next link code from the shared counter (starts at 10000). */
-async function nextLinkCode() {
+async function nextLinkCode(): Promise<number> {
   await prisma.linkCounter.upsert({
     where: { id: 1 },
     update: {},
@@ -180,7 +195,7 @@ async function nextLinkCode() {
   return row.value;
 }
 
-function generateShortCode() {
+function generateShortCode(): string {
   return crypto.randomBytes(4).toString('hex').toUpperCase();
 }
 
@@ -188,7 +203,7 @@ function generateShortCode() {
 // HTML shell — brand tokens: navy #203757, accent orange #F96400, canvas
 // #F4F6FA, white panels, radius 18px, borders doing the separating.
 // ---------------------------------------------------------------------------
-function layout(title, bodyHtml) {
+function layout(title: string, bodyHtml: string): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -336,7 +351,7 @@ const AUTH_BANNER = `<div class="banner"><b>Local demo — no authentication.</b
 // ---------------------------------------------------------------------------
 // Route: GET / — list cards
 // ---------------------------------------------------------------------------
-function cardThumbSrc(card) {
+function cardThumbSrc(card: Card): string {
   const qs = new URLSearchParams({
     goal: String(card.stampsGoal),
     filled: String(defaultFilled(card.stampsGoal)),
@@ -347,7 +362,7 @@ function cardThumbSrc(card) {
   return `/preview.png?${qs.toString()}`;
 }
 
-async function handleCardsList(res) {
+async function handleCardsList(res: http.ServerResponse): Promise<void> {
   const cards = await prisma.card.findMany({ orderBy: { createdAt: 'desc' } });
 
   const body = cards.length
@@ -383,7 +398,19 @@ async function handleCardsList(res) {
 // ---------------------------------------------------------------------------
 // Route: GET /cards/new — creation form with a live preview
 // ---------------------------------------------------------------------------
-function renderNewCardForm({ name = '', rewardText = '', goal = 8, bg = '#203757', active = '#F96400', inactive = '#8794A5' } = {}, error) {
+interface NewCardFormValues {
+  name?: string;
+  rewardText?: string;
+  goal?: number;
+  bg?: string;
+  active?: string;
+  inactive?: string;
+}
+
+function renderNewCardForm(
+  { name = '', rewardText = '', goal = 8, bg = '#203757', active = '#F96400', inactive = '#8794A5' }: NewCardFormValues = {},
+  error?: string
+): string {
   const goalNum = clampInt(goal, MIN_GOAL, MAX_GOAL, 8);
   const previewQs = new URLSearchParams({
     goal: String(goalNum),
@@ -466,20 +493,21 @@ function renderNewCardForm({ name = '', rewardText = '', goal = 8, bg = '#203757
   return layout('Create card', AUTH_BANNER + body);
 }
 
-async function handleNewCardForm(res) {
+async function handleNewCardForm(res: http.ServerResponse): Promise<void> {
   sendHtml(res, 200, renderNewCardForm());
 }
 
 // ---------------------------------------------------------------------------
 // Route: POST /cards — validate, persist, redirect
 // ---------------------------------------------------------------------------
-async function handleCreateCard(req, res) {
-  let fields;
+async function handleCreateCard(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  let fields: querystring.ParsedUrlQuery;
   try {
     fields = await readUrlencodedBody(req);
   } catch (err) {
-    const status = err.statusCode ?? 400;
-    sendHtml(res, status, layout('Error', `<div class="panel"><h1>${status}</h1><p>${escapeHtml(err.message)}</p></div>`));
+    const status = isHttpError(err) ? err.statusCode : 400;
+    const message = err instanceof Error ? err.message : String(err);
+    sendHtml(res, status, layout('Error', `<div class="panel"><h1>${status}</h1><p>${escapeHtml(message)}</p></div>`));
     return;
   }
 
@@ -490,7 +518,7 @@ async function handleCreateCard(req, res) {
   const active = String(fields.active ?? '').trim();
   const inactive = String(fields.inactive ?? '').trim();
 
-  const errors = [];
+  const errors: string[] = [];
   if (!name) errors.push('Card name is required.');
   if (name.length > 80) errors.push('Card name is too long (max 80 characters).');
   if (!rewardText) errors.push('Reward text is required.');
@@ -526,7 +554,7 @@ async function handleCreateCard(req, res) {
 
   const linkCode = await nextLinkCode();
 
-  let card;
+  let card: Card | undefined;
   for (let attempt = 0; attempt < 5; attempt++) {
     const shortCode = generateShortCode();
     try {
@@ -549,9 +577,16 @@ async function handleCreateCard(req, res) {
     } catch (err) {
       // P2002: unique constraint failed — retry with a fresh shortCode.
       // linkCode came from the atomic counter and cannot collide.
-      if (err?.code === 'P2002' && attempt < 4) continue;
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002' && attempt < 4) continue;
       throw err;
     }
+  }
+
+  if (!card) {
+    // Unreachable in practice: the loop above always either assigns `card`
+    // and breaks, or rethrows on its final iteration. Narrow guard so the
+    // definite-assignment error below is a real check, not an assertion.
+    throw new Error('card creation loop exited without creating a card or throwing');
   }
 
   res.writeHead(303, { Location: `/cards/${card.id}` });
@@ -561,7 +596,7 @@ async function handleCreateCard(req, res) {
 // ---------------------------------------------------------------------------
 // Route: GET /cards/:id — card detail with enrol URL + QR
 // ---------------------------------------------------------------------------
-async function handleCardDetail(res, id) {
+async function handleCardDetail(res: http.ServerResponse, id: string): Promise<void> {
   const card = await prisma.card.findUnique({ where: { id } });
   if (!card) {
     sendNotFound(res, `No card with id "${id}".`);
@@ -610,14 +645,14 @@ async function handleCardDetail(res, id) {
 // Route: GET /preview.png — on-the-fly strip render. Every input clamped or
 // substituted with a safe default before it reaches renderStrip.
 // ---------------------------------------------------------------------------
-function handlePreviewPng(res, query) {
+function handlePreviewPng(res: http.ServerResponse, query: URLSearchParams): void {
   const goal = clampInt(query.get('goal'), MIN_GOAL, MAX_GOAL, 8);
   const filled = clampInt(query.get('filled'), 0, goal, defaultFilled(goal));
   const bg = validHex(query.get('bg'), '#203757');
   const active = validHex(query.get('active'), '#F96400');
   const inactive = validHex(query.get('inactive'), '#8794A5');
   const scaleRaw = Number.parseInt(String(query.get('scale') ?? '1'), 10);
-  const scale = [1, 2, 3].includes(scaleRaw) ? scaleRaw : 1;
+  const scale: 1 | 2 | 3 = scaleRaw === 2 || scaleRaw === 3 ? scaleRaw : 1;
 
   const png = renderStrip({
     goal,
@@ -635,17 +670,18 @@ function handlePreviewPng(res, query) {
 // ---------------------------------------------------------------------------
 // Route: GET /qr.png — on-the-fly QR render
 // ---------------------------------------------------------------------------
-function handleQrPng(res, query) {
+function handleQrPng(res: http.ServerResponse, query: URLSearchParams): void {
   const data = query.get('data');
   if (!data || !data.trim()) {
     sendHtml(res, 400, layout('Error', '<div class="panel"><h1>400</h1><p>Missing "data" query parameter.</p></div>'));
     return;
   }
-  let png;
+  let png: Buffer;
   try {
     png = renderQrPng(data.trim());
   } catch (err) {
-    sendHtml(res, 400, layout('Error', `<div class="panel"><h1>400</h1><p>${escapeHtml(err.message)}</p></div>`));
+    const message = err instanceof Error ? err.message : String(err);
+    sendHtml(res, 400, layout('Error', `<div class="panel"><h1>400</h1><p>${escapeHtml(message)}</p></div>`));
     return;
   }
   sendPng(res, png);
@@ -656,7 +692,7 @@ function handleQrPng(res, query) {
 // ---------------------------------------------------------------------------
 const server = http.createServer(async (req, res) => {
   try {
-    const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
+    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
     const { pathname } = url;
 
     if (req.method === 'GET' && pathname === '/') {
@@ -680,16 +716,18 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     const cardMatch = pathname.match(/^\/cards\/([^/]+)$/);
-    if (req.method === 'GET' && cardMatch) {
-      await handleCardDetail(res, cardMatch[1]);
+    const cardId = cardMatch?.[1];
+    if (req.method === 'GET' && cardId !== undefined) {
+      await handleCardDetail(res, cardId);
       return;
     }
 
     sendNotFound(res, `No route for ${req.method} ${pathname}.`);
   } catch (err) {
     console.error(err);
+    const message = err instanceof Error ? err.message : String(err);
     if (!res.headersSent) {
-      sendHtml(res, 500, layout('Error', `<div class="panel"><h1>500</h1><p>${escapeHtml(err.message ?? String(err))}</p></div>`));
+      sendHtml(res, 500, layout('Error', `<div class="panel"><h1>500</h1><p>${escapeHtml(message)}</p></div>`));
     } else {
       res.end();
     }

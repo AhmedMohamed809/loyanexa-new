@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// scripts/make-demo-pass.mjs
+// scripts/make-demo-pass.ts
 //
 // Demo harness: builds a real, signed .pkpass carrying a stamp strip
 // rendered by @loyanexa/image, and prints proof that it is valid before
@@ -16,6 +16,7 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir, homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { ExecFileException } from 'node:child_process';
 
 import {
   renderAllDensities,
@@ -33,8 +34,8 @@ const ROOT = path.resolve(__dirname, '..');
 // 0. Read Apple credentials from .env. Never inline, copy or commit these —
 //    only ever read them at runtime from the paths .env points at.
 // ---------------------------------------------------------------------------
-function loadEnv(file) {
-  const out = {};
+function loadEnv(file: string): Record<string, string> {
+  const out: Record<string, string> = {};
   for (const line of readFileSync(file, 'utf8').split('\n')) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
@@ -46,7 +47,7 @@ function loadEnv(file) {
 }
 
 const env = loadEnv(path.join(ROOT, '.env'));
-const need = (key) => {
+const need = (key: string): string => {
   const v = env[key];
   if (!v) throw new Error(`.env is missing ${key}`);
   return v;
@@ -98,7 +99,7 @@ console.log(
 //    29px, so a simple on-brand mark generated from Surface + fillDisc is
 //    the right call here.
 // ---------------------------------------------------------------------------
-function makeIcon(size) {
+function makeIcon(size: number): Buffer {
   const surface = new Surface(size, size);
   surface.fill(parseHexColor(NAVY, 1));
   fillDisc(surface, size / 2, size / 2, size * 0.36, parseHexColor(ACCENT, 1));
@@ -127,7 +128,38 @@ const terms = [
   'The company reserves the right to amend these terms.',
 ].join(' ');
 
-const pass = {
+interface PkPassField {
+  key: string;
+  label: string;
+  value: string;
+}
+
+interface PkPassJson {
+  formatVersion: number;
+  passTypeIdentifier: string;
+  teamIdentifier: string;
+  organizationName: string;
+  description: string;
+  logoText: string;
+  serialNumber: string;
+  backgroundColor: string;
+  foregroundColor: string;
+  labelColor: string;
+  storeCard: {
+    headerFields: PkPassField[];
+    primaryFields: PkPassField[];
+    secondaryFields: PkPassField[];
+    backFields: PkPassField[];
+  };
+  barcodes: Array<{
+    format: string;
+    message: string;
+    messageEncoding: string;
+    altText: string;
+  }>;
+}
+
+const pass: PkPassJson = {
   formatVersion: 1,
   passTypeIdentifier: PASS_TYPE_ID,
   teamIdentifier: TEAM_ID,
@@ -166,14 +198,14 @@ const pass = {
 // treated as trustworthy.
 const APPLE_ROOT_CA_SHA256 = 'b0b1730ecbc7ff4505142c49f1295e6eda6bcaed7e2c68c5be91b5a11001f024';
 
-const tmpDirs = [];
-function mkTmpDir(prefix) {
+const tmpDirs: string[] = [];
+function mkTmpDir(prefix: string): string {
   const dir = mkdtempSync(path.join(tmpdir(), prefix));
   tmpDirs.push(dir);
   return dir;
 }
 
-async function buildAndVerify() {
+async function buildAndVerify(): Promise<0 | 1> {
   const staging = mkTmpDir('loyanexa-pkpass-');
   const files = {
     'pass.json': Buffer.from(JSON.stringify(pass), 'utf8'),
@@ -187,7 +219,7 @@ async function buildAndVerify() {
     writeFileSync(path.join(staging, name), buf);
   }
 
-  const manifest = {};
+  const manifest: Record<string, string> = {};
   for (const [name, buf] of Object.entries(files)) {
     manifest[name] = createHash('sha1').update(buf).digest('hex');
   }
@@ -220,7 +252,7 @@ async function buildAndVerify() {
   //    bugs, not just logic bugs.
   // -------------------------------------------------------------------------
   console.log('\n== Verification ==');
-  const results = [];
+  const results: Array<[string, boolean, string]> = [];
 
   // 7a. unzip -l listing + "no enclosing directory" check.
   const listing = execFileSync('unzip', ['-l', pkpassTmp], { encoding: 'utf8' });
@@ -236,9 +268,11 @@ async function buildAndVerify() {
   // 7b. Extract and re-hash every manifest entry against the actual archive contents.
   const verifyDir = mkTmpDir('loyanexa-verify-');
   execFileSync('unzip', ['-q', pkpassTmp, '-d', verifyDir]);
-  const extractedManifest = JSON.parse(readFileSync(path.join(verifyDir, 'manifest.json'), 'utf8'));
+  const extractedManifest = JSON.parse(
+    readFileSync(path.join(verifyDir, 'manifest.json'), 'utf8')
+  ) as Record<string, string>;
   let manifestOk = true;
-  const manifestDetails = [];
+  const manifestDetails: string[] = [];
   for (const [name, digest] of Object.entries(extractedManifest)) {
     const actual = createHash('sha1').update(readFileSync(path.join(verifyDir, name))).digest('hex');
     const ok = actual === digest;
@@ -283,7 +317,12 @@ async function buildAndVerify() {
     );
     sigOk = true;
   } catch (e) {
-    sigOutput = String(e.stdout || '') + String(e.stderr || '');
+    if (e instanceof Error) {
+      const { stdout, stderr } = e as ExecFileException;
+      sigOutput = String(stdout || '') + String(stderr || '');
+    } else {
+      sigOutput = String(e);
+    }
   }
   results.push(['3. signature verifies against Apple Root CA (-purpose any)', sigOk, sigOutput.trim() || '(openssl printed nothing on success)']);
 
@@ -291,7 +330,9 @@ async function buildAndVerify() {
   const subject = execFileSync('openssl', ['x509', '-in', CERT_PATH, '-noout', '-subject'], { encoding: 'utf8' });
   const certPassTypeId = subject.match(/UID\s*=\s*([^,\n]+)/)?.[1]?.trim();
   const certTeamId = subject.match(/OU\s*=\s*([^,\n]+)/)?.[1]?.trim();
-  const extractedPass = JSON.parse(readFileSync(path.join(verifyDir, 'pass.json'), 'utf8'));
+  const extractedPass = JSON.parse(
+    readFileSync(path.join(verifyDir, 'pass.json'), 'utf8')
+  ) as Pick<PkPassJson, 'passTypeIdentifier' | 'teamIdentifier'>;
   const idsOk = extractedPass.passTypeIdentifier === certPassTypeId && extractedPass.teamIdentifier === certTeamId;
   results.push([
     '4. pass.json passTypeIdentifier/teamIdentifier match the cert UID/OU',

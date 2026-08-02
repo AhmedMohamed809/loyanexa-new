@@ -1,17 +1,17 @@
 // Deliberate benchmark. Never run in CI — timing assertions are flaky on
 // shared runners and train people to ignore red builds. Compare against the
 // figures in BUILD.md §10: 27 ms @2x, 55 ms @3x, 93 ms for a full pass.
-import { renderStrip } from '../src/strip.ts';
+import { renderStrip, type StripSpec } from '../src/strip.ts';
 import { MemoryStore, cachedStrip } from '../src/stripCache.ts';
 import { renderAllDensities } from '../src/densities.ts';
 
-const spec = {
+const spec: Omit<StripSpec, 'scale'> = {
   goal: 8, filled: 3, shape: 'circle',
   bgColor: '#203757', bgOpacity: 1,
   activeColor: '#F96400', inactiveColor: '#8794A5',
 };
 
-function time(label, fn, runs = 20) {
+function time(label: string, fn: () => void, runs = 20): number {
   fn();
   const t0 = performance.now();
   for (let i = 0; i < runs; i++) fn();
