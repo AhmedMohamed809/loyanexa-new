@@ -64,6 +64,11 @@ export function fillRoundedRect(
 ): void {
   if (w <= 0 || h <= 0) return;
   const r = Math.max(0, Math.min(radius, Math.min(w, h) / 2));
+  const cx = x + w / 2;
+  const cy = y + h / 2;
+  const hx = w / 2 - r;
+  const hy = h / 2 - r;
+
   const x0 = Math.max(0, Math.floor(x - 1));
   const x1 = Math.min(s.width - 1, Math.ceil(x + w + 1));
   const y0 = Math.max(0, Math.floor(y - 1));
@@ -71,14 +76,15 @@ export function fillRoundedRect(
 
   for (let py = y0; py <= y1; py++) {
     for (let px = x0; px <= x1; px++) {
-      const cxp = px + 0.5;
-      const cyp = py + 0.5;
-      // Distance outside the inner rectangle inset by r, per axis.
-      const dx = Math.max(x + r - cxp, 0, cxp - (x + w - r));
-      const dy = Math.max(y + r - cyp, 0, cyp - (y + h - r));
-      const cov = r === 0
-        ? clamp01(Math.min(cxp - x, x + w - cxp) + 0.5) * clamp01(Math.min(cyp - y, y + h - cyp) + 0.5)
-        : edge(r, Math.hypot(dx, dy));
+      // Signed distance to the rounded rectangle: negative inside, positive
+      // outside, zero on the boundary. Keeping the sign is what the previous
+      // clamp-to-zero version threw away.
+      const qx = Math.abs(px + 0.5 - cx) - hx;
+      const qy = Math.abs(py + 0.5 - cy) - hy;
+      const outside = Math.hypot(Math.max(qx, 0), Math.max(qy, 0));
+      const inside = Math.min(Math.max(qx, qy), 0);
+      const d = outside + inside - r;
+      const cov = clamp01(0.5 - d);
       if (cov > 0) s.blend(px, py, c, cov);
     }
   }

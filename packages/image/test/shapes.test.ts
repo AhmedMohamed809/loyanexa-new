@@ -43,7 +43,7 @@ test('a ring thicker than its radius does not invert', () => {
   const s = new Surface(21, 21);
   s.fill(BLACK);
   strokeRing(s, 10, 10, 4, 10, WHITE);
-  assert.ok(redAt(s, 10, 10) > 0, 'degenerates to a filled disc rather than nothing');
+  assert.equal(redAt(s, 10, 10), 255, 'degenerates to a filled disc with full opacity');
 });
 
 test('a rounded rect fills its middle and softens its corners', () => {
@@ -57,4 +57,28 @@ test('radius 0 gives square corners', () => {
   const s = new Surface(20, 20);
   fillRoundedRect(s, 2, 2, 16, 16, 0, WHITE);
   assert.equal(alphaAt(s, 2, 2), 255);
+});
+
+test('sub-half-pixel radius keeps the body opaque', () => {
+  const s = new Surface(20, 20);
+  fillRoundedRect(s, 2, 2, 16, 16, 0.3, WHITE);
+  assert.equal(alphaAt(s, 10, 10), 255, 'interior stays fully opaque');
+});
+
+test('the branches agree in the limit', () => {
+  const s0 = new Surface(20, 20);
+  fillRoundedRect(s0, 2, 2, 16, 16, 0, WHITE);
+  const alpha0 = alphaAt(s0, 10, 10);
+
+  const s01 = new Surface(20, 20);
+  fillRoundedRect(s01, 2, 2, 16, 16, 0.01, WHITE);
+  const alpha01 = alphaAt(s01, 10, 10);
+
+  const s03 = new Surface(20, 20);
+  fillRoundedRect(s03, 2, 2, 16, 16, 0.3, WHITE);
+  const alpha03 = alphaAt(s03, 10, 10);
+
+  assert.equal(alpha0, 255, 'r=0');
+  assert.equal(alpha01, 255, 'r=0.01');
+  assert.equal(alpha03, 255, 'r=0.3');
 });
