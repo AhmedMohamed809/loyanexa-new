@@ -77,7 +77,7 @@ function buildPNG(params: {
   return Buffer.concat(chunks);
 }
 
-function createChunk(type: string, data: Buffer): Buffer {
+function createChunk(type: string, data: Uint8Array): Buffer {
   const len = Buffer.alloc(4);
   len.writeUInt32BE(data.length, 0);
   const typeBytes = Buffer.from(type, 'latin1');
