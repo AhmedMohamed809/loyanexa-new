@@ -32,3 +32,12 @@ test('draws a rim so a pale logo still reads as a stamp', () => {
   assert.ok(px(20, 1) < 250, `expected the rim to darken the edge, got ${px(20, 1)}`);
   assert.equal(px(20, 20), 250, 'centre is untouched by the rim');
 });
+
+test('anti-aliases the circle edge with a ramp, not a hard cut', () => {
+  const out = circularMask(opaqueSquare(64), 32);
+  const alpha = alphaAt(out, 16, 0);
+  // Pixel (16, 0) is at the edge of the circle (centre 16, radius 16).
+  // A hard-cut implementation would give exactly 255.
+  // An anti-aliased ramp gives a value strictly between 0 and 255.
+  assert.ok(0 < alpha && alpha < 255, `alpha at edge should be partial, got ${alpha}`);
+});

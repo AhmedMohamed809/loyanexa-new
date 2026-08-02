@@ -17,19 +17,27 @@ export function resizeRGBA(src: DecodedImage, width: number, height: number): De
     for (let x = 0; x < width; x++) {
       const x0 = Math.floor(x * sx);
       const x1 = Math.max(x0 + 1, Math.min(src.width, Math.ceil((x + 1) * sx)));
-      let r = 0, g = 0, b = 0, a = 0, n = 0;
+      let pr = 0, pg = 0, pb = 0, pa = 0, n = 0;
       for (let yy = y0; yy < y1; yy++) {
         for (let xx = x0; xx < x1; xx++) {
           const i = (yy * src.width + xx) * 4;
-          r += src.rgba[i]!; g += src.rgba[i + 1]!; b += src.rgba[i + 2]!; a += src.rgba[i + 3]!;
+          const a = src.rgba[i + 3]! / 255;
+          pr += src.rgba[i]! * a;
+          pg += src.rgba[i + 1]! * a;
+          pb += src.rgba[i + 2]! * a;
+          pa += a;
           n++;
         }
       }
       const o = (y * width + x) * 4;
-      out[o] = Math.round(r / n);
-      out[o + 1] = Math.round(g / n);
-      out[o + 2] = Math.round(b / n);
-      out[o + 3] = Math.round(a / n);
+      out[o + 3] = Math.round((pa / n) * 255);
+      if (pa > 0) {
+        out[o] = Math.round(pr / pa);
+        out[o + 1] = Math.round(pg / pa);
+        out[o + 2] = Math.round(pb / pa);
+      } else {
+        out[o] = 0; out[o + 1] = 0; out[o + 2] = 0;
+      }
     }
   }
   return { width, height, rgba: out };

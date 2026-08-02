@@ -40,3 +40,14 @@ test('upscaling is allowed and preserves colour', () => {
 test('rejects a non-positive target', () => {
   assert.throws(() => resizeRGBA(solid(4, 4, 1), 0, 4), /positive/i);
 });
+
+test('premultiplies alpha when blending opaque and transparent', () => {
+  const src = new Uint8Array(2 * 1 * 4);
+  // Opaque red (255, 0, 0, 255)
+  src[0] = 255; src[1] = 0; src[2] = 0; src[3] = 255;
+  // Fully transparent (0, 0, 0, 0)
+  src[4] = 0; src[5] = 0; src[6] = 0; src[7] = 0;
+  const out = resizeRGBA({ width: 2, height: 1, rgba: src }, 1, 1);
+  assert.equal(out.rgba[0], 255, 'red channel must stay saturated, not darken to ~128');
+  assert.ok(out.rgba[3]! > 100 && out.rgba[3]! < 160, `alpha should be ~128, got ${out.rgba[3]}`);
+});
