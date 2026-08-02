@@ -159,140 +159,167 @@ const pass = {
 //      requires it here, not a security choice), sign, and zip with the
 //      files at the archive root (cd into staging before zipping).
 // ---------------------------------------------------------------------------
-const staging = mkdtempSync(path.join(tmpdir(), 'loyanexa-pkpass-'));
-const files = {
-  'pass.json': Buffer.from(JSON.stringify(pass), 'utf8'),
-  'icon.png': icon1x,
-  'icon@2x.png': icon2x,
-  'strip.png': stripSet['strip.png'],
-  'strip@2x.png': stripSet['strip@2x.png'],
-  'strip@3x.png': stripSet['strip@3x.png'],
-};
-for (const [name, buf] of Object.entries(files)) {
-  writeFileSync(path.join(staging, name), buf);
+// Verified once by downloading the certificate and hashing it (fingerprint
+// cross-checked against Apple's published Root CA SHA-256, B0:B1:73:0E:CB:
+// C7:FF:45:...). Pinning this means a tampered download gets caught by the
+// hash check below instead of being handed straight to -CAfile and quietly
+// treated as trustworthy.
+const APPLE_ROOT_CA_SHA256 = 'b0b1730ecbc7ff4505142c49f1295e6eda6bcaed7e2c68c5be91b5a11001f024';
+
+const tmpDirs = [];
+function mkTmpDir(prefix) {
+  const dir = mkdtempSync(path.join(tmpdir(), prefix));
+  tmpDirs.push(dir);
+  return dir;
 }
 
-const manifest = {};
-for (const [name, buf] of Object.entries(files)) {
-  manifest[name] = createHash('sha1').update(buf).digest('hex');
-}
-writeFileSync(path.join(staging, 'manifest.json'), JSON.stringify(manifest));
+async function buildAndVerify() {
+  const staging = mkTmpDir('loyanexa-pkpass-');
+  const files = {
+    'pass.json': Buffer.from(JSON.stringify(pass), 'utf8'),
+    'icon.png': icon1x,
+    'icon@2x.png': icon2x,
+    'strip.png': stripSet['strip.png'],
+    'strip@2x.png': stripSet['strip@2x.png'],
+    'strip@3x.png': stripSet['strip@3x.png'],
+  };
+  for (const [name, buf] of Object.entries(files)) {
+    writeFileSync(path.join(staging, name), buf);
+  }
 
-execFileSync('openssl', [
-  'smime', '-binary', '-sign',
-  '-certfile', WWDR_PATH,
-  '-signer', CERT_PATH,
-  '-inkey', KEY_PATH,
-  '-in', path.join(staging, 'manifest.json'),
-  '-outform', 'DER',
-  '-out', path.join(staging, 'signature'),
-  '-noattr',
-]);
-console.log('Signed manifest.json -> signature');
+  const manifest = {};
+  for (const [name, buf] of Object.entries(files)) {
+    manifest[name] = createHash('sha1').update(buf).digest('hex');
+  }
+  writeFileSync(path.join(staging, 'manifest.json'), JSON.stringify(manifest));
 
-const pkpassTmp = path.join(tmpdir(), 'LoyaNexa-demo.pkpass');
-rmSync(pkpassTmp, { force: true });
-execFileSync(
-  'zip',
-  ['-X', pkpassTmp, 'pass.json', 'manifest.json', 'signature', 'icon.png', 'icon@2x.png', 'strip.png', 'strip@2x.png', 'strip@3x.png'],
-  { cwd: staging }
-);
-console.log(`Zipped bundle -> ${pkpassTmp}`);
+  execFileSync('openssl', [
+    'smime', '-binary', '-sign',
+    '-certfile', WWDR_PATH,
+    '-signer', CERT_PATH,
+    '-inkey', KEY_PATH,
+    '-in', path.join(staging, 'manifest.json'),
+    '-outform', 'DER',
+    '-out', path.join(staging, 'signature'),
+    '-noattr',
+  ]);
+  console.log('Signed manifest.json -> signature');
 
-// ---------------------------------------------------------------------------
-// 7. Verify before declaring success. Everything below re-reads the actual
-//    archive on disk, not the in-memory buffers, so it catches zip/staging
-//    bugs, not just logic bugs.
-// ---------------------------------------------------------------------------
-console.log('\n== Verification ==');
-const results = [];
-
-// 7a. unzip -l listing + "no enclosing directory" check.
-const listing = execFileSync('unzip', ['-l', pkpassTmp], { encoding: 'utf8' });
-console.log(listing);
-const names = execFileSync('unzip', ['-Z1', pkpassTmp], { encoding: 'utf8' }).trim().split('\n');
-const expectedMembers = Object.keys(files).concat(['manifest.json', 'signature']);
-const missing = expectedMembers.filter((m) => !names.includes(m));
-const hasDirPrefix = names.some((n) => n.includes('/'));
-const listingOk = missing.length === 0 && !hasDirPrefix && names.length === expectedMembers.length;
-results.push(['1. unzip -l shows all 8 members at the archive root', listingOk,
-  listingOk ? `members: ${names.join(', ')}` : `missing=${missing.join(',') || 'none'} hasDirPrefix=${hasDirPrefix} names=${names.join(',')}`]);
-
-// 7b. Extract and re-hash every manifest entry against the actual archive contents.
-const verifyDir = mkdtempSync(path.join(tmpdir(), 'loyanexa-verify-'));
-execFileSync('unzip', ['-q', pkpassTmp, '-d', verifyDir]);
-const extractedManifest = JSON.parse(readFileSync(path.join(verifyDir, 'manifest.json'), 'utf8'));
-let manifestOk = true;
-const manifestDetails = [];
-for (const [name, digest] of Object.entries(extractedManifest)) {
-  const actual = createHash('sha1').update(readFileSync(path.join(verifyDir, name))).digest('hex');
-  const ok = actual === digest;
-  if (!ok) manifestOk = false;
-  manifestDetails.push(`${name}: manifest=${digest} archive=${actual} ${ok ? 'OK' : 'MISMATCH'}`);
-}
-results.push(['2. every manifest.json digest matches the file in the archive', manifestOk, manifestDetails.join('\n   ')]);
-
-// 7c. Download Apple Root CA and verify the detached signature against it.
-const rootCaDerUrl = 'https://www.apple.com/appleca/AppleIncRootCertificate.cer';
-const rootCaDer = Buffer.from(await (await fetch(rootCaDerUrl)).arrayBuffer());
-const rootCaDerPath = path.join(verifyDir, 'AppleRootCA.cer');
-const rootCaPemPath = path.join(verifyDir, 'AppleRootCA.pem');
-writeFileSync(rootCaDerPath, rootCaDer);
-execFileSync('openssl', ['x509', '-inform', 'DER', '-in', rootCaDerPath, '-out', rootCaPemPath]);
-
-let sigOk = false;
-let sigOutput = '';
-try {
-  sigOutput = execFileSync(
-    'openssl',
-    [
-      'smime', '-verify', '-binary', '-inform', 'DER',
-      '-in', path.join(verifyDir, 'signature'),
-      '-content', path.join(verifyDir, 'manifest.json'),
-      '-CAfile', rootCaPemPath,
-      '-purpose', 'any',
-    ],
-    { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+  const pkpassTmp = path.join(tmpdir(), 'LoyaNexa-demo.pkpass');
+  rmSync(pkpassTmp, { force: true });
+  execFileSync(
+    'zip',
+    ['-X', pkpassTmp, 'pass.json', 'manifest.json', 'signature', 'icon.png', 'icon@2x.png', 'strip.png', 'strip@2x.png', 'strip@3x.png'],
+    { cwd: staging }
   );
-  sigOk = true;
-} catch (e) {
-  sigOutput = String(e.stdout || '') + String(e.stderr || '');
-}
-results.push(['1. signature verifies against Apple Root CA (-purpose any)', sigOk, sigOutput.trim() || '(openssl printed nothing on success)']);
+  console.log(`Zipped bundle -> ${pkpassTmp}`);
 
-// 7d. Cross-check pass.json identifiers against the certificate's own subject.
-const subject = execFileSync('openssl', ['x509', '-in', CERT_PATH, '-noout', '-subject'], { encoding: 'utf8' });
-const certPassTypeId = subject.match(/UID\s*=\s*([^,\n]+)/)?.[1]?.trim();
-const certTeamId = subject.match(/OU\s*=\s*([^,\n]+)/)?.[1]?.trim();
-const extractedPass = JSON.parse(readFileSync(path.join(verifyDir, 'pass.json'), 'utf8'));
-const idsOk = extractedPass.passTypeIdentifier === certPassTypeId && extractedPass.teamIdentifier === certTeamId;
-results.push([
-  '4. pass.json passTypeIdentifier/teamIdentifier match the cert UID/OU',
-  idsOk,
-  `cert subject: ${subject.trim()}\n   pass.json: passTypeIdentifier=${extractedPass.passTypeIdentifier} teamIdentifier=${extractedPass.teamIdentifier}\n   cert:      UID=${certPassTypeId} OU=${certTeamId}`,
-]);
+  // -------------------------------------------------------------------------
+  // 7. Verify before declaring success. Everything below re-reads the actual
+  //    archive on disk, not the in-memory buffers, so it catches zip/staging
+  //    bugs, not just logic bugs.
+  // -------------------------------------------------------------------------
+  console.log('\n== Verification ==');
+  const results = [];
 
-for (const [label, ok, detail] of results) {
-  console.log(`${ok ? 'PASS' : 'FAIL'} — ${label}`);
-  if (detail) console.log(`   ${detail}`);
-}
+  // 7a. unzip -l listing + "no enclosing directory" check.
+  const listing = execFileSync('unzip', ['-l', pkpassTmp], { encoding: 'utf8' });
+  console.log(listing);
+  const names = execFileSync('unzip', ['-Z1', pkpassTmp], { encoding: 'utf8' }).trim().split('\n');
+  const expectedMembers = Object.keys(files).concat(['manifest.json', 'signature']);
+  const missing = expectedMembers.filter((m) => !names.includes(m));
+  const hasDirPrefix = names.some((n) => n.includes('/'));
+  const listingOk = missing.length === 0 && !hasDirPrefix && names.length === expectedMembers.length;
+  results.push(['1. unzip -l shows all 8 members at the archive root', listingOk,
+    listingOk ? `members: ${names.join(', ')}` : `missing=${missing.join(',') || 'none'} hasDirPrefix=${hasDirPrefix} names=${names.join(',')}`]);
 
-const allOk = results.every(([, ok]) => ok);
-if (!allOk) {
-  console.error('\nBLOCKED: one or more verifications failed. Not copying anything to Downloads.');
-  process.exit(1);
-}
+  // 7b. Extract and re-hash every manifest entry against the actual archive contents.
+  const verifyDir = mkTmpDir('loyanexa-verify-');
+  execFileSync('unzip', ['-q', pkpassTmp, '-d', verifyDir]);
+  const extractedManifest = JSON.parse(readFileSync(path.join(verifyDir, 'manifest.json'), 'utf8'));
+  let manifestOk = true;
+  const manifestDetails = [];
+  for (const [name, digest] of Object.entries(extractedManifest)) {
+    const actual = createHash('sha1').update(readFileSync(path.join(verifyDir, name))).digest('hex');
+    const ok = actual === digest;
+    if (!ok) manifestOk = false;
+    manifestDetails.push(`${name}: manifest=${digest} archive=${actual} ${ok ? 'OK' : 'MISMATCH'}`);
+  }
+  results.push(['2. every manifest.json digest matches the file in the archive', manifestOk, manifestDetails.join('\n   ')]);
 
-// ---------------------------------------------------------------------------
-// 8. Ship it to ~/Downloads so it is trivially AirDroppable.
-// ---------------------------------------------------------------------------
-const dest = path.join(homedir(), 'Downloads', 'LoyaNexa-demo.pkpass');
-copyFileSync(pkpassTmp, dest);
-const size = readFileSync(dest).length;
+  // 7c. Download Apple Root CA, check it against the pinned digest, then
+  //     verify the detached signature against it. A tampered/substituted
+  //     download would otherwise be handed straight to -CAfile and used to
+  //     "verify" a signature it has no business trusting.
+  const rootCaDerUrl = 'https://www.apple.com/appleca/AppleIncRootCertificate.cer';
+  const rootCaDer = Buffer.from(await (await fetch(rootCaDerUrl)).arrayBuffer());
+  const rootCaDigest = createHash('sha256').update(rootCaDer).digest('hex');
+  if (rootCaDigest !== APPLE_ROOT_CA_SHA256) {
+    throw new Error(
+      `Apple Root CA download does not match the pinned SHA-256.\n` +
+        `  expected: ${APPLE_ROOT_CA_SHA256}\n` +
+        `  got:      ${rootCaDigest}\n` +
+        `Refusing to use it for signature verification.`
+    );
+  }
+  const rootCaDerPath = path.join(verifyDir, 'AppleRootCA.cer');
+  const rootCaPemPath = path.join(verifyDir, 'AppleRootCA.pem');
+  writeFileSync(rootCaDerPath, rootCaDer);
+  execFileSync('openssl', ['x509', '-inform', 'DER', '-in', rootCaDerPath, '-out', rootCaPemPath]);
 
-console.log(`\n== Done ==`);
-console.log(`Wrote ${dest} (${size} bytes)`);
-console.log(`
+  let sigOk = false;
+  let sigOutput = '';
+  try {
+    sigOutput = execFileSync(
+      'openssl',
+      [
+        'smime', '-verify', '-binary', '-inform', 'DER',
+        '-in', path.join(verifyDir, 'signature'),
+        '-content', path.join(verifyDir, 'manifest.json'),
+        '-CAfile', rootCaPemPath,
+        '-purpose', 'any',
+      ],
+      { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+    );
+    sigOk = true;
+  } catch (e) {
+    sigOutput = String(e.stdout || '') + String(e.stderr || '');
+  }
+  results.push(['3. signature verifies against Apple Root CA (-purpose any)', sigOk, sigOutput.trim() || '(openssl printed nothing on success)']);
+
+  // 7d. Cross-check pass.json identifiers against the certificate's own subject.
+  const subject = execFileSync('openssl', ['x509', '-in', CERT_PATH, '-noout', '-subject'], { encoding: 'utf8' });
+  const certPassTypeId = subject.match(/UID\s*=\s*([^,\n]+)/)?.[1]?.trim();
+  const certTeamId = subject.match(/OU\s*=\s*([^,\n]+)/)?.[1]?.trim();
+  const extractedPass = JSON.parse(readFileSync(path.join(verifyDir, 'pass.json'), 'utf8'));
+  const idsOk = extractedPass.passTypeIdentifier === certPassTypeId && extractedPass.teamIdentifier === certTeamId;
+  results.push([
+    '4. pass.json passTypeIdentifier/teamIdentifier match the cert UID/OU',
+    idsOk,
+    `cert subject: ${subject.trim()}\n   pass.json: passTypeIdentifier=${extractedPass.passTypeIdentifier} teamIdentifier=${extractedPass.teamIdentifier}\n   cert:      UID=${certPassTypeId} OU=${certTeamId}`,
+  ]);
+
+  for (const [label, ok, detail] of results) {
+    console.log(`${ok ? 'PASS' : 'FAIL'} — ${label}`);
+    if (detail) console.log(`   ${detail}`);
+  }
+
+  const allOk = results.every(([, ok]) => ok);
+  if (!allOk) {
+    console.error('\nBLOCKED: one or more verifications failed. Not copying anything to Downloads.');
+    return 1;
+  }
+
+  // ---------------------------------------------------------------------------
+  // 8. Ship it to ~/Downloads so it is trivially AirDroppable.
+  // ---------------------------------------------------------------------------
+  const dest = path.join(homedir(), 'Downloads', 'LoyaNexa-demo.pkpass');
+  copyFileSync(pkpassTmp, dest);
+  const size = readFileSync(dest).length;
+
+  console.log(`\n== Done ==`);
+  console.log(`Wrote ${dest} (${size} bytes)`);
+  console.log(`
 Get it onto the iPhone:
   1. AirDrop ${dest} to the iPhone (or attach it to yourself in Messages/Mail).
   2. Tap the file on the iPhone — it opens in Wallet automatically.
@@ -303,3 +330,16 @@ live stamp updates over APNs — it installs and displays but stays static.
 Wiring that up needs a public HTTPS endpoint and is sub-project 6's job.
 This demo proves signing, rendering and installation, not the update loop.
 `);
+  return 0;
+}
+
+let exitCode = 1;
+try {
+  exitCode = await buildAndVerify();
+} finally {
+  // Clean up every mkdtempSync directory regardless of outcome — staging
+  // and verifyDir otherwise accumulate under the OS tmpdir on every run,
+  // including every failed one.
+  for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true });
+}
+process.exit(exitCode);
