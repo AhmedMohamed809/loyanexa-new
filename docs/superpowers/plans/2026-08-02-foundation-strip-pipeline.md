@@ -212,7 +212,7 @@ The secret guard runs **before** the other checks so a leak fails fast and loudl
 
 ```bash
 git add package.json package-lock.json tsconfig.base.json packages/image .github
-git commit -m "chore: npm workspaces monorepo, strict tsconfig, CI"
+git commit -m "chore(repo): npm workspaces monorepo, strict tsconfig, CI"
 ```
 
 ---
@@ -2585,7 +2585,7 @@ npm ci && npm test
 
 ```bash
 git add README.md docs/superpowers/plans/2026-08-02-foundation-strip-pipeline.md
-git commit -m "docs: record sub-project 1 as built"
+git commit -m "docs(repo): record sub-project 1 as built"
 ```
 
 - [ ] **Step 5: Open the pull request**
