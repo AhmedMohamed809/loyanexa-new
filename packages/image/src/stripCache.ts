@@ -26,6 +26,15 @@ export function stripCacheKey(spec: StripSpec): string {
 }
 
 export interface StripStore {
+  /**
+   * Buffers returned from `get` must be treated as read-only by the caller.
+   * An implementation is free to return a shared reference rather than a
+   * copy — `MemoryStore` does exactly that — so mutating a returned buffer
+   * can corrupt what's cached. The planned Redis-backed store will always
+   * hand back a freshly allocated buffer (deserialised off the wire), so a
+   * mutation bug here would show up in one environment and silently vanish
+   * in the other; treating every returned buffer as immutable avoids that.
+   */
   get(key: string): Promise<Buffer | undefined>;
   set(key: string, value: Buffer): Promise<void>;
 }
@@ -63,11 +72,35 @@ export class MemoryStore implements StripStore {
   }
 }
 
+// Single-flight for concurrent misses on the same key. renderStrip is
+// synchronous CPU work (~55ms) with no yield point; without this, a
+// broadcast that makes every device poll at once would have N simultaneous
+// requests for the same uncached strip each render it, blocking the event
+// loop N times over and serving nothing meanwhile — exactly the cost the
+// cache exists to avoid. Scoped to this module, not the StripStore
+// interface: it's an in-process concern, not a storage concern.
+const inFlight = new Map<string, Promise<Buffer>>();
+
 export async function cachedStrip(store: StripStore, spec: StripSpec): Promise<Buffer> {
   const key = stripCacheKey(spec);
   const hit = await store.get(key);
   if (hit) return hit;
-  const png = renderStrip(spec);
-  await store.set(key, png);
-  return png;
+
+  const pending = inFlight.get(key);
+  if (pending) return pending;
+
+  const task = (async () => {
+    const png = renderStrip(spec);
+    await store.set(key, png);
+    return png;
+  })();
+  inFlight.set(key, task);
+  try {
+    return await task;
+  } finally {
+    // Always clear, on success or failure — otherwise a single thrown
+    // render poisons this key forever (every future call would await a
+    // promise that already rejected).
+    inFlight.delete(key);
+  }
 }
