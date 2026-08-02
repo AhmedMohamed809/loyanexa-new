@@ -12,6 +12,8 @@
 //   GET  /app            merchant card list
 //   GET  /cards/new, POST /cards, GET /cards/:id
 //   GET  /preview.png, GET /qr.png
+//   GET  /stamp           the merchant stamp screen (BUILD.md §8.15)
+//   POST /api/stamp        its write path — 24h anti-fraud guard (§9.6)
 //   GET  /:code           the customer enrol page (registered last — catch-all)
 //   POST /:code/pass       issues a real signed Apple Wallet pass
 //   GET  /health
@@ -31,43 +33,22 @@ import {
   type PassImages,
 } from '../../packages/pass/src/buildPass.ts';
 import { resolveAppleCredentials as resolveAppleCredentialPaths } from '../../packages/pass/src/credentials.ts';
+import { t, arabicDigits, type Lang } from '../../packages/i18n/src/index.ts';
+import { loadEnvFile } from './env.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
 
-// ---------------------------------------------------------------------------
-// .env — parsed by hand, no dotenv dependency. Sets process.env values that
-// aren't already set (so a real shell env always wins). Never logs values.
-// ---------------------------------------------------------------------------
-function loadEnvFile(envPath: string): void {
-  let text: string;
-  try {
-    text = fs.readFileSync(envPath, 'utf8');
-  } catch {
-    return; // no .env is fine; DATABASE_URL etc. may already be in the shell env
-  }
-  for (const rawLine of text.split('\n')) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith('#')) continue;
-    const eq = line.indexOf('=');
-    if (eq === -1) continue;
-    const key = line.slice(0, eq).trim();
-    let value = line.slice(eq + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    if (!(key in process.env)) process.env[key] = value;
-  }
-}
 loadEnvFile(path.join(ROOT, '.env'));
 
 // ---------------------------------------------------------------------------
 // Reuse the real packages — this is where design tokens and rendering come
 // from. Native TS import (no build step): Node strips the erasable TS
-// syntax these packages are written in.
+// syntax these packages are written in. Dynamic (not static) import here,
+// after loadEnvFile() above has run: @loyanexa/db constructs its
+// PrismaClient — reading process.env.DATABASE_URL — the moment its module
+// body executes, so that must happen after the .env values are in place,
+// not at static-import hoist time.
 // ---------------------------------------------------------------------------
 const { prisma } = await import('../../packages/db/src/index.ts');
 const {
@@ -82,6 +63,9 @@ const {
   fillDisc,
   encodePNG,
 } = await import('../../packages/image/src/index.ts');
+// stamp.ts itself statically imports @loyanexa/db — dynamic here for the
+// same reason as the block above (it must not run before loadEnvFile()).
+const { applyStamp } = await import('./stamp.ts');
 
 // PORT: containers (Fly.io included) inject the port to listen on via
 // $PORT and expect the process to bind it — 8080 is Fly's own convention
@@ -200,6 +184,63 @@ function sendPng(res: http.ServerResponse, buffer: Buffer): void {
     'Cache-Control': 'no-store',
   });
   res.end(buffer);
+}
+
+function sendJson(res: http.ServerResponse, status: number, body: unknown): void {
+  const json = JSON.stringify(body);
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(json),
+    'Cache-Control': 'no-store',
+  });
+  res.end(json);
+}
+
+/** Reads and caps a JSON request body. `{}` for an empty body — POST /api/stamp treats a missing `code` as a 400, not a parse error. */
+function readJsonBody(req: http.IncomingMessage, maxBytes = 16 * 1024): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        const err: HttpError = Object.assign(new Error('request body too large'), {
+          statusCode: 413,
+        });
+        reject(err);
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      const raw = Buffer.concat(chunks).toString('utf8');
+      if (!raw.trim()) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(raw));
+      } catch {
+        const err: HttpError = Object.assign(new Error('invalid JSON body'), { statusCode: 400 });
+        reject(err);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+/** Reads the `lang` cookie (BUILD.md §13 — language persists in cookies, never localStorage, so the server can read it). Defaults to `ar`, matching Card/Merchant's own default locale. */
+function resolveLang(req: http.IncomingMessage): Lang {
+  const header = req.headers.cookie;
+  if (!header) return 'ar';
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() !== 'lang') continue;
+    return part.slice(eq + 1).trim() === 'en' ? 'en' : 'ar';
+  }
+  return 'ar';
 }
 
 function sendNotFound(res: http.ServerResponse, message = 'Not found'): void {
@@ -484,6 +525,7 @@ function layout(title: string, bodyHtml: string): string {
 <body>
 <header class="top">
   <a href="/app">LoyaNexa · Merchant</a>
+  <a class="btn" href="/stamp" style="padding:8px 18px;font-size:13px;">Stamp a card</a>
 </header>
 <main>
 ${bodyHtml}
@@ -764,7 +806,10 @@ async function handleCardDetail(res: http.ServerResponse, id: string): Promise<v
   const body = `
     <div class="row" style="margin-bottom:18px;">
       <h1>${escapeHtml(card.name)}</h1>
-      <a class="btn secondary" href="/app">All cards</a>
+      <div>
+        <a class="btn" href="/stamp">Stamp a card</a>
+        <a class="btn secondary" href="/app">All cards</a>
+      </div>
     </div>
     <div class="panel">
       <div class="preview-panel" style="margin-bottom:20px;">
@@ -1085,6 +1130,309 @@ function handleQrPng(res: http.ServerResponse, query: URLSearchParams): void {
 }
 
 // ---------------------------------------------------------------------------
+// Route: GET /stamp — the merchant stamp screen (BUILD.md §8.15). Our
+// replacement for the competitor's scanner app: a browser page, opened on
+// whatever phone or tablet is at the counter, that scans the QR *inside a
+// customer's wallet pass* (the "Card QR" in BUILD.md §7.3's table — it
+// encodes the pass `serial`, never the printed, static "Join QR" that the
+// card detail page shows). Manual entry (serial or shortCode) works fully
+// independently of the camera path — see the inline script's comment on
+// the QR decode interface for why the camera path itself is honestly a
+// stub right now. Dark brand tokens per BUILD.md §3 (2026-08-03 revision):
+// canvas #0F172A, paper #1C2A42, accent #F28C38, Alexandria typeface.
+// ---------------------------------------------------------------------------
+function renderStampScreen(): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stamp a card · LoyaNexa</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Alexandria:wght@400;600;700;800&display=swap">
+<style>
+  :root {
+    --canvas: #0F172A;
+    --paper: #1C2A42;
+    --raise: #22314C;
+    --accent: #F28C38;
+    --accent-hover: #E67E22;
+    --on-accent: #0F172A;
+    --ink: #FFFFFF;
+    --ink-2: #CBD5E1;
+    --ink-3: #94A3B8;
+    --line: rgba(255,255,255,.10);
+    --green: #22C55E;
+    --red: #EF4444;
+    --amber: #F7B267;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    background: var(--canvas);
+    color: var(--ink);
+    font-family: 'Alexandria', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+  header.top {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 20px; border-bottom: 1px solid var(--line);
+  }
+  header.top a.back { color: var(--ink-2); text-decoration: none; font-weight: 600; font-size: 15px; }
+  header.top span.brand { font-weight: 700; }
+  main { max-width: 480px; margin: 0 auto; padding: 20px 20px 56px; }
+  h1 { font-size: 22px; margin: 4px 0 6px; }
+  p.sub { color: var(--ink-3); font-size: 14px; margin: 0 0 18px; line-height: 1.5; }
+  .notice {
+    background: rgba(242,140,56,.10); border: 1px solid rgba(242,140,56,.28); color: var(--accent);
+    border-radius: 14px; padding: 12px 16px; margin-bottom: 18px; font-size: 13px; line-height: 1.5;
+  }
+  .panel { background: var(--paper); border: 1px solid var(--line); border-radius: 18px; padding: 20px; margin-bottom: 18px; }
+  h2 { font-size: 13px; margin: 0 0 12px; color: var(--ink-2); text-transform: uppercase; letter-spacing: .06em; }
+  .camera-wrap { position: relative; border-radius: 14px; overflow: hidden; background: #000; aspect-ratio: 4 / 3; }
+  video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .camera-status { margin-top: 10px; font-size: 13px; color: var(--ink-3); text-align: center; min-height: 18px; }
+  form.manual .field { margin-bottom: 14px; }
+  label { display: block; font-weight: 600; font-size: 13px; margin-bottom: 6px; color: var(--ink-2); }
+  input[type="text"] {
+    width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 16px;
+    font-size: 18px; background: var(--raise); color: var(--ink); font-family: inherit;
+    text-transform: uppercase;
+  }
+  input[type="text"]::placeholder { color: var(--ink-3); text-transform: none; }
+  button.stamp-btn {
+    display: block; width: 100%; border: none; border-radius: 100px; padding: 18px 20px;
+    font-size: 17px; font-weight: 700; color: var(--on-accent); background: var(--accent);
+    cursor: pointer; min-height: 56px; font-family: inherit;
+  }
+  button.stamp-btn:active { background: var(--accent-hover); }
+  button.stamp-btn:disabled { opacity: .6; cursor: default; }
+  #result {
+    display: none; border-radius: 14px; padding: 18px; margin-bottom: 18px;
+    font-size: 18px; font-weight: 700; text-align: center; line-height: 1.4;
+  }
+  #result.success { display: block; background: rgba(34,197,94,.14); border: 1px solid rgba(34,197,94,.4); color: var(--green); }
+  #result.error { display: block; background: rgba(239,68,68,.14); border: 1px solid rgba(247,178,103,.4); color: var(--amber); }
+</style>
+</head>
+<body>
+<header class="top">
+  <a class="back" href="/app">&larr; All cards</a>
+  <span class="brand">LoyaNexa · Stamp</span>
+</header>
+<main>
+  <h1>Stamp a card</h1>
+  <p class="sub">Scan the QR inside the customer's wallet pass, or type their code below.</p>
+  <div class="notice">No staff PIN yet in this local demo — anyone who can reach this screen can stamp a card. PIN lock arrives with Firebase auth (sub-project 4).</div>
+
+  <div id="result" role="status" aria-live="polite"></div>
+
+  <div class="panel">
+    <h2>Camera</h2>
+    <div class="camera-wrap">
+      <video id="video" playsinline muted></video>
+    </div>
+    <p class="camera-status" id="cameraStatus">Starting camera…</p>
+  </div>
+
+  <div class="panel">
+    <h2>Manual entry</h2>
+    <form class="manual" id="manualForm">
+      <div class="field">
+        <label for="manualCode">Serial or short code</label>
+        <input type="text" id="manualCode" name="code" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="e.g. AB12CD34" required>
+      </div>
+      <button class="stamp-btn" type="submit" id="manualSubmit">Stamp</button>
+    </form>
+  </div>
+</main>
+<canvas id="canvas" style="display:none;"></canvas>
+<script>
+(function () {
+  'use strict';
+
+  var resultEl = document.getElementById('result');
+  var video = document.getElementById('video');
+  var canvas = document.getElementById('canvas');
+  var ctx = canvas.getContext('2d', { willReadFrequently: true });
+  var cameraStatus = document.getElementById('cameraStatus');
+  var manualForm = document.getElementById('manualForm');
+  var manualCode = document.getElementById('manualCode');
+  var manualSubmit = document.getElementById('manualSubmit');
+
+  // -----------------------------------------------------------------------
+  // QR decode interface — BUILD.md §8.15 requires a WASM QR decoder
+  // (zxing-wasm / jsQR) because BarcodeDetector is absent on iOS/iPadOS
+  // Safari, every Firefox, and Chrome on Windows/Linux — exactly the
+  // "café stamping on an iPad" scenario this screen exists to serve, so
+  // BarcodeDetector is deliberately not used here, even as a fast path.
+  //
+  // This repo takes no new npm dependencies and has no build step to vendor
+  // a .wasm asset through, so no decoder is wired in below — HONEST LIMIT:
+  // decode() always returns null. This interface is the seam a real one
+  // plugs into: swap the body of decode() for a real WASM QR reader and
+  // nothing else on this page needs to change. The camera loop already
+  // captures real frames and hands them to decode() at ~6fps below, exactly
+  // as it would with a working decoder wired in.
+  //
+  // Manual entry (below) does not depend on this and is fully working.
+  // -----------------------------------------------------------------------
+  var qrDecoder = {
+    decode: function (_imageData) {
+      return null; // TODO: wire a real WASM QR decoder in here
+    }
+  };
+
+  var busy = false;
+  var lastScanAt = 0;
+
+  function showResult(ok, message) {
+    resultEl.className = ok ? 'success' : 'error';
+    resultEl.textContent = (ok ? '\\u2713 ' : '\\u26A0 ') + message;
+  }
+
+  function setBusy(next) {
+    busy = next;
+    manualSubmit.disabled = next;
+  }
+
+  function submitCode(code) {
+    if (busy) return;
+    setBusy(true);
+    fetch('/api/stamp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: code })
+    })
+      .then(function (res) {
+        return res.json().then(function (data) { return { ok: res.ok, data: data }; });
+      })
+      .then(function (result) {
+        var message = result.data && result.data.message ? result.data.message : 'Something went wrong.';
+        showResult(result.ok, message);
+      })
+      .catch(function () {
+        showResult(false, 'Network error — check the connection and try again.');
+      })
+      .then(function () {
+        setBusy(false);
+      });
+  }
+
+  manualForm.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var value = manualCode.value.trim();
+    if (!value) return;
+    submitCode(value);
+    manualForm.reset();
+    manualCode.focus();
+  });
+
+  function scanLoop(ts) {
+    if (video.readyState >= video.HAVE_ENOUGH_DATA && ts - lastScanAt > 150) {
+      lastScanAt = ts;
+      var w = video.videoWidth, h = video.videoHeight;
+      if (w && h) {
+        canvas.width = w;
+        canvas.height = h;
+        ctx.drawImage(video, 0, 0, w, h);
+        var imageData = ctx.getImageData(0, 0, w, h);
+        var code = qrDecoder.decode(imageData);
+        if (code) submitCode(code);
+      }
+    }
+    requestAnimationFrame(scanLoop);
+  }
+
+  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+      .then(function (stream) {
+        video.srcObject = stream;
+        return video.play();
+      })
+      .then(function () {
+        cameraStatus.textContent = 'Camera live. Auto-detect is not wired up yet — use manual entry below.';
+        requestAnimationFrame(scanLoop);
+      })
+      .catch(function () {
+        cameraStatus.textContent = 'Camera unavailable — use manual entry below.';
+      });
+  } else {
+    cameraStatus.textContent = 'Camera not supported on this browser — use manual entry below.';
+  }
+})();
+</script>
+</body>
+</html>`;
+}
+
+function handleStampScreen(res: http.ServerResponse): void {
+  sendHtml(res, 200, renderStampScreen());
+}
+
+// ---------------------------------------------------------------------------
+// Route: POST /api/stamp — the stamp screen's write path (BUILD.md §8.15,
+// §9.6). Accepts { code: string } — either the pass serial encoded in the
+// customer's wallet-card QR, or the human shortCode typed at the manual
+// fallback. The 24-hour anti-fraud rule is enforced inside applyStamp()
+// (apps/demo/stamp.ts), server-side, before any write. Every response
+// body — success or error — carries a `message` already translated per the
+// `lang` cookie (BUILD.md §13: server error messages translated too).
+// ---------------------------------------------------------------------------
+async function handleApiStamp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const lang = resolveLang(req);
+
+  let body: unknown;
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    const status = isHttpError(err) ? err.statusCode : 400;
+    sendJson(res, status, { ok: false, message: t(lang, 'stampInputRequired') });
+    return;
+  }
+
+  const code =
+    typeof body === 'object' &&
+    body !== null &&
+    'code' in body &&
+    typeof (body as { code: unknown }).code === 'string'
+      ? (body as { code: string }).code.trim()
+      : '';
+
+  if (!code) {
+    sendJson(res, 400, { ok: false, message: t(lang, 'stampInputRequired') });
+    return;
+  }
+
+  const outcome = await applyStamp(code);
+
+  if (!outcome.ok) {
+    if (outcome.reason === 'not_found') {
+      sendJson(res, 404, { ok: false, message: t(lang, 'passNotFound') });
+      return;
+    }
+    sendJson(res, 429, { ok: false, message: t(lang, 'stampTooSoon') });
+    return;
+  }
+
+  const counts = { stamps: arabicDigits(outcome.stamps, lang), goal: arabicDigits(outcome.goal, lang) };
+  const message = outcome.rewardEarned
+    ? `${t(lang, 'stampSuccess', counts)} · ${t(lang, 'rewardEarned')}`
+    : t(lang, 'stampSuccess', counts);
+
+  sendJson(res, 200, {
+    ok: true,
+    serial: outcome.serial,
+    stamps: outcome.stamps,
+    goal: outcome.goal,
+    totalStamps: outcome.totalStamps,
+    rewards: outcome.rewards,
+    rewardEarned: outcome.rewardEarned,
+    message,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Route: GET /health — for Fly.io's HTTP health checks (and anything else
 // probing liveness). No DB round-trip: it should stay cheap and answer even
 // if Postgres is momentarily unreachable, so a transient DB hiccup doesn't
@@ -1215,6 +1563,17 @@ const server = http.createServer(async (req, res) => {
     const cardId = cardMatch?.[1];
     if (req.method === 'GET' && cardId !== undefined) {
       await handleCardDetail(res, cardId);
+      return;
+    }
+    // /stamp and /api/stamp are literal paths and must be registered here —
+    // above the `GET /:code` catch-all below — or the catch-all would
+    // swallow them (BUILD.md §12 / §18 item 10).
+    if (req.method === 'GET' && pathname === '/stamp') {
+      handleStampScreen(res);
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/api/stamp') {
+      await handleApiStamp(req, res);
       return;
     }
 

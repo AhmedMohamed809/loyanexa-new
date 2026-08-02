@@ -6,4 +6,7 @@ export const en = {
   cardNotFound: 'That card could not be found.',
   cardExpired: 'This card has expired.',
   serverError: 'Something went wrong. Please try again.',
+  stampSuccess: 'Stamped — {stamps}/{goal}',
+  passNotFound: 'We could not find a card for that code.',
+  stampInputRequired: 'Enter a serial number or short code.',
 } as const;

@@ -11,4 +11,7 @@ export const ar: Record<keyof typeof en, string> = {
   cardNotFound: 'تعذر العثور على هذه البطاقة.',
   cardExpired: 'انتهت صلاحية هذه البطاقة.',
   serverError: 'حدث خطأ ما. يرجى المحاولة مرة أخرى.',
+  stampSuccess: 'تم الختم — {stamps}/{goal}',
+  passNotFound: 'تعذر العثور على بطاقة بهذا الرمز.',
+  stampInputRequired: 'أدخل الرقم التسلسلي أو الرمز المختصر.',
 };
