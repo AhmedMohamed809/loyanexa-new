@@ -10,7 +10,7 @@ jobs:
       - run: npm ci
       - name: Secrets must never be tracked
         run: |
-          if git ls-files | grep -E '(^certs/|\.env$|\.pem$|\.p8$|\.cer$|service-account.*\.json$)'; then
+          if git ls-files | grep -E '(^certs/|\.env$|\.pem$|\.p8$|\.cer$|\.p12$|\.mobileprovision$|\.pkpass$|service-account.*\.json$)'; then
             echo "::error::secret material is tracked in git"; exit 1
           fi
       - run: npm run typecheck
