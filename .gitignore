@@ -10,6 +10,9 @@ service-account*.json
 .env.*
 !.env.example
 
+# ---- generated pass bundles ----
+*.pkpass
+
 # ---- databases ----
 *.db
 *.db-shm

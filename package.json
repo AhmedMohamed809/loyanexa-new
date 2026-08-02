@@ -1,0 +1,16 @@
+{
+  "name": "loyanexa",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*"],
+  "engines": { "node": ">=25" },
+  "scripts": {
+    "postinstall": "prisma generate --schema packages/db/prisma/schema.prisma",
+    "typecheck": "tsc --noEmit -p tsconfig.base.json",
+    "test": "node --test 'packages/*/test/*.test.ts'",
+    "test:i18n": "node scripts/check-i18n.mjs",
+    "bench": "node packages/image/bench/strip.bench.mjs",
+    "serve:pass": "node scripts/serve-pass.mjs"
+  },
+  "devDependencies": { "typescript": "^5.7.0", "@types/node": "^25" }
+}

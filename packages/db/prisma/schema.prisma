@@ -1,0 +1,131 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Merchant {
+  id           String    @id @default(cuid())
+  firebaseUid  String    @unique
+  email        String    @unique
+  name         String
+  locale       String    @default("ar")
+  plan         Plan      @default(STARTER)
+  stripeCustId String?
+  subStatus    String    @default("trialing")
+  trialEndsAt  DateTime?
+  cards        Card[]
+  createdAt    DateTime  @default(now())
+
+  @@index([firebaseUid])
+}
+
+model Card {
+  id            String    @id @default(cuid())
+  merchantId    String
+  merchant      Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  slot          Int
+  linkCode      Int       @unique
+  linkAlias     String?   @unique
+  shortCode     String    @unique
+  name          String
+  logoIconUrl   String?
+  logoStampHash String?
+  coverUrl      String?
+  coverHash     String?
+  stampsGoal    Int       @default(8)
+  starterStamps Int       @default(0)
+  stampShape    String    @default("circle")
+  customStamps  Boolean   @default(false)
+  bgColor       String
+  fgColor       String
+  stampActive   String
+  stampInactive String
+  labelStamps   String    @default("")
+  labelRewards  String    @default("")
+  lang          String    @default("ar")
+  expiryType    String    @default("unlimited")
+  expiryDays    Int?
+  expiryDate    DateTime?
+  rewardText    String
+  formFields    Json      @default("[\"name\",\"phone\"]")
+  locations     Json      @default("[]")
+  active        Boolean   @default(false)
+  passes        Pass[]
+  createdAt     DateTime  @default(now())
+
+  @@unique([merchantId, slot])
+  @@index([linkCode])
+  @@index([linkAlias])
+}
+
+model Pass {
+  id           String    @id @default(cuid())
+  serial       String    @unique
+  shortCode    String    @unique
+  cardId       String
+  card         Card      @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  merchantId   String
+  authToken    String
+  custName     String    @default("")
+  custEmail    String    @default("")
+  custPhone    String    @default("")
+  custBirthday DateTime?
+  stamps       Int       @default(0)
+  totalStamps  Int       @default(0)
+  rewards      Int       @default(0)
+  message      String    @default("")
+  platform     String    @default("")
+  lastStampAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  devices      Device[]
+
+  @@index([cardId])
+  @@index([merchantId, lastStampAt])
+  @@index([updatedAt])
+}
+
+model Device {
+  deviceId   String
+  passSerial String
+  pushToken  String
+  pass       Pass   @relation(fields: [passSerial], references: [serial], onDelete: Cascade)
+
+  @@id([deviceId, passSerial])
+  @@index([passSerial])
+}
+
+model StampEvent {
+  id         BigInt    @id @default(autoincrement())
+  merchantId String
+  cardId     String
+  serial     String
+  kind       EventKind
+  source     String    @default("browser")
+  at         DateTime  @default(now())
+
+  @@index([merchantId, at])
+  @@index([cardId, kind])
+}
+
+model LinkCounter {
+  id    Int @id @default(1)
+  value Int @default(10000)
+}
+
+enum Plan {
+  STARTER
+  GROWTH
+  PRO
+}
+
+enum EventKind {
+  ENROLL
+  STAMP
+  REWARD
+  REDEEM
+}

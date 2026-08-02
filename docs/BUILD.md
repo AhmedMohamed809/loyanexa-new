@@ -12,7 +12,7 @@ to see every screen behave before writing a line of production code.
 
 ## 0 · The constraint that defines the product
 
-**Nobody installs an app. Not the customer, not the merchant.**
+**Nobody is ever *required* to install an app. Not the customer, not the merchant.**
 
 - The **customer** scans a printed QR → a web page opens → one tap → the card is in the
   wallet already on their phone.
@@ -20,7 +20,16 @@ to see every screen behave before writing a line of production code.
 
 Competitors in this category require merchants to download a scanner app. We do not.
 Anywhere a competitor flow says "download the app", ours says **"open the stamp screen"**.
-Reject any proposal that introduces a mobile app.
+
+**Reject any proposal that makes an app mandatory for either party.** A merchant must
+always be able to run the entire business from a browser, on any device, with nothing
+installed. That is the differentiator and it is not negotiable.
+
+An **optional** merchant app is permitted, and planned as sub-project 8 — a Flutter app
+that opens straight to the camera after login, for high-volume merchants who prefer it.
+It is an addition for convenience, never a replacement, and never a prerequisite. If the
+browser stamp screen ever stops being fully sufficient on its own, the product has lost
+the thing it was built on.
 
 **Corollary:** the customer enrol page stays plain HTML with no framework. It is one form
 opened on café wifi, and enrolment rate is the metric the whole business rests on.
@@ -294,7 +303,16 @@ Stamps by weekday · visits over time · best sellers · loyalty-driven revenue 
 **top customers** table. Empty states read "no data".
 
 ### 8.15 Stamp screen — our replacement for their app
-Browser camera scanner (`BarcodeDetector`) with a manual paste fallback.
+Browser camera scanner over `getUserMedia`, decoding frames with a **WASM QR decoder**
+(`zxing-wasm` or `jsQR`, ~40 KB), with a manual paste fallback.
+
+> **Do not rely on `BarcodeDetector`.** Measured against MDN compat data: it works on
+> Chrome Android and Chrome macOS/ChromeOS only. It is **absent on iOS and iPadOS**
+> (Safari hides it behind a `Shape Detection API` preference), absent in every Firefox,
+> and absent in Chrome on Windows and Linux. A café stamping on an iPad — a common
+> setup — would fall through to typing codes by hand, which is worse than the competitor
+> app we are displacing. `BarcodeDetector` may be used as a fast path where present, but
+> the WASM decoder is the one that must always work.
 Result banner: green on success (`✓ Stamped — 3/8`), amber-red on the 24h guard.
 Opened by staff with a PIN.
 
@@ -710,14 +728,22 @@ At 1,000 merchants × £25 that is £25,000 revenue — infrastructure under 0.2
 
 ---
 
-## 19 · Already proven — port, do not rebuild
+## 19 · Designs settled — but the code does **not** exist
+
+> **Correction, 2026-08-02.** This section previously read "already proven — port, do not
+> rebuild". That is wrong and it misled planning. **None of the code below exists in this
+> repository or anywhere else.** The prototype contains only a canvas `qrMatrix`/`drawQR`.
+> Treat every item as a from-scratch build whose *design* is settled, not as an asset to
+> copy. Estimates that assume porting will be badly wrong.
 
 - Pure-JS PNG encoder for stamp strips, including logo-as-stamp circular masking
-- QR encoder verified **byte-identical** to a reference implementation across 65 tests
+- QR encoder — must be verified byte-identical against a reference implementation
 - Correct `pass.json` field layout
 - The four PassKit web-service endpoints
 - 24-hour anti-fraud limit
 - Short-link routing with rename support
 - Bilingual dictionaries with verified key parity, RTL layout, Arabic-Indic numerals
-- Browser camera stamping via `BarcodeDetector` with manual-entry fallback
-- **The complete flow, end-to-end tested — 71 assertions passing** (see `loyanexa-mvp.html`)
+- Browser camera stamping — see §8.15; **not** `BarcodeDetector`, which is unavailable on
+  iOS, Firefox and Windows Chrome
+- The complete flow as a **click-through prototype** (`prototype/index.html`) — a
+  behavioural reference, not tested production code
