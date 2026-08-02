@@ -189,6 +189,15 @@ export function buildPass(
     }
     writeFileSync(path.join(staging, 'manifest.json'), JSON.stringify(manifest));
 
+    // Do NOT add `-noattr` here. It strips the CMS signed attributes
+    // (contentType, messageDigest, signingTime) that Apple's PassKit
+    // verifier requires. `openssl smime -verify` accepts the signature
+    // either way, so that command cannot catch a regression here — a pass
+    // signed with `-noattr` verifies locally and is then rejected by iOS
+    // with the generic "Sorry, your Pass cannot be installed to Passbook
+    // at this time.", with no other diagnostic. See
+    // packages/pass/test/buildPass.test.ts, which asserts on the ASN.1
+    // structure of `signature` instead of just verifying it.
     execFileSync('openssl', [
       'smime', '-binary', '-sign',
       '-certfile', credentials.wwdrPath,
@@ -197,7 +206,6 @@ export function buildPass(
       '-in', path.join(staging, 'manifest.json'),
       '-outform', 'DER',
       '-out', path.join(staging, 'signature'),
-      '-noattr',
     ]);
 
     const archivePath = path.join(staging, 'archive.pkpass');

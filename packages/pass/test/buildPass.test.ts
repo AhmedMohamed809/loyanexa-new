@@ -125,6 +125,38 @@ test('a built pass has all eight members at the archive root, matching manifest 
       { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
     );
     assert.ok(sig !== undefined);
+
+    // 5. The signature carries the CMS signed attributes (contentType,
+    //    messageDigest, ...). This is the check `openssl smime -verify`
+    //    above CANNOT make: -verify happily accepts a signature that was
+    //    produced with `-noattr` and is missing every signed attribute —
+    //    it only checks the raw signature bytes are cryptographically
+    //    valid, not that PassKit's required attribute set is present.
+    //    A pass signed without signed attributes verifies fine right here
+    //    and is then rejected by iOS with the generic, useless "Sorry,
+    //    your Pass cannot be installed to Passbook at this time." — with
+    //    no indication that the signed attributes are the problem. Assert
+    //    on the actual ASN.1 structure so this regresses loudly instead of
+    //    silently costing someone an evening again.
+    const signatureAsn1 = execFileSync(
+      'openssl',
+      ['asn1parse', '-inform', 'DER', '-in', path.join(outDir, 'signature')],
+      { encoding: 'utf8' }
+    );
+    for (const requiredAttribute of ['contentType', 'messageDigest']) {
+      assert.ok(
+        signatureAsn1.includes(requiredAttribute),
+        `signature is missing the CMS signed attribute "${requiredAttribute}" ` +
+          '(openssl asn1parse output did not mention it). A signature without ' +
+          'signed attributes is rejected by iOS Wallet with a generic, ' +
+          'unhelpful "cannot be installed" error and no other diagnostic — ' +
+          'this almost always means `-noattr` crept back into the ' +
+          '`openssl smime -sign` call in buildPass.ts. Do not remove this ' +
+          'assertion in favor of just `smime -verify`: -verify accepts both ' +
+          'the broken (-noattr) and fixed signature, which is exactly how ' +
+          'this bug reached iOS undetected in the first place.'
+      );
+    }
   } finally {
     rmSync(certDir, { recursive: true, force: true });
     rmSync(outDir, { recursive: true, force: true });
