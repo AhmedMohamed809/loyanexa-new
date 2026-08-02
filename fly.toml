@@ -1,0 +1,37 @@
+# fly.toml — LoyaNexa merchant demo
+#
+# The business is UK-registered (London), so `lhr` is primary_region rather
+# than a US default. This app has no build-time secrets: Apple Wallet
+# credentials arrive as runtime env vars via `fly secrets set` (see
+# docs/DEPLOY.md) and are read by packages/pass/src/credentials.ts, never
+# baked into the image.
+
+app = "loyanexa-demo"
+primary_region = "lhr"
+
+[build]
+
+[env]
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  # A demo app has no business staying warm around the clock — let it scale
+  # to zero machines when nobody's hitting it, so an idle demo costs nothing.
+  min_machines_running = 0
+  processes = ["app"]
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "5s"
+    method = "GET"
+    path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  processes = ["app"]

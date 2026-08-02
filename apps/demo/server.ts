@@ -21,6 +21,7 @@ import {
   type PassContent,
   type PassImages,
 } from '../../packages/pass/src/buildPass.ts';
+import { resolveAppleCredentials as resolveAppleCredentialPaths } from '../../packages/pass/src/credentials.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -73,7 +74,24 @@ const {
   encodePNG,
 } = await import('../../packages/image/src/index.ts');
 
-const PORT = 8088;
+// PORT: containers (Fly.io included) inject the port to listen on via
+// $PORT and expect the process to bind it — 8080 is Fly's own convention
+// and a sane default for local runs too. An invalid/non-numeric value
+// falls back to the default rather than crashing the server.
+function resolvePort(): number {
+  const raw = process.env.PORT;
+  const n = raw ? Number.parseInt(raw, 10) : NaN;
+  return Number.isInteger(n) && n > 0 && n <= 65535 ? n : 8080;
+}
+const PORT = resolvePort();
+
+// PUBLIC_BASE_URL: set in production (Fly.io) to the app's public HTTPS
+// origin, e.g. https://loyanexa-demo.fly.dev. When set, every enrol link
+// and QR code uses it. Locally, where there is no public origin, we fall
+// back to the machine's own LAN IP so the QR still resolves to something
+// reachable from an iPhone on the same network. Getting this wrong means a
+// deployed QR encodes a LAN address nobody outside the container can reach.
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL?.trim().replace(/\/+$/, '') || undefined;
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -121,6 +139,8 @@ function findLanUrl(port: number): string {
   return `http://localhost:${port}`;
 }
 const LAN_URL = findLanUrl(PORT);
+/** The origin every generated enrol link / QR code should use. */
+const PUBLIC_URL = PUBLIC_BASE_URL ?? LAN_URL;
 
 /** An Error carrying an HTTP status code, as produced by readUrlencodedBody. */
 type HttpError = Error & { statusCode: number };
@@ -217,9 +237,16 @@ function sendEnrolNotFound(res: http.ServerResponse, code: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// Apple Wallet credentials — read from .env at call time (never inlined,
-// copied or committed), and only when a pass is actually being issued. A
+// Apple Wallet credentials — resolved at call time (never inlined, copied
+// or committed), and only when a pass is actually being issued. A
 // misconfigured/missing cert should not take down the rest of the demo.
+//
+// The cert/key/WWDR material itself comes from @loyanexa/pass's
+// credentials.ts, which prefers PEM content from APPLE_SIGNER_CERT /
+// APPLE_SIGNER_KEY / APPLE_WWDR_CERT (how Fly.io secrets arrive) and falls
+// back to the APPLE_*_PATH files (how local dev has always worked). Only
+// teamId/passTypeId are read here — they're plain identifiers, not secrets
+// that need a files-vs-env split.
 // ---------------------------------------------------------------------------
 function resolveAppleCredentials(): PassCredentials {
   const need = (key: string): string => {
@@ -227,17 +254,12 @@ function resolveAppleCredentials(): PassCredentials {
     if (!v) throw new Error(`.env is missing ${key}`);
     return v;
   };
-  const certPath = path.resolve(ROOT, need('APPLE_SIGNER_CERT_PATH'));
-  const keyPath = path.resolve(ROOT, need('APPLE_SIGNER_KEY_PATH'));
-  const wwdrPath = path.resolve(ROOT, need('APPLE_WWDR_CERT_PATH'));
-  for (const p of [certPath, keyPath, wwdrPath]) {
-    if (!fs.existsSync(p)) throw new Error(`missing cert file: ${p}`);
-  }
+  const { signerCertPath, signerKeyPath, wwdrPath } = resolveAppleCredentialPaths(ROOT);
   return {
     teamId: need('APPLE_TEAM_ID'),
     passTypeId: need('APPLE_PASS_TYPE_ID'),
-    certPath,
-    keyPath,
+    certPath: signerCertPath,
+    keyPath: signerKeyPath,
     wwdrPath,
   };
 }
@@ -718,7 +740,7 @@ async function handleCardDetail(res: http.ServerResponse, id: string): Promise<v
     return;
   }
 
-  const enrolUrl = `${LAN_URL}/${card.linkCode}`;
+  const enrolUrl = `${PUBLIC_URL}/${card.linkCode}`;
   const stripQs = new URLSearchParams({
     goal: String(card.stampsGoal),
     filled: String(defaultFilled(card.stampsGoal)),
@@ -750,7 +772,11 @@ async function handleCardDetail(res: http.ServerResponse, id: string): Promise<v
       <div class="qr-wrap">
         <img src="/qr.png?${qrQs.toString()}" alt="QR code for ${escapeHtml(enrolUrl)}">
       </div>
-      <p class="muted" style="margin-top:14px;">Open this page from an iPhone on the same network — the QR points at ${escapeHtml(LAN_URL)}.</p>
+      <p class="muted" style="margin-top:14px;">${
+        PUBLIC_BASE_URL
+          ? `The QR points at ${escapeHtml(PUBLIC_URL)}.`
+          : `Open this page from an iPhone on the same network — the QR points at ${escapeHtml(PUBLIC_URL)}.`
+      }</p>
     </div>
   `;
   sendHtml(res, 200, layout(card.name, AUTH_BANNER + body));
@@ -1049,6 +1075,22 @@ function handleQrPng(res: http.ServerResponse, query: URLSearchParams): void {
 }
 
 // ---------------------------------------------------------------------------
+// Route: GET /health — for Fly.io's HTTP health checks (and anything else
+// probing liveness). No DB round-trip: it should stay cheap and answer even
+// if Postgres is momentarily unreachable, so a transient DB hiccup doesn't
+// get the machine killed for being "unhealthy".
+// ---------------------------------------------------------------------------
+function handleHealth(res: http.ServerResponse): void {
+  const body = JSON.stringify({ status: 'ok' });
+  res.writeHead(200, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+    'Cache-Control': 'no-store',
+  });
+  res.end(body);
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 const server = http.createServer(async (req, res) => {
@@ -1056,6 +1098,10 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
     const { pathname } = url;
 
+    if (req.method === 'GET' && pathname === '/health') {
+      handleHealth(res);
+      return;
+    }
     if (req.method === 'GET' && pathname === '/') {
       await handleCardsList(res);
       return;
@@ -1111,10 +1157,14 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
+// Bind 0.0.0.0, not the loopback-only default: a container's health checks
+// and reverse proxy reach the process over its container-internal network
+// interface, not localhost.
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`LoyaNexa merchant demo running:`);
   console.log(`  Local: http://localhost:${PORT}`);
   console.log(`  LAN:   ${LAN_URL}   (open this on an iPhone on the same network)`);
+  if (PUBLIC_BASE_URL) console.log(`  Public: ${PUBLIC_BASE_URL}   (used for enrol links and QR codes)`);
 });
 
 process.on('SIGINT', async () => {

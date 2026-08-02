@@ -1,0 +1,38 @@
+# ---- never let these reach an image layer (this repo is public) ----
+certs/
+.env
+.env.*
+!.env.example
+*.pem
+*.p8
+*.cer
+*.p12
+*.mobileprovision
+service-account*.json
+*.pkpass
+
+# ---- not needed at runtime / not part of the deployable app ----
+.git
+.gitignore
+.github
+.superpowers
+prototype
+docs
+brand
+README.md
+
+# ---- reinstalled fresh inside the image ----
+node_modules
+package-lock.json.orig
+
+# ---- generated / local-only ----
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+coverage
+*.tsbuildinfo
+npm-debug.log*
+.DS_Store
+.idea/
+.vscode/

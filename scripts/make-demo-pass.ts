@@ -10,7 +10,7 @@
 // No new npm dependencies: zips via the system `zip`/`unzip`, signs via the
 // system `openssl`, hashes via node:crypto, renders via @loyanexa/image.
 
-import { readFileSync, writeFileSync, mkdtempSync, existsSync, copyFileSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, copyFileSync, rmSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { tmpdir, homedir } from 'node:os';
@@ -34,42 +34,42 @@ import {
   type PassImages,
   type PkPassJson,
 } from '../packages/pass/src/buildPass.ts';
+import { resolveAppleCredentials } from '../packages/pass/src/credentials.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 
 // ---------------------------------------------------------------------------
-// 0. Read Apple credentials from .env. Never inline, copy or commit these —
-//    only ever read them at runtime from the paths .env points at.
+// 0. Load .env into process.env (shell env always wins, same convention as
+//    apps/demo/server.ts) and resolve the Apple credentials via
+//    @loyanexa/pass's credentials.ts — the one implementation shared with
+//    the demo server, which prefers PEM content from
+//    APPLE_SIGNER_CERT/_KEY/APPLE_WWDR_CERT (how Fly.io secrets arrive) and
+//    falls back to the APPLE_*_PATH files this script has always used.
+//    Never inline, copy or commit the cert material itself.
 // ---------------------------------------------------------------------------
-function loadEnv(file: string): Record<string, string> {
-  const out: Record<string, string> = {};
+function loadEnvIntoProcess(file: string): void {
   for (const line of readFileSync(file, 'utf8').split('\n')) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
     const eq = trimmed.indexOf('=');
     if (eq === -1) continue;
-    out[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
+    const key = trimmed.slice(0, eq).trim();
+    const value = trimmed.slice(eq + 1).trim();
+    if (!(key in process.env)) process.env[key] = value;
   }
-  return out;
 }
+loadEnvIntoProcess(path.join(ROOT, '.env'));
 
-const env = loadEnv(path.join(ROOT, '.env'));
 const need = (key: string): string => {
-  const v = env[key];
+  const v = process.env[key];
   if (!v) throw new Error(`.env is missing ${key}`);
   return v;
 };
 
 const TEAM_ID = need('APPLE_TEAM_ID');
 const PASS_TYPE_ID = need('APPLE_PASS_TYPE_ID');
-const CERT_PATH = path.resolve(ROOT, need('APPLE_SIGNER_CERT_PATH'));
-const KEY_PATH = path.resolve(ROOT, need('APPLE_SIGNER_KEY_PATH'));
-const WWDR_PATH = path.resolve(ROOT, need('APPLE_WWDR_CERT_PATH'));
-
-for (const p of [CERT_PATH, KEY_PATH, WWDR_PATH]) {
-  if (!existsSync(p)) throw new Error(`missing cert file: ${p}`);
-}
+const { signerCertPath: CERT_PATH, signerKeyPath: KEY_PATH, wwdrPath: WWDR_PATH } = resolveAppleCredentials(ROOT);
 
 console.log('== LoyaNexa demo .pkpass builder ==');
 console.log(`Pass Type ID : ${PASS_TYPE_ID}`);
