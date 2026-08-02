@@ -6,7 +6,7 @@
 # docs/DEPLOY.md) and are read by packages/pass/src/credentials.ts, never
 # baked into the image.
 
-app = "loyanexa-demo"
+app = "loyanexa-new"
 primary_region = "lhr"
 
 [build]
