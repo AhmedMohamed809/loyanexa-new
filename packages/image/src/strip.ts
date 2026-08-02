@@ -9,7 +9,17 @@ import { slotPositions } from './layout.ts';
 export const BASE_WIDTH = 375;
 export const BASE_HEIGHT = 144;
 
-/** A decoded image plus the content hash used in the cache key. */
+/**
+ * A decoded image plus the content hash used in the cache key.
+ *
+ * `hash` must uniquely determine `rgba` — it is the *sole* cache identity a
+ * strip has for this image (see `stripCacheKey` in stripCache.ts, which
+ * hashes `logo?.hash` / `cover?.hash` and never touches the pixels). Compute
+ * it with `imageHash()` (imageHash.ts) over the original encoded upload
+ * bytes. Never derive it from a URL, filename, or timestamp: doing so can
+ * make one merchant's logo get served in place of another's, or make a
+ * merchant's own logo miss the cache on every request.
+ */
 export interface ImageRef extends DecodedImage {
   hash: string;
 }

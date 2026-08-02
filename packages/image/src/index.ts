@@ -2,6 +2,7 @@ export { crc32 } from './png/crc.ts';
 export { encodePNG } from './png/encode.ts';
 export { decodePNG, type DecodedImage } from './png/decode.ts';
 export { decodeJPEG, decodeImage } from './jpeg.ts';
+export { imageHash } from './imageHash.ts';
 export { Surface, parseHexColor, type RGBA } from './raster/surface.ts';
 export { fillDisc, strokeRing, fillRoundedRect } from './raster/shapes.ts';
 export { resizeRGBA } from './raster/resize.ts';
