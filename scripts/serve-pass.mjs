@@ -13,12 +13,22 @@
 import { createServer } from 'node:http';
 import { existsSync, statSync, createReadStream } from 'node:fs';
 import { networkInterfaces, homedir } from 'node:os';
+import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 
 const PORT = 8087;
+// 0.0.0.0 is genuinely required here — a phone on the same wifi has to
+// reach this. It cannot leak key material and has no path-traversal
+// surface, but it does serve a file carrying the Team ID, Pass Type ID and
+// serial, so it shouldn't sit at a guessable path indefinitely on whatever
+// network the laptop later joins. A random per-run token plus a self-
+// timeout below narrow that window.
 const HOST = '0.0.0.0';
 const PASS_PATH = path.join(homedir(), 'Downloads', 'LoyaNexa-demo.pkpass');
 const PASS_FILENAME = 'LoyaNexa-demo.pkpass';
+const TOKEN = randomBytes(8).toString('hex');
+const PASS_URL_PATH = `/pass/${TOKEN}`;
+const LIFETIME_MS = 10 * 60_000;
 
 if (!existsSync(PASS_PATH)) {
   console.error(`No pass found at ${PASS_PATH}.`);
@@ -37,6 +47,7 @@ function lanAddress() {
 }
 
 function sendHtml(res) {
+  const passUrl = PASS_URL_PATH;
   const body = `<!doctype html>
 <html lang="en">
 <head>
@@ -73,7 +84,7 @@ function sendHtml(res) {
 </head>
 <body>
   <h1>LoyaNexa demo pass</h1>
-  <a class="add" href="/pass">Add to Apple Wallet</a>
+  <a class="add" href="${passUrl}">Add to Apple Wallet</a>
 </body>
 </html>
 `;
@@ -98,7 +109,7 @@ const server = createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost');
   if (url.pathname === '/') {
     sendHtml(res);
-  } else if (url.pathname === '/pass') {
+  } else if (url.pathname === PASS_URL_PATH) {
     sendPass(res);
   } else {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
@@ -108,11 +119,19 @@ const server = createServer((req, res) => {
 
 server.listen(PORT, HOST, () => {
   const ip = lanAddress();
+  const minutes = Math.round(LIFETIME_MS / 60_000);
   console.log(`Serving ${PASS_PATH}`);
   console.log(`Local:  http://127.0.0.1:${PORT}/`);
+  console.log(`        http://127.0.0.1:${PORT}${PASS_URL_PATH}`);
   if (ip) {
     console.log(`Phone:  http://${ip}:${PORT}/  (open this on the iPhone, same wifi)`);
+    console.log(`        http://${ip}:${PORT}${PASS_URL_PATH}`);
   } else {
     console.log('No LAN IPv4 address found — connect to wifi to reach this from a phone.');
   }
+  console.log(`This server will stop itself in ${minutes} minutes.`);
 });
+
+// Don't leave a pass carrying the Team ID, Pass Type ID and serial
+// reachable indefinitely on whatever network the laptop later joins.
+setTimeout(() => process.exit(0), LIFETIME_MS).unref();
