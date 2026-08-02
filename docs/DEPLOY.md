@@ -93,3 +93,22 @@ Then open `https://loyanexa-demo.fly.dev/` and create a card — the "Scan to
 enrol" QR on the card detail page should encode
 `https://loyanexa-demo.fly.dev/<code>`, not a LAN address. If it doesn't,
 `PUBLIC_BASE_URL` isn't set (or isn't set to the app's real hostname).
+
+## Known consideration: the landing page loads a font from Google (2026-08-03)
+
+`apps/demo/public/index.html` — the marketing landing page served at `GET /` —
+loads the Alexandria typeface from `fonts.googleapis.com` / `fonts.gstatic.com`
+(`<link rel="preconnect">` / `<link rel="stylesheet">` near the top of `<head>`).
+That is an external network dependency on an otherwise self-contained page: if
+Google Fonts is unreachable or blocked (corporate proxies, some regions), the
+page still renders — `display=swap` means text shows in the fallback
+`system-ui` face immediately — but Alexandria itself won't load until/unless
+the request succeeds.
+
+This is acceptable for the marketing site as shipped. The eventual fix is to
+self-host the font instead of depending on Google's CDN — e.g. via the
+`@fontsource-variable/alexandria` package — which removes the external request
+entirely and the layout-shift risk that comes with it. `docs/FONTS.md`
+(copied from the owner's font spec) documents that self-hosting path, plus the
+plain `<link>`, Next.js, Vite, and Tailwind loading snippets in use elsewhere.
+No action is required before this deploy; treat this as backlog.

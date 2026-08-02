@@ -6,6 +6,15 @@
 // @loyanexa/db (Prisma) — no mocks, no fixtures.
 //
 // Run: npm run demo   (see package.json)
+//
+// Routes:
+//   GET  /              — the marketing landing page (apps/demo/public/)
+//   GET  /app            merchant card list
+//   GET  /cards/new, POST /cards, GET /cards/:id
+//   GET  /preview.png, GET /qr.png
+//   GET  /:code           the customer enrol page (registered last — catch-all)
+//   POST /:code/pass       issues a real signed Apple Wallet pass
+//   GET  /health
 
 import http from 'node:http';
 import os from 'node:os';
@@ -194,7 +203,7 @@ function sendPng(res: http.ServerResponse, buffer: Buffer): void {
 }
 
 function sendNotFound(res: http.ServerResponse, message = 'Not found'): void {
-  sendHtml(res, 404, layout('Not found', `<div class="panel"><h1>404</h1><p>${escapeHtml(message)}</p><p><a class="btn" href="/">Back to cards</a></p></div>`));
+  sendHtml(res, 404, layout('Not found', `<div class="panel"><h1>404</h1><p>${escapeHtml(message)}</p><p><a class="btn" href="/app">Back to cards</a></p></div>`));
 }
 
 /** A friendly, customer-facing 404 for the enrol page — no merchant chrome. */
@@ -474,7 +483,7 @@ function layout(title: string, bodyHtml: string): string {
 </head>
 <body>
 <header class="top">
-  <a href="/">LoyaNexa · Merchant</a>
+  <a href="/app">LoyaNexa · Merchant</a>
 </header>
 <main>
 ${bodyHtml}
@@ -486,7 +495,8 @@ ${bodyHtml}
 const AUTH_BANNER = `<div class="banner"><b>Local demo — no authentication.</b> Anyone who can reach this machine on the network can view and create cards. Firebase sign-in arrives in a later sub-project.</div>`;
 
 // ---------------------------------------------------------------------------
-// Route: GET / — list cards
+// Route: GET /app — list cards. GET / itself now serves the owner's static
+// marketing landing page (apps/demo/public/index.html) — see serveStaticFile.
 // ---------------------------------------------------------------------------
 function cardThumbSrc(card: Card): string {
   const qs = new URLSearchParams({
@@ -592,7 +602,7 @@ function renderNewCardForm(
           <img id="preview" src="/preview.png?${previewQs.toString()}" alt="Live stamp strip preview" width="375" height="144">
         </div>
         <button class="btn" type="submit">Create card</button>
-        <a class="btn secondary" href="/">Cancel</a>
+        <a class="btn secondary" href="/app">Cancel</a>
       </form>
     </div>
     <script>
@@ -754,7 +764,7 @@ async function handleCardDetail(res: http.ServerResponse, id: string): Promise<v
   const body = `
     <div class="row" style="margin-bottom:18px;">
       <h1>${escapeHtml(card.name)}</h1>
-      <a class="btn secondary" href="/">All cards</a>
+      <a class="btn secondary" href="/app">All cards</a>
     </div>
     <div class="panel">
       <div class="preview-panel" style="margin-bottom:20px;">
@@ -1091,6 +1101,78 @@ function handleHealth(res: http.ServerResponse): void {
 }
 
 // ---------------------------------------------------------------------------
+// Static assets — apps/demo/public/. GET / serves index.html (the owner's
+// marketing landing page); anything else under public/ (fonts, images, ...)
+// is served by filename with a real Content-Type. No framework: a handful
+// of extensions is all this app needs.
+// ---------------------------------------------------------------------------
+const PUBLIC_DIR = path.join(__dirname, 'public');
+
+const STATIC_CONTENT_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.txt': 'text/plain; charset=utf-8',
+};
+
+/**
+ * Maps a request pathname to a file under PUBLIC_DIR, or returns undefined
+ * if it isn't a safe, in-bounds request. Rejects any path traversal attempt
+ * — a decoded pathname containing ".." — before the filesystem is touched;
+ * the `startsWith` check below is belt-and-braces on top of that.
+ */
+function resolveStaticPath(pathname: string): string | undefined {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return undefined; // malformed percent-encoding
+  }
+  if (decoded.includes('..')) return undefined;
+  const rel = decoded === '/' ? '/index.html' : decoded;
+  const filePath = path.join(PUBLIC_DIR, rel);
+  if (filePath !== PUBLIC_DIR && !filePath.startsWith(PUBLIC_DIR + path.sep)) return undefined;
+  return filePath;
+}
+
+/** Serves a file from apps/demo/public/. Returns false (no response sent) when there is no such file, so the caller can fall through to the next route. */
+function serveStaticFile(res: http.ServerResponse, pathname: string): boolean {
+  const filePath = resolveStaticPath(pathname);
+  if (!filePath) return false;
+
+  let data: Buffer;
+  try {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) return false;
+    data = fs.readFileSync(filePath);
+  } catch {
+    return false; // no such file — not an error, just "not a static asset"
+  }
+
+  const ext = path.extname(filePath).toLowerCase();
+  const contentType = STATIC_CONTENT_TYPES[ext] ?? 'application/octet-stream';
+  // HTML is revalidated every time (the landing page can change); other
+  // assets (fonts, images) are named by content and safe to cache longer.
+  const cacheControl = ext === '.html' ? 'no-cache' : 'public, max-age=3600';
+  res.writeHead(200, {
+    'Content-Type': contentType,
+    'Content-Length': data.length,
+    'Cache-Control': cacheControl,
+  });
+  res.end(data);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 const server = http.createServer(async (req, res) => {
@@ -1102,7 +1184,14 @@ const server = http.createServer(async (req, res) => {
       handleHealth(res);
       return;
     }
-    if (req.method === 'GET' && pathname === '/') {
+    // Landing page (GET / → public/index.html) and any other static asset
+    // under apps/demo/public/. Only succeeds when a real file exists at
+    // that path, so it can never shadow a route below it (e.g. GET /app,
+    // or the /:code catch-all further down) — it just falls through.
+    if (req.method === 'GET' && serveStaticFile(res, pathname)) {
+      return;
+    }
+    if (req.method === 'GET' && pathname === '/app') {
       await handleCardsList(res);
       return;
     }
