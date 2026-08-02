@@ -1,0 +1,36 @@
+# ---- secrets: never commit these ----
+certs/
+*.p8
+*.pem
+*.cer
+*.p12
+*.mobileprovision
+service-account*.json
+.env
+.env.*
+!.env.example
+
+# ---- databases ----
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+
+# ---- node ----
+node_modules/
+dist/
+build/
+.next/
+out/
+coverage/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ---- os / editor ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
