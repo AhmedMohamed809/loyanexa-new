@@ -1,0 +1,305 @@
+#!/usr/bin/env node
+// scripts/make-demo-pass.mjs
+//
+// Demo harness: builds a real, signed .pkpass carrying a stamp strip
+// rendered by @loyanexa/image, and prints proof that it is valid before
+// declaring success. This is a demo harness, not production code — the
+// real pass engine is sub-project 2's job. See:
+//   .superpowers/sdd/2026-08-02-foundation-strip-pipeline/pkpass-demo-brief.md
+//
+// No new npm dependencies: zips via the system `zip`/`unzip`, signs via the
+// system `openssl`, hashes via node:crypto, renders via @loyanexa/image.
+
+import { readFileSync, writeFileSync, mkdtempSync, existsSync, copyFileSync, rmSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { tmpdir, homedir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import {
+  renderAllDensities,
+  MemoryStore,
+  Surface,
+  parseHexColor,
+  fillDisc,
+  encodePNG,
+} from '../packages/image/src/index.ts';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = path.resolve(__dirname, '..');
+
+// ---------------------------------------------------------------------------
+// 0. Read Apple credentials from .env. Never inline, copy or commit these —
+//    only ever read them at runtime from the paths .env points at.
+// ---------------------------------------------------------------------------
+function loadEnv(file) {
+  const out = {};
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq === -1) continue;
+    out[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
+  }
+  return out;
+}
+
+const env = loadEnv(path.join(ROOT, '.env'));
+const need = (key) => {
+  const v = env[key];
+  if (!v) throw new Error(`.env is missing ${key}`);
+  return v;
+};
+
+const TEAM_ID = need('APPLE_TEAM_ID');
+const PASS_TYPE_ID = need('APPLE_PASS_TYPE_ID');
+const CERT_PATH = path.resolve(ROOT, need('APPLE_SIGNER_CERT_PATH'));
+const KEY_PATH = path.resolve(ROOT, need('APPLE_SIGNER_KEY_PATH'));
+const WWDR_PATH = path.resolve(ROOT, need('APPLE_WWDR_CERT_PATH'));
+
+for (const p of [CERT_PATH, KEY_PATH, WWDR_PATH]) {
+  if (!existsSync(p)) throw new Error(`missing cert file: ${p}`);
+}
+
+console.log('== LoyaNexa demo .pkpass builder ==');
+console.log(`Pass Type ID : ${PASS_TYPE_ID}`);
+console.log(`Team ID      : ${TEAM_ID}`);
+
+// ---------------------------------------------------------------------------
+// 1. Render the stamp strip at all three densities via @loyanexa/image.
+//    This is the point of the exercise: the pass carries an image this
+//    project actually generated, not a stub.
+// ---------------------------------------------------------------------------
+const GOAL = 8;
+const FILLED = 3;
+const NAVY = '#203757';
+const ACCENT = '#F96400';
+const INACTIVE = '#8794A5';
+
+const stripSet = await renderAllDensities(new MemoryStore(), {
+  goal: GOAL,
+  filled: FILLED,
+  shape: 'circle',
+  bgColor: NAVY,
+  bgOpacity: 1,
+  activeColor: ACCENT,
+  inactiveColor: INACTIVE,
+});
+console.log(
+  `Rendered strip.png (${stripSet['strip.png'].length}B), ` +
+    `strip@2x.png (${stripSet['strip@2x.png'].length}B), ` +
+    `strip@3x.png (${stripSet['strip@3x.png'].length}B)`
+);
+
+// ---------------------------------------------------------------------------
+// 2. icon.png (29x29) / icon@2x.png (58x58) — navy square, orange disc.
+//    Apple rejects a pass with no icon, and the wordmark is unreadable at
+//    29px, so a simple on-brand mark generated from Surface + fillDisc is
+//    the right call here.
+// ---------------------------------------------------------------------------
+function makeIcon(size) {
+  const surface = new Surface(size, size);
+  surface.fill(parseHexColor(NAVY, 1));
+  fillDisc(surface, size / 2, size / 2, size * 0.36, parseHexColor(ACCENT, 1));
+  return encodePNG(surface.toRGBA(), size, size);
+}
+const icon1x = makeIcon(29);
+const icon2x = makeIcon(58);
+console.log(`Generated icon.png (${icon1x.length}B), icon@2x.png (${icon2x.length}B)`);
+
+// ---------------------------------------------------------------------------
+// 3. pass.json — storeCard, per docs/BUILD.md §9.1 and §8.6.
+//
+//    Deliberately NO webServiceURL / authenticationToken: §9.3 is explicit
+//    that webServiceURL must be HTTPS and Apple fails silently otherwise.
+//    There is no HTTPS endpoint yet. A pass that omits both fields is valid
+//    and installs cleanly; it just won't live-update (see closing note).
+// ---------------------------------------------------------------------------
+const serialNumber = randomBytes(14).toString('base64url').slice(0, 18); // §17: 18 random base64url chars
+
+const terms = [
+  '1 stamp per visit.',
+  `Collect ${GOAL} stamps to get a reward.`,
+  'Card, stamps and reward expiry: unlimited.',
+  'Stamps and rewards cannot be exchanged, returned or bought for cash.',
+  'Cards cannot be transferred or combined with other cards.',
+  'The company reserves the right to amend these terms.',
+].join(' ');
+
+const pass = {
+  formatVersion: 1,
+  passTypeIdentifier: PASS_TYPE_ID,
+  teamIdentifier: TEAM_ID,
+  organizationName: 'LoyaNexa Demo Cafe',
+  description: 'LoyaNexa loyalty card',
+  logoText: 'LoyaNexa',
+  serialNumber,
+  backgroundColor: 'rgb(32,55,87)', // #203757 brand navy
+  foregroundColor: 'rgb(255,255,255)',
+  labelColor: 'rgb(196,206,219)',
+  storeCard: {
+    headerFields: [{ key: 'stamps', label: 'STAMPS', value: `${FILLED} of ${GOAL}` }],
+    primaryFields: [],
+    secondaryFields: [{ key: 'reward', label: 'REWARD', value: 'Free coffee' }],
+    backFields: [{ key: 'terms', label: 'Terms', value: terms }],
+  },
+  barcodes: [
+    {
+      format: 'PKBarcodeFormatQR',
+      message: serialNumber,
+      messageEncoding: 'iso-8859-1',
+      altText: 'scan here',
+    },
+  ],
+};
+
+// ---------------------------------------------------------------------------
+// 4-6. Stage the bundle, hash it into manifest.json (SHA-1 — PassKit
+//      requires it here, not a security choice), sign, and zip with the
+//      files at the archive root (cd into staging before zipping).
+// ---------------------------------------------------------------------------
+const staging = mkdtempSync(path.join(tmpdir(), 'loyanexa-pkpass-'));
+const files = {
+  'pass.json': Buffer.from(JSON.stringify(pass), 'utf8'),
+  'icon.png': icon1x,
+  'icon@2x.png': icon2x,
+  'strip.png': stripSet['strip.png'],
+  'strip@2x.png': stripSet['strip@2x.png'],
+  'strip@3x.png': stripSet['strip@3x.png'],
+};
+for (const [name, buf] of Object.entries(files)) {
+  writeFileSync(path.join(staging, name), buf);
+}
+
+const manifest = {};
+for (const [name, buf] of Object.entries(files)) {
+  manifest[name] = createHash('sha1').update(buf).digest('hex');
+}
+writeFileSync(path.join(staging, 'manifest.json'), JSON.stringify(manifest));
+
+execFileSync('openssl', [
+  'smime', '-binary', '-sign',
+  '-certfile', WWDR_PATH,
+  '-signer', CERT_PATH,
+  '-inkey', KEY_PATH,
+  '-in', path.join(staging, 'manifest.json'),
+  '-outform', 'DER',
+  '-out', path.join(staging, 'signature'),
+  '-noattr',
+]);
+console.log('Signed manifest.json -> signature');
+
+const pkpassTmp = path.join(tmpdir(), 'LoyaNexa-demo.pkpass');
+rmSync(pkpassTmp, { force: true });
+execFileSync(
+  'zip',
+  ['-X', pkpassTmp, 'pass.json', 'manifest.json', 'signature', 'icon.png', 'icon@2x.png', 'strip.png', 'strip@2x.png', 'strip@3x.png'],
+  { cwd: staging }
+);
+console.log(`Zipped bundle -> ${pkpassTmp}`);
+
+// ---------------------------------------------------------------------------
+// 7. Verify before declaring success. Everything below re-reads the actual
+//    archive on disk, not the in-memory buffers, so it catches zip/staging
+//    bugs, not just logic bugs.
+// ---------------------------------------------------------------------------
+console.log('\n== Verification ==');
+const results = [];
+
+// 7a. unzip -l listing + "no enclosing directory" check.
+const listing = execFileSync('unzip', ['-l', pkpassTmp], { encoding: 'utf8' });
+console.log(listing);
+const names = execFileSync('unzip', ['-Z1', pkpassTmp], { encoding: 'utf8' }).trim().split('\n');
+const expectedMembers = Object.keys(files).concat(['manifest.json', 'signature']);
+const missing = expectedMembers.filter((m) => !names.includes(m));
+const hasDirPrefix = names.some((n) => n.includes('/'));
+const listingOk = missing.length === 0 && !hasDirPrefix && names.length === expectedMembers.length;
+results.push(['1. unzip -l shows all 8 members at the archive root', listingOk,
+  listingOk ? `members: ${names.join(', ')}` : `missing=${missing.join(',') || 'none'} hasDirPrefix=${hasDirPrefix} names=${names.join(',')}`]);
+
+// 7b. Extract and re-hash every manifest entry against the actual archive contents.
+const verifyDir = mkdtempSync(path.join(tmpdir(), 'loyanexa-verify-'));
+execFileSync('unzip', ['-q', pkpassTmp, '-d', verifyDir]);
+const extractedManifest = JSON.parse(readFileSync(path.join(verifyDir, 'manifest.json'), 'utf8'));
+let manifestOk = true;
+const manifestDetails = [];
+for (const [name, digest] of Object.entries(extractedManifest)) {
+  const actual = createHash('sha1').update(readFileSync(path.join(verifyDir, name))).digest('hex');
+  const ok = actual === digest;
+  if (!ok) manifestOk = false;
+  manifestDetails.push(`${name}: manifest=${digest} archive=${actual} ${ok ? 'OK' : 'MISMATCH'}`);
+}
+results.push(['2. every manifest.json digest matches the file in the archive', manifestOk, manifestDetails.join('\n   ')]);
+
+// 7c. Download Apple Root CA and verify the detached signature against it.
+const rootCaDerUrl = 'https://www.apple.com/appleca/AppleIncRootCertificate.cer';
+const rootCaDer = Buffer.from(await (await fetch(rootCaDerUrl)).arrayBuffer());
+const rootCaDerPath = path.join(verifyDir, 'AppleRootCA.cer');
+const rootCaPemPath = path.join(verifyDir, 'AppleRootCA.pem');
+writeFileSync(rootCaDerPath, rootCaDer);
+execFileSync('openssl', ['x509', '-inform', 'DER', '-in', rootCaDerPath, '-out', rootCaPemPath]);
+
+let sigOk = false;
+let sigOutput = '';
+try {
+  sigOutput = execFileSync(
+    'openssl',
+    [
+      'smime', '-verify', '-binary', '-inform', 'DER',
+      '-in', path.join(verifyDir, 'signature'),
+      '-content', path.join(verifyDir, 'manifest.json'),
+      '-CAfile', rootCaPemPath,
+      '-purpose', 'any',
+    ],
+    { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+  );
+  sigOk = true;
+} catch (e) {
+  sigOutput = String(e.stdout || '') + String(e.stderr || '');
+}
+results.push(['1. signature verifies against Apple Root CA (-purpose any)', sigOk, sigOutput.trim() || '(openssl printed nothing on success)']);
+
+// 7d. Cross-check pass.json identifiers against the certificate's own subject.
+const subject = execFileSync('openssl', ['x509', '-in', CERT_PATH, '-noout', '-subject'], { encoding: 'utf8' });
+const certPassTypeId = subject.match(/UID\s*=\s*([^,\n]+)/)?.[1]?.trim();
+const certTeamId = subject.match(/OU\s*=\s*([^,\n]+)/)?.[1]?.trim();
+const extractedPass = JSON.parse(readFileSync(path.join(verifyDir, 'pass.json'), 'utf8'));
+const idsOk = extractedPass.passTypeIdentifier === certPassTypeId && extractedPass.teamIdentifier === certTeamId;
+results.push([
+  '4. pass.json passTypeIdentifier/teamIdentifier match the cert UID/OU',
+  idsOk,
+  `cert subject: ${subject.trim()}\n   pass.json: passTypeIdentifier=${extractedPass.passTypeIdentifier} teamIdentifier=${extractedPass.teamIdentifier}\n   cert:      UID=${certPassTypeId} OU=${certTeamId}`,
+]);
+
+for (const [label, ok, detail] of results) {
+  console.log(`${ok ? 'PASS' : 'FAIL'} — ${label}`);
+  if (detail) console.log(`   ${detail}`);
+}
+
+const allOk = results.every(([, ok]) => ok);
+if (!allOk) {
+  console.error('\nBLOCKED: one or more verifications failed. Not copying anything to Downloads.');
+  process.exit(1);
+}
+
+// ---------------------------------------------------------------------------
+// 8. Ship it to ~/Downloads so it is trivially AirDroppable.
+// ---------------------------------------------------------------------------
+const dest = path.join(homedir(), 'Downloads', 'LoyaNexa-demo.pkpass');
+copyFileSync(pkpassTmp, dest);
+const size = readFileSync(dest).length;
+
+console.log(`\n== Done ==`);
+console.log(`Wrote ${dest} (${size} bytes)`);
+console.log(`
+Get it onto the iPhone:
+  1. AirDrop ${dest} to the iPhone (or attach it to yourself in Messages/Mail).
+  2. Tap the file on the iPhone — it opens in Wallet automatically.
+  3. Tap "Add".
+
+Known limitation: this pass has no webServiceURL, so it will NOT receive
+live stamp updates over APNs — it installs and displays but stays static.
+Wiring that up needs a public HTTPS endpoint and is sub-project 6's job.
+This demo proves signing, rendering and installation, not the update loop.
+`);
