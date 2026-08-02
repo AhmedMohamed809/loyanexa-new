@@ -328,6 +328,31 @@ test('rejects interlaced PNGs', () => {
   assert.throws(() => decodePNG(png), /interlaced/i);
 });
 
+test('rejects an IHDR declaring an absurd number of pixels', () => {
+  // A ~1MB file could otherwise declare 30000x30000 and force a multi-
+  // gigabyte allocation before decompression even starts — the bound must
+  // reject this from the IHDR alone, without touching IDAT.
+  const scanlines = Buffer.from([0, 0, 0, 0]); // irrelevant: should throw before use
+  const png = buildPNG({
+    width: 30000,
+    height: 30000,
+    depth: 8,
+    colourType: 0,
+    interlace: false,
+    scanlines,
+  });
+  assert.throws(() => decodePNG(png), /30000x30000|too large/i);
+});
+
+test('a normal-sized image still decodes under the pixel bound', () => {
+  const rgba = new Uint8Array(64 * 64 * 4);
+  for (let i = 0; i < rgba.length; i++) rgba[i] = (i * 3) % 256;
+  const out = decodePNG(encodePNG(rgba, 64, 64));
+  assert.equal(out.width, 64);
+  assert.equal(out.height, 64);
+  assert.deepEqual(out.rgba, rgba);
+});
+
 test('rejects non-8-bit depth', () => {
   const scanlines = Buffer.from([0, 100, 150]);
   const png = buildPNG({

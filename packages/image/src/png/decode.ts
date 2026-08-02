@@ -8,6 +8,13 @@ export interface DecodedImage {
 
 const SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 
+// Matches jpeg-js's own default cap (maxResolutionInMP: 100 in jpeg.ts) so
+// neither decoder in this package is the unguarded one. Width/height in
+// IHDR are attacker-controlled — a ~1MB file can declare 30000x30000 and
+// force multi-gigabyte allocations before decompression even starts, which
+// is a denial-of-service surface on the merchant-upload path (decodeImage).
+const MAX_PIXELS = 100_000_000;
+
 function paeth(a: number, b: number, c: number): number {
   const p = a + b - c;
   const pa = Math.abs(p - a);
@@ -44,6 +51,11 @@ export function decodePNG(buf: Uint8Array): DecodedImage {
     if (type === 'IHDR') {
       width = data.readUInt32BE(0);
       height = data.readUInt32BE(4);
+      if (width * height > MAX_PIXELS) {
+        throw new Error(
+          `image too large: ${width}x${height} (${width * height} pixels) exceeds the ${MAX_PIXELS}-pixel limit`
+        );
+      }
       const depth = data[8]!;
       colourType = data[9]!;
       if (depth !== 8) throw new Error(`unsupported bit depth ${depth}; only 8 is supported`);
@@ -66,7 +78,11 @@ export function decodePNG(buf: Uint8Array): DecodedImage {
 
   const channels = colourType === 0 ? 1 : colourType === 2 ? 3 : colourType === 3 ? 1 : colourType === 4 ? 2 : 4;
   const stride = width * channels;
-  const raw = inflateSync(Buffer.concat(idat));
+  // Exact expected size of the decompressed scanline data (one filter byte
+  // plus `stride` pixel bytes per row). Bounded transitively by the
+  // MAX_PIXELS check above, and belt-and-braces against a decompression
+  // bomb where the IDAT payload doesn't match what IHDR declared.
+  const raw = inflateSync(Buffer.concat(idat), { maxOutputLength: (stride + 1) * height });
 
   // Undo per-scanline filtering in place.
   const lines = new Uint8Array(stride * height);
