@@ -37,18 +37,26 @@ export const ECONOMIC_FIELDS = [
 ] as const;
 export type EconomicField = (typeof ECONOMIC_FIELDS)[number];
 
-/** Aesthetic fields stay editable forever (BUILD.md §8.7's green line). */
+/** Aesthetic fields stay editable forever (BUILD.md §8.7's green line). This
+ * includes every card-designer field (BUILD.md §8.5/§8.9): images, shape,
+ * "use the logo as the stamp", background opacity and colours are all
+ * cosmetic — none of them touch how many stamps a customer needs or what
+ * they earn, so none of them are subject to the lock rule below. */
 export const AESTHETIC_FIELDS = [
   'name',
   'bgColor',
+  'bgOpacity',
   'fgColor',
   'stampActive',
   'stampInactive',
   'stampShape',
+  'customStamps',
   'labelStamps',
   'labelRewards',
   'logoIconUrl',
+  'logoStampHash',
   'coverUrl',
+  'coverHash',
 ] as const;
 export type AestheticField = (typeof AESTHETIC_FIELDS)[number];
 
@@ -61,14 +69,18 @@ export type AestheticField = (typeof AESTHETIC_FIELDS)[number];
 export interface CardEditInput {
   name?: string;
   bgColor?: string;
+  bgOpacity?: number;
   fgColor?: string;
   stampActive?: string;
   stampInactive?: string;
   stampShape?: string;
+  customStamps?: boolean;
   labelStamps?: string;
   labelRewards?: string;
   logoIconUrl?: string | null;
+  logoStampHash?: string | null;
   coverUrl?: string | null;
+  coverHash?: string | null;
   stampsGoal?: number;
   starterStamps?: number;
   rewardText?: string;

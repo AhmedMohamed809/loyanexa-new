@@ -41,6 +41,11 @@ model Card {
   stampShape    String    @default("circle")
   customStamps  Boolean   @default(false)
   bgColor       String
+  /// Opacity (0..1) applied to the strip's composed background — flat colour
+  /// and/or cover image alike (StripSpec.bgOpacity in packages/image). Lets a
+  /// merchant keep stamps legible over a busy cover photo (BUILD.md §8.5
+  /// step 2's opacity slider).
+  bgOpacity     Float     @default(1)
   fgColor       String
   stampActive   String
   stampInactive String
@@ -97,6 +102,28 @@ model Device {
 
   @@id([deviceId, passSerial])
   @@index([passSerial])
+}
+
+/// Content-addressed image storage for card logos/covers — interim home for
+/// upload bytes until R2 is wired up (docs/BUILD.md §18 item 2: "leaving
+/// logos in the database" is risk #2, because rows reach megabytes and are
+/// read on every query). Keying by `hash` (the sha256 of the *normalised*
+/// PNG bytes, computed by @loyanexa/image's `imageHash`) means an image
+/// lives here exactly once regardless of how many cards use it, `Card`
+/// itself stores only the hash (logoStampHash/coverHash), and the row is
+/// never read as part of an ordinary Card query — only by `GET /img/:hash`,
+/// which can cache it forever because the key can never point at different
+/// bytes. When R2 replaces this (see docs/DEPLOY.md), this table drops in
+/// favour of an object-storage key and `bytes` goes away; nothing else in
+/// the schema should need to change, since every consumer already only
+/// knows the hash.
+model CardImage {
+  hash      String   @id
+  bytes     Bytes
+  width     Int
+  height    Int
+  mime      String
+  createdAt DateTime @default(now())
 }
 
 model StampEvent {
