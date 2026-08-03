@@ -175,19 +175,19 @@ test('editing images on a card that already has passes succeeds (they are cosmet
     await addPass(fx);
 
     const imageResult = await updateCard(fx.cardId, {
-      logoStampHash: 'a'.repeat(64),
-      logoIconUrl: `/img/${'a'.repeat(64)}`,
+      iconHash: 'a'.repeat(64),
+      iconUrl: `/img/${'a'.repeat(64)}`,
       coverHash: 'b'.repeat(64),
       coverUrl: `/img/${'b'.repeat(64)}`,
-      customStamps: true,
+      stampSource: 'icon',
       stampShape: 'square',
       bgOpacity: 0.5,
     });
     assert.equal(imageResult.ok, true, 'image/design edits must succeed on a locked card');
     if (!imageResult.ok) return;
-    assert.equal(imageResult.card.logoStampHash, 'a'.repeat(64));
+    assert.equal(imageResult.card.iconHash, 'a'.repeat(64));
     assert.equal(imageResult.card.coverHash, 'b'.repeat(64));
-    assert.equal(imageResult.card.customStamps, true);
+    assert.equal(imageResult.card.stampSource, 'icon');
     assert.equal(imageResult.card.stampShape, 'square');
     assert.equal(imageResult.card.bgOpacity, 0.5);
 
@@ -197,7 +197,7 @@ test('editing images on a card that already has passes succeeds (they are cosmet
     assert.equal(goalResult.reason, 'locked');
 
     const after = await prisma.card.findUniqueOrThrow({ where: { id: fx.cardId } });
-    assert.equal(after.logoStampHash, 'a'.repeat(64), 'the successful image edit must persist');
+    assert.equal(after.iconHash, 'a'.repeat(64), 'the successful image edit must persist');
     assert.equal(after.stampsGoal, 8, 'the rejected economic edit must leave stampsGoal untouched');
   } finally {
     await cleanup(fx);

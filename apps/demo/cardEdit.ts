@@ -39,10 +39,11 @@ export type EconomicField = (typeof ECONOMIC_FIELDS)[number];
 
 /** Aesthetic fields stay editable forever (BUILD.md §8.7's green line). This
  * includes every card-designer field (BUILD.md §8.5/§8.9): images, shape,
- * "use the logo as the stamp", how the logo fits the stamp circle
- * (`logoFit`: 'contain' | 'cover'), background opacity and colours are all
- * cosmetic — none of them touch how many stamps a customer needs or what
- * they earn, so none of them are subject to the lock rule below. */
+ * the stamp source (built-in icon / own icon / plain disc — `stampSource`,
+ * `builtinIcon`), how the icon fits the stamp circle (`iconFit`: 'contain'
+ * | 'cover'), background opacity and colours are all cosmetic — none of
+ * them touch how many stamps a customer needs or what they earn, so none
+ * of them are subject to the lock rule below. */
 export const AESTHETIC_FIELDS = [
   'name',
   'bgColor',
@@ -51,12 +52,15 @@ export const AESTHETIC_FIELDS = [
   'stampActive',
   'stampInactive',
   'stampShape',
-  'customStamps',
+  'stampSource',
+  'builtinIcon',
   'labelStamps',
   'labelRewards',
-  'logoIconUrl',
-  'logoStampHash',
-  'logoFit',
+  'logoUrl',
+  'logoHash',
+  'iconUrl',
+  'iconHash',
+  'iconFit',
   'coverUrl',
   'coverHash',
 ] as const;
@@ -76,12 +80,15 @@ export interface CardEditInput {
   stampActive?: string;
   stampInactive?: string;
   stampShape?: string;
-  customStamps?: boolean;
+  stampSource?: string;
+  builtinIcon?: string;
   labelStamps?: string;
   labelRewards?: string;
-  logoIconUrl?: string | null;
-  logoStampHash?: string | null;
-  logoFit?: string;
+  logoUrl?: string | null;
+  logoHash?: string | null;
+  iconUrl?: string | null;
+  iconHash?: string | null;
+  iconFit?: string;
   coverUrl?: string | null;
   coverHash?: string | null;
   stampsGoal?: number;

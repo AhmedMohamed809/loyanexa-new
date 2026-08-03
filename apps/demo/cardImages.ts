@@ -1,6 +1,6 @@
 // apps/demo/cardImages.ts — validating, normalising and storing merchant
-// image uploads (the card designer's logo/cover controls, BUILD.md §8.5
-// step 1 and §8.9 step 2). Split out of server.ts, same reasoning as
+// image uploads (the card designer's logo/icon/cover controls, BUILD.md
+// §8.5 step 1 and §8.9 step 2). Split out of server.ts, same reasoning as
 // cardEdit.ts: this is pure(ish) logic — decode, resize, encode, hash,
 // upsert one row — that apps/demo/test/cardImages.test.ts exercises
 // directly against the real local Postgres, without going through HTTP.
@@ -17,12 +17,15 @@
 // embedded metadata, and means the hash used everywhere downstream
 // (StripSpec's cache key, the pass bundle) is computed from the exact bytes
 // the renderer will use. The cover is resized to a fixed target size (it
-// fills a fixed-shape band); the logo is scaled to fit within a bounding
-// box, keeping its own aspect ratio — see `LOGO_MAX_DIMENSION`'s own doc
-// comment for why forcing it into a square here would have been wrong.
+// fills a fixed-shape band); the logo and icon are both scaled to fit
+// within their own bounding box, keeping their own aspect ratio — see
+// `LOGO_MAX_DIMENSION`'s own doc comment for why forcing either into a
+// square *at upload time* would have been wrong: it would bake in a
+// Fit/Fill decision the designer's live toggle (StripSpec.iconFit) needs to
+// keep being able to change without a re-upload.
 
-import { decodeImage, resizeRGBA, encodePNG, imageHash, opaqueBoundingBox, decodePNG } from '../../packages/image/src/index.ts';
-import type { DecodedImage } from '../../packages/image/src/index.ts';
+import { decodeImage, resizeRGBA, resizeToFit, encodePNG, imageHash, opaqueBoundingBox, decodePNG } from '../../packages/image/src/index.ts';
+import type { DecodedImage, Fit } from '../../packages/image/src/index.ts';
 import { prisma } from '../../packages/db/src/index.ts';
 
 /** Hard cap on an upload's raw size, checked before it is fully read into memory (server.ts). */
@@ -58,21 +61,31 @@ export const MAX_UPLOAD_DIMENSION = 4000;
  * where a real merchant wordmark should keep its own rectangular shape.
  * BUILD.md §8.9 actually describes the logo and the square Google-Wallet
  * icon as two *separate* assets ("logo · icon 512×512, required by Google
- * Wallet · cover") — this app stores only the logo today, in its natural
- * shape; googleWallet.ts's `programLogo` is a static brand file, not the
- * merchant's own upload, so there is no live square-icon consumer to
- * protect. If/when Google Wallet does consume the merchant's own logo,
- * build that square icon from this stored logo at that point (a
- * contain-fit onto a transparent square — exactly what circularMask does
- * for the stamp), rather than baking padding into the one shared asset.
+ * Wallet · cover") — the logo (this constant) and the icon (see
+ * `ICON_MAX_DIMENSION` below) are now genuinely separate uploads, each
+ * kept in its own natural aspect ratio; a hard square is only ever derived
+ * on demand (see `squareIconAsset`), never baked into the stored asset.
  */
 export const LOGO_MAX_DIMENSION = 512;
+
+/**
+ * Longest-side cap for a normalised icon — same reasoning as
+ * `LOGO_MAX_DIMENSION`, kept as its own named constant (even though the
+ * number happens to match today) because it constrains a conceptually
+ * different upload: the icon is the merchant's own square-ish mark used as
+ * the filled-stamp graphic (BUILD.md §8.5 step 2 / §8.9), never the
+ * wordmark. Storing it aspect-preserving (not force-padded into a square)
+ * is what lets the designer's Fit/Fill toggle (`iconFit`) actually change
+ * anything at render time — see strip.ts's `circularMask` call and
+ * `squareIconAsset` below, which derive a true square on demand instead.
+ */
+export const ICON_MAX_DIMENSION = 512;
 
 /** The @3x stamp-strip canvas size (packages/image/src/strip.ts's BASE_WIDTH/BASE_HEIGHT × 3) — covers is normalised to exactly this so it is pixel-matched to the highest-density strip render. */
 export const COVER_WIDTH = 1125;
 export const COVER_HEIGHT = 432;
 
-export type UploadKind = 'logo' | 'cover';
+export type UploadKind = 'logo' | 'icon' | 'cover';
 
 export type NormalizeResult =
   | { ok: true; bytes: Buffer; width: number; height: number; hash: string; wideLogo: boolean }
@@ -140,19 +153,52 @@ export function normalizeUpload(kind: UploadKind, raw: Buffer): NormalizeResult 
     return { ok: true, bytes: png, width: COVER_WIDTH, height: COVER_HEIGHT, hash, wideLogo: false };
   }
 
-  // The logo is scaled to fit within LOGO_MAX_DIMENSION on its longer side,
-  // keeping its own aspect ratio — never padded or stretched into a square
-  // (see LOGO_MAX_DIMENSION's own doc comment for why that would defeat
-  // circularMask's contain/cover fit and distort the pass header's logo.png).
-  const scale = Math.min(LOGO_MAX_DIMENSION / decoded.width, LOGO_MAX_DIMENSION / decoded.height);
+  // Logo and icon are both scaled to fit within their own bounding box on
+  // the longer side, keeping their own aspect ratio — never padded or
+  // stretched into a square (see LOGO_MAX_DIMENSION's/ICON_MAX_DIMENSION's
+  // own doc comments for why that would defeat circularMask's contain/cover
+  // fit and distort the pass header's logo.png).
+  const maxDimension = kind === 'icon' ? ICON_MAX_DIMENSION : LOGO_MAX_DIMENSION;
+  const scale = Math.min(maxDimension / decoded.width, maxDimension / decoded.height);
   const width = Math.max(1, Math.round(decoded.width * scale));
   const height = Math.max(1, Math.round(decoded.height * scale));
   const resized = resizeRGBA(decoded, width, height);
   const png = encodePNG(resized.rgba, width, height);
   const hash = imageHash(png);
+  // Reused for both logo and icon uploads: a wordmark-shaped logo gets the
+  // "looks small as a stamp" hint (moot now that a logo is never the
+  // stamp, but still useful as "this looks like a wordmark, are you sure?"
+  // feedback); a similarly non-square icon gets the designer's Fit/Fill
+  // reminder that some of it will be cropped or padded.
   const wideLogo = isWideLogo(resized);
 
   return { ok: true, bytes: png, width, height, hash, wideLogo };
+}
+
+/**
+ * The exact square PNG Google Wallet's icon requirement (BUILD.md §8.9)
+ * needs, derived on demand from a normalised icon upload (which itself
+ * preserves the source's own aspect ratio — see `ICON_MAX_DIMENSION`'s doc
+ * comment). `fit` is the same Fit/Fill choice (and the same underlying
+ * `resizeToFit`) the live stamp mask uses at render time
+ * (packages/image/src/strip.ts's `circularMask` call), so what a merchant
+ * sees in the designer's Fit/Fill toggle is exactly what a square export
+ * would contain. A source that is already square makes `fit` a no-op — see
+ * `resizeToFit`'s own doc comment.
+ *
+ * Not yet wired into a live Google Wallet call:
+ * packages/pass/src/googleWallet.ts's `ensureLoyaltyClass` still points
+ * `programLogo` at a static brand asset, because Google fetches that URL
+ * itself and needs a publicly reachable HTTPS origin — this local dev
+ * environment does not have one (see that file's own `programLogo`
+ * comment). Wiring it up is then a matter of exposing this function's
+ * output at a public URL and passing it through, not changing this
+ * function.
+ */
+export function squareIconAsset(icon: DecodedImage, fit: Fit): { bytes: Buffer; width: number; height: number } {
+  const squared = resizeToFit(icon, ICON_MAX_DIMENSION, ICON_MAX_DIMENSION, fit);
+  const bytes = encodePNG(squared.rgba, ICON_MAX_DIMENSION, ICON_MAX_DIMENSION);
+  return { bytes, width: ICON_MAX_DIMENSION, height: ICON_MAX_DIMENSION };
 }
 
 /**
@@ -175,7 +221,7 @@ export async function storeCardImage(result: { bytes: Buffer; width: number; hei
   });
 }
 
-/** The public, cacheable URL for a stored image — used both for `Card.logoIconUrl`/`coverUrl` and the designer's `<img>` previews. */
+/** The public, cacheable URL for a stored image — used for `Card.logoUrl`/`iconUrl`/`coverUrl` alike, and the designer's `<img>` previews. */
 export function imageUrl(hash: string): string {
   return `/img/${hash}`;
 }

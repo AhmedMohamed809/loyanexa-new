@@ -20,9 +20,11 @@ const {
   imageUrl,
   isValidHash,
   isStoredLogoWide,
+  squareIconAsset,
   MAX_UPLOAD_BYTES,
   MAX_UPLOAD_DIMENSION,
   LOGO_MAX_DIMENSION,
+  ICON_MAX_DIMENSION,
   COVER_WIDTH,
   COVER_HEIGHT,
 } = await import('../cardImages.ts');
@@ -183,6 +185,53 @@ test('storing the same normalised image twice writes exactly one CardImage row',
   } finally {
     await cleanupHash(result.hash);
   }
+});
+
+test('a valid icon upload is scaled to fit within 512 on its longer side, keeping its own aspect ratio — not force-squared at upload time', () => {
+  const upload = samplePng(37, 61);
+  const result = normalizeUpload('icon', upload);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.height, ICON_MAX_DIMENSION);
+  assert.ok(result.width < ICON_MAX_DIMENSION);
+  assert.ok(Math.abs(result.width / result.height - 37 / 61) < 0.01);
+  // The wordmark-specific "wide" hint is a logo-only concept — an icon
+  // upload never sets it, regardless of its own aspect ratio.
+  assert.equal(result.wideLogo, false);
+});
+
+test('an uploaded non-square icon is normalized to 512×512 by squareIconAsset — the exact square Google Wallet requires (BUILD.md §8.9)', () => {
+  const upload = solidPng(1485, 302, [255, 128, 0]); // a real-world non-square shape
+  const normalized = normalizeUpload('icon', upload);
+  assert.equal(normalized.ok, true);
+  if (!normalized.ok) return;
+  assert.notEqual(normalized.width, normalized.height, 'sanity: the normalised icon source itself is still non-square');
+
+  const decoded = decodePNG(normalized.bytes);
+  for (const fit of ['contain', 'cover'] as const) {
+    const square = squareIconAsset(decoded, fit);
+    assert.equal(square.width, 512, `${fit}: width`);
+    assert.equal(square.height, 512, `${fit}: height`);
+    const squareDecoded = decodePNG(square.bytes);
+    assert.equal(squareDecoded.width, 512);
+    assert.equal(squareDecoded.height, 512);
+  }
+  // contain (letterboxed) and cover (cropped) must differ for a genuinely
+  // non-square source — the same Fit/Fill distinction the stamp mask uses.
+  const contain = squareIconAsset(decoded, 'contain');
+  const cover = squareIconAsset(decoded, 'cover');
+  assert.notDeepEqual(contain.bytes, cover.bytes);
+});
+
+test('a square icon is unaffected by squareIconAsset\'s fit choice', () => {
+  const upload = solidPng(300, 300, [10, 20, 30]);
+  const normalized = normalizeUpload('icon', upload);
+  assert.equal(normalized.ok, true);
+  if (!normalized.ok) return;
+  const decoded = decodePNG(normalized.bytes);
+  const contain = squareIconAsset(decoded, 'contain');
+  const cover = squareIconAsset(decoded, 'cover');
+  assert.deepEqual(contain.bytes, cover.bytes);
 });
 
 test('imageUrl and isValidHash', () => {

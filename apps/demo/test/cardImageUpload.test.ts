@@ -166,24 +166,40 @@ test('uploading a real logo normalises it, stores one CardImage row, and GET /im
     assert.ok(Math.abs(storedRatio - 1485 / 302) < 0.4, `expected the stored logo's opaque region to stay a wide wordmark shape (~4.9:1-ish), got ${storedBox!.width}x${storedBox!.height} (${storedRatio.toFixed(2)}:1)`);
 
     const saved = await prisma.card.findUniqueOrThrow({ where: { id: card.id } });
-    assert.equal(saved.logoStampHash, json.hash);
-    assert.equal(saved.logoIconUrl, json.url);
+    assert.equal(saved.logoHash, json.hash);
+    assert.equal(saved.logoUrl, json.url);
 
     const rows = await prisma.cardImage.findMany({ where: { hash: json.hash } });
     assert.equal(rows.length, 1);
+  } finally {
+    await cleanupMerchant(merchantId);
+  }
+});
 
-    // End-to-end through the real HTTP render path: GET /preview.png with
-    // this logo as the custom stamp must actually honour `logoFit` — the
-    // rendered strip's *final* alpha channel is uniformly opaque (the flat
-    // background fill behind it), so it can't be used to measure the
-    // stamp's own aspect ratio here the way the stored-bytes assertion
-    // above does; what this can and does prove is that the fit parameter
-    // is threaded all the way from the query string to a different render,
-    // for the exact real logo this bug was found on.
+test('Problem 1: GET /preview.png?...&fit=contain and &fit=cover produce genuinely different bytes through the HTTP endpoint, for a real wide image used as the icon', async () => {
+  // The bug this guards against: the deployed app's /preview.png ignored
+  // the fit parameter entirely, so contain and cover came back byte-
+  // identical no matter what a merchant picked. A prior test only proved
+  // the *library* (packages/image/src/raster/mask.ts's circularMask)
+  // honoured fit — this test goes through the real HTTP server, uploading
+  // a genuinely non-square image as the "my own icon" stamp source and
+  // hitting the exact endpoint/query shape the designer's live preview
+  // uses (stampSource=icon&icon=<hash>&fit=<contain|cover>).
+  const { merchantId, card } = await makeCard();
+  try {
+    const bytes = fs.readFileSync(LOGO_PATH); // a real 1485x302 (~4.9:1) image — plenty non-square
+    const body = new FormData();
+    body.append('icon', new Blob([bytes], { type: 'image/png' }), 'icon.png');
+    const res = await fetch(`${server.baseUrl}/cards/${card.id}/image`, { method: 'POST', body });
+    assert.equal(res.status, 200);
+    const json = (await res.json()) as { ok: boolean; kind: string; hash: string };
+    assert.equal(json.ok, true);
+    assert.equal(json.kind, 'icon');
+
     const previewQsFor = (fit: string) =>
       new URLSearchParams({
         goal: '8', filled: '3', bg: '#203757', active: '#F96400', inactive: '#8794A5',
-        shape: 'circle', opacity: '1', scale: '3', customStamps: '1', logo: json.hash, logoFit: fit,
+        shape: 'circle', opacity: '1', scale: '3', stampSource: 'icon', icon: json.hash, fit,
       });
     const [containRes, coverRes] = await Promise.all([
       fetch(`${server.baseUrl}/preview.png?${previewQsFor('contain').toString()}`),
@@ -199,7 +215,32 @@ test('uploading a real logo normalises it, stores one CardImage row, and GET /im
     const coverImg = decodePNG(coverBytes);
     assert.equal(containImg.width, BASE_WIDTH * 3);
     assert.equal(containImg.height, BASE_HEIGHT * 3);
-    assert.notDeepEqual(containBytes, coverBytes, 'contain and cover must render different pixels for this real, wide logo');
+    assert.equal(coverImg.width, BASE_WIDTH * 3);
+    assert.notDeepEqual(containBytes, coverBytes, 'fit=contain and fit=cover must render different pixels through the real HTTP endpoint');
+  } finally {
+    await cleanupMerchant(merchantId);
+  }
+});
+
+test('BUILD.md §8.16: the enrol page shows the merchant logo once uploaded, and shows nothing extra when there is none', async () => {
+  const { merchantId, card } = await makeCard();
+  try {
+    const before = await fetch(`${server.baseUrl}/${card.linkCode}`);
+    assert.equal(before.status, 200);
+    const beforeHtml = await before.text();
+    assert.doesNotMatch(beforeHtml, /class="enrol-logo"/, 'no logo uploaded yet — no <img> for it');
+
+    const body = new FormData();
+    body.append('logo', new Blob([fs.readFileSync(LOGO_PATH)], { type: 'image/png' }), 'logo.png');
+    const uploadRes = await fetch(`${server.baseUrl}/cards/${card.id}/image`, { method: 'POST', body });
+    assert.equal(uploadRes.status, 200);
+    const uploadJson = (await uploadRes.json()) as { url: string };
+
+    const after = await fetch(`${server.baseUrl}/${card.linkCode}`);
+    assert.equal(after.status, 200);
+    const afterHtml = await after.text();
+    assert.match(afterHtml, /class="enrol-logo"/);
+    assert.ok(afterHtml.includes(uploadJson.url), 'the enrol page logo <img> must point at the uploaded logo');
   } finally {
     await cleanupMerchant(merchantId);
   }
@@ -358,7 +399,7 @@ test('image edits on a card that already has passes succeed (200/303), while an 
     assert.equal(cosmeticRes.status, 303, 'a cosmetic-only edit on a locked card should succeed');
 
     const afterCosmetic = await prisma.card.findUniqueOrThrow({ where: { id: card.id } });
-    assert.equal(afterCosmetic.logoStampHash, uploadJson.hash);
+    assert.equal(afterCosmetic.logoHash, uploadJson.hash);
     assert.equal(afterCosmetic.stampShape, 'square');
     assert.equal(afterCosmetic.stampsGoal, 8, 'stampsGoal must be untouched by a cosmetic-only edit');
 

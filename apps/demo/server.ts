@@ -68,7 +68,7 @@ import {
   type UploadKind,
 } from './cardImages.ts';
 import { readMultipart } from './multipart.ts';
-import type { ImageRef, StripSpec, Fit } from '../../packages/image/src/index.ts';
+import type { ImageRef, StripSpec, StampSource, Fit, BuiltinIconId } from '../../packages/image/src/index.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -99,6 +99,9 @@ const {
   decodePNG,
   contrastRatio,
   effectiveBackgroundHex,
+  renderIconSwatch,
+  BUILTIN_ICON_IDS,
+  isBuiltinIconId,
 } = await import('../../packages/image/src/index.ts');
 // stamp.ts itself statically imports @loyanexa/db — dynamic here for the
 // same reason as the block above (it must not run before loadEnvFile()).
@@ -150,6 +153,12 @@ function validHex(raw: unknown, fallback: string): string {
   const v = String(raw ?? '').trim();
   if (!HEX_RE.test(v)) return fallback;
   return v.startsWith('#') ? v : `#${v}`;
+}
+
+/** `raw` as a `StampSource` (BUILD.md §8.5 step 2's three-way stamp-source choice) if it names one, else `fallback` — shared by every place a query string or form field supplies this. */
+function parseStampSource(raw: unknown, fallback: StampSource): StampSource {
+  const v = String(raw ?? '').trim();
+  return v === 'builtin' || v === 'icon' || v === 'plain' ? v : fallback;
 }
 
 /** A representative "some stamps punched" count for demo thumbnails/previews. */
@@ -819,6 +828,15 @@ function layout(title: string, bodyHtml: string, active?: NavKey, lang: Lang = '
   .switch-row { display: flex; align-items: center; gap: 10px; }
   .switch-row label { margin: 0; font-weight: 500; }
   .switch-row input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); }
+  .icon-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+  .icon-swatch {
+    position: relative; display: flex; align-items: center; justify-content: center;
+    width: 52px; height: 52px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--sunk); cursor: pointer; margin: 0;
+  }
+  .icon-swatch.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent) inset; }
+  .icon-swatch input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .icon-swatch img { width: 28px; height: 28px; }
   .field-hint { font-size: 12px; color: var(--ink-3); margin-top: 4px; }
   .field-hint.amber { color: var(--amber); }
 </style>
@@ -853,12 +871,14 @@ function stripPreviewParams(card: Card, filled: number, scale?: 1 | 2 | 3): URLS
     inactive: card.stampInactive,
     shape: card.stampShape,
     opacity: String(card.bgOpacity),
+    stampSource: card.stampSource,
   });
   if (scale) qs.set('scale', String(scale));
-  if (card.customStamps) qs.set('customStamps', '1');
-  if (card.customStamps && card.logoStampHash) {
-    qs.set('logo', card.logoStampHash);
-    qs.set('logoFit', card.logoFit);
+  if (card.stampSource === 'icon' && card.iconHash) {
+    qs.set('icon', card.iconHash);
+    qs.set('fit', card.iconFit);
+  } else if (card.stampSource === 'builtin') {
+    qs.set('builtinIcon', card.builtinIcon);
   }
   if (card.coverHash) qs.set('cover', card.coverHash);
   return qs;
@@ -1390,6 +1410,23 @@ async function handleActivateCard(req: http.IncomingMessage, res: http.ServerRes
 // exercises directly — so the enforcement a merchant hits through this form
 // and the enforcement the test proves are the exact same code path.
 // ---------------------------------------------------------------------------
+/** The i18n key naming each built-in icon (BUILTIN_ICON_IDS order) — the designer's picker uses these as each swatch's accessible label. */
+const ICON_LABEL_KEYS: Record<BuiltinIconId, 'iconLabelCoffee' | 'iconLabelCroissant' | 'iconLabelScissors' | 'iconLabelFlower' | 'iconLabelCar' | 'iconLabelDumbbell' | 'iconLabelStar' | 'iconLabelHeart' | 'iconLabelCheck' | 'iconLabelGift'> = {
+  coffee: 'iconLabelCoffee',
+  croissant: 'iconLabelCroissant',
+  scissors: 'iconLabelScissors',
+  flower: 'iconLabelFlower',
+  car: 'iconLabelCar',
+  dumbbell: 'iconLabelDumbbell',
+  star: 'iconLabelStar',
+  heart: 'iconLabelHeart',
+  check: 'iconLabelCheck',
+  gift: 'iconLabelGift',
+};
+
+/** Neutral colour the icon picker's own swatches render in — deliberately not the card's live active-stamp colour, so the picker never needs to reload all ten swatches every time a merchant nudges a colour slider. The strip *preview* (designerPreviewQs below) always uses the real active colour. */
+const ICON_SWATCH_COLOR = '#33415C';
+
 interface EditCardFormValues {
   name: string;
   rewardText: string;
@@ -1400,11 +1437,13 @@ interface EditCardFormValues {
   stampActive: string;
   stampInactive: string;
   stampShape: string;
-  customStamps: boolean;
+  stampSource: StampSource;
+  builtinIcon: BuiltinIconId;
   labelStamps: string;
   labelRewards: string;
-  logoStampHash: string;
-  logoFit: string;
+  logoHash: string;
+  iconHash: string;
+  iconFit: string;
   coverHash: string;
 }
 
@@ -1418,12 +1457,14 @@ function designerPreviewQs(values: EditCardFormValues, filled: number): URLSearc
     inactive: values.stampInactive,
     shape: values.stampShape,
     opacity: String(values.bgOpacity),
+    stampSource: values.stampSource,
     scale: '2',
   });
-  if (values.customStamps) qs.set('customStamps', '1');
-  if (values.customStamps && values.logoStampHash) {
-    qs.set('logo', values.logoStampHash);
-    qs.set('logoFit', values.logoFit);
+  if (values.stampSource === 'icon' && values.iconHash) {
+    qs.set('icon', values.iconHash);
+    qs.set('fit', values.iconFit);
+  } else if (values.stampSource === 'builtin') {
+    qs.set('builtinIcon', values.builtinIcon);
   }
   if (values.coverHash) qs.set('cover', values.coverHash);
   return qs;
@@ -1434,7 +1475,7 @@ function renderEditCardForm(
   passCount: number,
   lang: Lang,
   values: EditCardFormValues,
-  wideLogo: boolean,
+  wideIcon: boolean,
   error?: string
 ): string {
   const locked = passCount > 0;
@@ -1450,10 +1491,11 @@ function renderEditCardForm(
   const lockedClass = locked ? ' class="lock"' : '';
   const filled = defaultFilled(values.stampsGoal);
   const previewSrc = `/preview.png?${designerPreviewQs(values, filled).toString()}`;
-  const hasLogo = values.logoStampHash.length > 0;
+  const hasLogo = values.logoHash.length > 0;
+  const hasIcon = values.iconHash.length > 0;
   const hasCover = values.coverHash.length > 0;
   const opacityPct = Math.round(values.bgOpacity * 100);
-  const showWideLogoHint = hasLogo && values.customStamps && wideLogo;
+  const showNonSquareIconHint = hasIcon && values.stampSource === 'icon' && wideIcon;
   // BUILD.md §8.7's green line covers every input here (colours, opacity) —
   // this warning is informational only, never a validation error; see
   // packages/image/src/contrast.ts's own doc comment for why the
@@ -1478,7 +1520,7 @@ function renderEditCardForm(
           <div class="field">
             <label>${escapeHtml(t(lang, 'designerLogoHeading'))}</label>
             <div class="upload-row">
-              <img id="logoThumb" class="upload-thumb${hasLogo ? ' shown' : ''}" src="${hasLogo ? escapeHtml(imageUrl(values.logoStampHash)) : ''}" alt="">
+              <img id="logoThumb" class="upload-thumb${hasLogo ? ' shown' : ''}" src="${hasLogo ? escapeHtml(imageUrl(values.logoHash)) : ''}" alt="">
               <div class="upload-actions">
                 <label class="btn secondary small" for="logoFile">${escapeHtml(t(lang, 'designerLogoUploadButton'))}</label>
                 <input type="file" id="logoFile" accept="image/png,image/jpeg">
@@ -1487,25 +1529,49 @@ function renderEditCardForm(
             </div>
             <p class="field-hint">${escapeHtml(t(lang, 'designerLogoHint'))}</p>
             <p class="upload-error" id="logoError" hidden></p>
-            <input type="hidden" name="logoHash" id="logoHash" value="${escapeHtml(values.logoStampHash)}" data-wide="${hasLogo && wideLogo ? '1' : ''}">
+            <input type="hidden" name="logoHash" id="logoHash" value="${escapeHtml(values.logoHash)}">
           </div>
 
           <div class="field">
-            <div class="switch-row">
-              <input type="checkbox" id="customStamps" name="customStamps" ${values.customStamps ? 'checked' : ''} ${hasLogo ? '' : 'disabled'}>
-              <label for="customStamps">${escapeHtml(t(lang, 'designerUseLogoAsStampLabel'))}</label>
-            </div>
-            <p class="field-hint" id="customStampsHint" ${hasLogo ? 'hidden' : ''}>${escapeHtml(t(lang, 'designerUseLogoAsStampHint'))}</p>
-          </div>
-
-          <div class="field">
-            <label>${escapeHtml(t(lang, 'designerLogoFitLabel'))}</label>
+            <label>${escapeHtml(t(lang, 'designerStampSourceHeading'))}</label>
             <div class="shape-toggle">
-              <label><input type="radio" name="logoFit" value="contain" ${values.logoFit === 'cover' ? '' : 'checked'} ${hasLogo ? '' : 'disabled'}> ${escapeHtml(t(lang, 'designerLogoFitContain'))}</label>
-              <label><input type="radio" name="logoFit" value="cover" ${values.logoFit === 'cover' ? 'checked' : ''} ${hasLogo ? '' : 'disabled'}> ${escapeHtml(t(lang, 'designerLogoFitFill'))}</label>
+              <label><input type="radio" name="stampSource" value="builtin" ${values.stampSource === 'builtin' ? 'checked' : ''}> ${escapeHtml(t(lang, 'designerStampSourceBuiltin'))}</label>
+              <label><input type="radio" name="stampSource" value="icon" ${values.stampSource === 'icon' ? 'checked' : ''}> ${escapeHtml(t(lang, 'designerStampSourceIcon'))}</label>
+              <label><input type="radio" name="stampSource" value="plain" ${values.stampSource === 'plain' ? 'checked' : ''}> ${escapeHtml(t(lang, 'designerStampSourcePlain'))}</label>
             </div>
-            <p class="field-hint">${escapeHtml(t(lang, 'designerLogoFitHint'))}</p>
-            <p class="field-hint amber" id="wideLogoHint" ${showWideLogoHint ? '' : 'hidden'}>${escapeHtml(t(lang, 'designerWideLogoHint'))}</p>
+          </div>
+
+          <div class="field" id="builtinIconField" ${values.stampSource === 'builtin' ? '' : 'hidden'}>
+            <p class="field-hint">${escapeHtml(t(lang, 'designerIconPickerHint'))}</p>
+            <div class="icon-grid" id="iconGrid">
+              ${BUILTIN_ICON_IDS.map(
+                (id: BuiltinIconId) => `<label class="icon-swatch${values.builtinIcon === id ? ' selected' : ''}" data-icon-swatch="${id}">
+                <input type="radio" name="builtinIcon" value="${id}" ${values.builtinIcon === id ? 'checked' : ''}>
+                <img src="/icon-swatch.png?id=${id}&color=${encodeURIComponent(ICON_SWATCH_COLOR)}&size=56" width="28" height="28" alt="${escapeHtml(t(lang, ICON_LABEL_KEYS[id]))}">
+              </label>`
+              ).join('')}
+            </div>
+          </div>
+
+          <div class="field" id="ownIconField" ${values.stampSource === 'icon' ? '' : 'hidden'}>
+            <label>${escapeHtml(t(lang, 'designerStampSourceIcon'))}</label>
+            <div class="upload-row">
+              <img id="iconThumb" class="upload-thumb${hasIcon ? ' shown' : ''}" src="${hasIcon ? escapeHtml(imageUrl(values.iconHash)) : ''}" alt="">
+              <div class="upload-actions">
+                <label class="btn secondary small" for="iconFile">${escapeHtml(t(lang, 'designerIconUploadButton'))}</label>
+                <input type="file" id="iconFile" accept="image/png,image/jpeg">
+                <button type="button" class="btn remove small" id="iconRemoveBtn" ${hasIcon ? '' : 'disabled'}>${escapeHtml(t(lang, 'designerRemoveButton'))}</button>
+              </div>
+            </div>
+            <p class="field-hint">${escapeHtml(t(lang, 'designerIconHint'))}</p>
+            <p class="upload-error" id="iconError" hidden></p>
+            <input type="hidden" name="iconHash" id="iconHash" value="${escapeHtml(values.iconHash)}" data-wide="${hasIcon && wideIcon ? '1' : ''}">
+            <div class="shape-toggle" style="margin-top:10px;">
+              <label><input type="radio" name="iconFit" value="contain" ${values.iconFit === 'cover' ? '' : 'checked'} ${hasIcon ? '' : 'disabled'}> ${escapeHtml(t(lang, 'designerIconFitContain'))}</label>
+              <label><input type="radio" name="iconFit" value="cover" ${values.iconFit === 'cover' ? 'checked' : ''} ${hasIcon ? '' : 'disabled'}> ${escapeHtml(t(lang, 'designerIconFitFill'))}</label>
+            </div>
+            <p class="field-hint">${escapeHtml(t(lang, 'designerIconFitHint'))}</p>
+            <p class="field-hint amber" id="nonSquareIconHint" ${showNonSquareIconHint ? '' : 'hidden'}>${escapeHtml(t(lang, 'designerNonSquareIconHint'))}</p>
           </div>
 
           <div class="field">
@@ -1609,11 +1675,13 @@ function renderEditCardForm(
         var stampsGoalVal = document.getElementById('stampsGoalVal');
         var bgOpacity = document.getElementById('bgOpacity');
         var bgOpacityVal = document.getElementById('bgOpacityVal');
-        var customStamps = document.getElementById('customStamps');
-        var logoHash = document.getElementById('logoHash');
+        var iconHash = document.getElementById('iconHash');
         var coverHash = document.getElementById('coverHash');
-        var logoFitInputs = form.querySelectorAll('input[name="logoFit"]');
-        var wideLogoHint = document.getElementById('wideLogoHint');
+        var iconFitInputs = form.querySelectorAll('input[name="iconFit"]');
+        var stampSourceInputs = form.querySelectorAll('input[name="stampSource"]');
+        var builtinIconField = document.getElementById('builtinIconField');
+        var ownIconField = document.getElementById('ownIconField');
+        var nonSquareIconHint = document.getElementById('nonSquareIconHint');
         var contrastWarning = document.getElementById('contrastWarning');
 
         function currentShape() {
@@ -1621,13 +1689,29 @@ function renderEditCardForm(
           return checked ? checked.value : 'circle';
         }
 
-        function currentLogoFit() {
-          var checked = form.querySelector('input[name="logoFit"]:checked');
+        function currentStampSource() {
+          var checked = form.querySelector('input[name="stampSource"]:checked');
+          return checked ? checked.value : 'builtin';
+        }
+
+        function currentBuiltinIcon() {
+          var checked = form.querySelector('input[name="builtinIcon"]:checked');
+          return checked ? checked.value : ${JSON.stringify(BUILTIN_ICON_IDS[0])};
+        }
+
+        function currentIconFit() {
+          var checked = form.querySelector('input[name="iconFit"]:checked');
           return checked ? checked.value : 'contain';
         }
 
-        function updateWideLogoHint() {
-          wideLogoHint.hidden = !(customStamps.checked && logoHash.dataset.wide === '1');
+        function updateStampSourceFields() {
+          var source = currentStampSource();
+          builtinIconField.hidden = source !== 'builtin';
+          ownIconField.hidden = source !== 'icon';
+        }
+
+        function updateNonSquareIconHint() {
+          nonSquareIconHint.hidden = !(currentStampSource() === 'icon' && iconHash.dataset.wide === '1');
         }
 
         // Mirrors packages/image/src/contrast.ts — duplicated, not imported,
@@ -1670,6 +1754,7 @@ function renderEditCardForm(
           var filled = Math.max(1, Math.floor(goal / 3));
           var opacity = (parseInt(bgOpacity.value, 10) / 100).toFixed(2);
           bgOpacityVal.textContent = bgOpacity.value + '%';
+          var source = currentStampSource();
           var qs = new URLSearchParams({
             goal: String(goal),
             filled: String(filled),
@@ -1678,16 +1763,19 @@ function renderEditCardForm(
             inactive: document.getElementById('stampInactive').value,
             shape: currentShape(),
             opacity: opacity,
+            stampSource: source,
             scale: '2'
           });
-          if (customStamps.checked) qs.set('customStamps', '1');
-          if (customStamps.checked && logoHash.value) {
-            qs.set('logo', logoHash.value);
-            qs.set('logoFit', currentLogoFit());
+          if (source === 'icon' && iconHash.value) {
+            qs.set('icon', iconHash.value);
+            qs.set('fit', currentIconFit());
+          } else if (source === 'builtin') {
+            qs.set('builtinIcon', currentBuiltinIcon());
           }
           if (coverHash.value) qs.set('cover', coverHash.value);
           preview.src = '/preview.png?' + qs.toString();
-          updateWideLogoHint();
+          updateStampSourceFields();
+          updateNonSquareIconHint();
           updateContrastWarning(parseFloat(opacity));
         }
 
@@ -1710,12 +1798,22 @@ function renderEditCardForm(
 
         stampsGoal.addEventListener('input', refresh);
         bgOpacity.addEventListener('input', refresh);
-        customStamps.addEventListener('input', refresh);
         form.querySelectorAll('input[name="stampShape"]').forEach(function (el) {
           el.addEventListener('change', refresh);
         });
-        logoFitInputs.forEach(function (el) {
+        stampSourceInputs.forEach(function (el) {
           el.addEventListener('change', refresh);
+        });
+        iconFitInputs.forEach(function (el) {
+          el.addEventListener('change', refresh);
+        });
+        form.querySelectorAll('input[name="builtinIcon"]').forEach(function (el) {
+          el.addEventListener('change', function () {
+            document.querySelectorAll('.icon-swatch').forEach(function (label) {
+              label.classList.toggle('selected', label.getAttribute('data-icon-swatch') === el.value);
+            });
+            refresh();
+          });
         });
 
         function setThumb(imgEl, url) {
@@ -1758,11 +1856,9 @@ function renderEditCardForm(
                 hidden.value = result.data.hash;
                 setThumb(thumb, result.data.url);
                 removeBtn.disabled = false;
-                if (kind === 'logo') {
-                  customStamps.disabled = false;
-                  document.getElementById('customStampsHint').hidden = true;
+                if (kind === 'icon') {
                   hidden.dataset.wide = result.data.wideLogo ? '1' : '';
-                  logoFitInputs.forEach(function (el) { el.disabled = false; });
+                  iconFitInputs.forEach(function (el) { el.disabled = false; });
                 }
                 refresh();
               })
@@ -1777,18 +1873,16 @@ function renderEditCardForm(
             clearThumb(thumb);
             removeBtn.disabled = true;
             errorEl.hidden = true;
-            if (kind === 'logo') {
-              customStamps.checked = false;
-              customStamps.disabled = true;
-              document.getElementById('customStampsHint').hidden = false;
+            if (kind === 'icon') {
               hidden.dataset.wide = '';
-              logoFitInputs.forEach(function (el) { el.disabled = true; });
+              iconFitInputs.forEach(function (el) { el.disabled = true; });
             }
             refresh();
           });
         }
 
         wireUpload('logoFile', 'logoHash', 'logoThumb', 'logoError', 'logoRemoveBtn', 'logo');
+        wireUpload('iconFile', 'iconHash', 'iconThumb', 'iconError', 'iconRemoveBtn', 'icon');
         wireUpload('coverFile', 'coverHash', 'coverThumb', 'coverError', 'coverRemoveBtn', 'cover');
       })();
     </script>
@@ -1804,7 +1898,7 @@ async function handleEditCardForm(req: http.IncomingMessage, res: http.ServerRes
     return;
   }
   const passCount = await passCountForCard(card.id);
-  const wideLogo = await isStoredLogoWide(card.logoStampHash);
+  const wideIcon = await isStoredLogoWide(card.iconHash);
   sendHtml(
     res,
     200,
@@ -1822,14 +1916,16 @@ async function handleEditCardForm(req: http.IncomingMessage, res: http.ServerRes
         stampActive: card.stampActive,
         stampInactive: card.stampInactive,
         stampShape: card.stampShape,
-        customStamps: card.customStamps,
+        stampSource: parseStampSource(card.stampSource, 'builtin'),
+        builtinIcon: isBuiltinIconId(card.builtinIcon) ? card.builtinIcon : 'star',
         labelStamps: card.labelStamps,
         labelRewards: card.labelRewards,
-        logoStampHash: card.logoStampHash ?? '',
-        logoFit: card.logoFit,
+        logoHash: card.logoHash ?? '',
+        iconHash: card.iconHash ?? '',
+        iconFit: card.iconFit,
         coverHash: card.coverHash ?? '',
       },
-      wideLogo
+      wideIcon
     )
   );
 }
@@ -1867,13 +1963,19 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
   const labelRewards = String(fields.labelRewards ?? '').trim().slice(0, 16);
   const stampShapeRaw = String(fields.stampShape ?? '').trim();
   const stampShape = stampShapeRaw === 'square' ? 'square' : stampShapeRaw === 'circle' ? 'circle' : card.stampShape;
-  const customStamps = fields.customStamps === 'on' || fields.customStamps === '1';
+  const stampSource = parseStampSource(fields.stampSource, parseStampSource(card.stampSource, 'builtin'));
+  const builtinIconRaw = String(fields.builtinIcon ?? '').trim();
+  const builtinIcon: BuiltinIconId = isBuiltinIconId(builtinIconRaw)
+    ? builtinIconRaw
+    : isBuiltinIconId(card.builtinIcon)
+      ? card.builtinIcon
+      : 'star';
   const bgOpacity = clampFloat01(
     fields.bgOpacity !== undefined ? Number.parseInt(String(fields.bgOpacity), 10) / 100 : undefined,
     card.bgOpacity
   );
-  const logoFitRaw = String(fields.logoFit ?? '').trim();
-  const logoFit = logoFitRaw === 'cover' ? 'cover' : logoFitRaw === 'contain' ? 'contain' : card.logoFit;
+  const iconFitRaw = String(fields.iconFit ?? '').trim();
+  const iconFit = iconFitRaw === 'cover' ? 'cover' : iconFitRaw === 'contain' ? 'contain' : card.iconFit;
 
   const patch: CardEditInput = {
     name: name || card.name,
@@ -1882,10 +1984,11 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
     stampActive,
     stampInactive,
     stampShape,
-    customStamps,
+    stampSource,
+    builtinIcon,
     labelStamps,
     labelRewards,
-    logoFit,
+    iconFit,
   };
 
   // Images: images/colours/shape/labels never lock (BUILD.md §8.7's green
@@ -1896,8 +1999,13 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
   // what an *absent* key would do instead).
   if ('logoHash' in fields) {
     const hash = String(fields.logoHash ?? '').trim();
-    patch.logoStampHash = hash || null;
-    patch.logoIconUrl = hash ? imageUrl(hash) : null;
+    patch.logoHash = hash || null;
+    patch.logoUrl = hash ? imageUrl(hash) : null;
+  }
+  if ('iconHash' in fields) {
+    const hash = String(fields.iconHash ?? '').trim();
+    patch.iconHash = hash || null;
+    patch.iconUrl = hash ? imageUrl(hash) : null;
   }
   if ('coverHash' in fields) {
     const hash = String(fields.coverHash ?? '').trim();
@@ -1936,10 +2044,13 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
     // BUILD.md §8.7: "enforce server-side, not just in the UI" — HTTP 409,
     // translated (BUILD.md §13: server error messages are translated too).
     // The whole patch was rejected (updateCard's own "wholesale" rule), so
-    // logoStampHash/logoFit below reflect the card's unchanged saved state,
-    // not the just-submitted (and discarded) form values — same reasoning
-    // as logoStampHash already used before logoFit existed.
-    const wideLogo = await isStoredLogoWide(card.logoStampHash);
+    // the image hashes below reflect the card's unchanged saved state, not
+    // any just-submitted (and discarded) upload — there is no safe merged
+    // value to show for those without re-uploading. Plain aesthetic fields
+    // (stampSource/builtinIcon/iconFit included) still echo back what the
+    // merchant just typed, same as bgColor/stampShape below, so a rejected
+    // economic edit never throws away an aesthetic one in the same submit.
+    const wideIcon = await isStoredLogoWide(card.iconHash);
     sendHtml(
       res,
       409,
@@ -1957,14 +2068,16 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
           stampActive,
           stampInactive,
           stampShape,
-          customStamps,
+          stampSource,
+          builtinIcon,
           labelStamps,
           labelRewards,
-          logoStampHash: card.logoStampHash ?? '',
-          logoFit: card.logoFit,
+          logoHash: card.logoHash ?? '',
+          iconHash: card.iconHash ?? '',
+          iconFit,
           coverHash: card.coverHash ?? '',
         },
-        wideLogo,
+        wideIcon,
         t(lang, 'economicFieldLocked')
       )
     );
@@ -2416,10 +2529,12 @@ function renderEnrolPage(card: Card): string {
   body.platform-android button.cta.apple { order: 2; }
   body.platform-android button.cta.google { order: 1; }
   .powered { margin-top: 28px; font-size: 12px; opacity: 0.6; }
+  .enrol-logo { max-width: 220px; max-height: 72px; margin: 0 auto 20px; display: block; }
 </style>
 </head>
 <body>
 <main>
+  ${card.logoUrl ? `<img class="enrol-logo" src="${escapeHtml(card.logoUrl)}" alt="${escapeHtml(card.name)}">` : ''}
   <h1>${escapeHtml(card.rewardText)}</h1>
   <p class="lede">Show this page at ${escapeHtml(card.name)} every visit to collect a stamp.</p>
   <p class="lede">Collect ${card.stampsGoal} stamps to get your reward.</p>
@@ -2498,8 +2613,9 @@ async function loadImageRef(hash: string | null | undefined): Promise<ImageRef |
  * right now, including a card that hasn't been saved yet.
  */
 async function stripSpecForCard(card: Card, filled: number): Promise<Omit<StripSpec, 'scale'>> {
-  const [logo, cover] = await Promise.all([
-    card.customStamps ? loadImageRef(card.logoStampHash) : Promise.resolve(undefined),
+  const stampSource = parseStampSource(card.stampSource, 'plain');
+  const [icon, cover] = await Promise.all([
+    stampSource === 'icon' ? loadImageRef(card.iconHash) : Promise.resolve(undefined),
     loadImageRef(card.coverHash),
   ]);
   return {
@@ -2510,8 +2626,10 @@ async function stripSpecForCard(card: Card, filled: number): Promise<Omit<StripS
     bgOpacity: card.bgOpacity,
     activeColor: card.stampActive,
     inactiveColor: card.stampInactive,
-    logo,
-    logoFit: card.logoFit === 'cover' ? 'cover' : 'contain',
+    stampSource,
+    icon,
+    iconFit: card.iconFit === 'cover' ? 'cover' : 'contain',
+    builtinIcon: isBuiltinIconId(card.builtinIcon) ? card.builtinIcon : undefined,
     cover,
   };
 }
@@ -2527,17 +2645,18 @@ async function buildPassImagesFor(
     'strip@2x.png': stripSet['strip@2x.png'],
     'strip@3x.png': stripSet['strip@3x.png'],
   };
-  // The merchant's logo in the pass *header* (BUILD.md §8.9), independent
-  // of whether it is also used as the filled-stamp graphic (customStamps) —
-  // a merchant can want their logo up top without wanting it as every
-  // stamp. Reuses the single normalised upload (in its own aspect ratio,
-  // capped to LOGO_MAX_DIMENSION on its longer side — see cardImages.ts)
-  // for both logo.png and logo@2x.png rather than generating a distinct
-  // 1x/2x pair: Apple scales it to fit the header regardless, and this
-  // avoids a second on-the-fly resize on every pass build for a cosmetic
-  // sizing gain.
-  if (card.logoStampHash) {
-    const row = await prisma.cardImage.findUnique({ where: { hash: card.logoStampHash } });
+  // The merchant's logo in the pass *header* (BUILD.md §8.9, §9), entirely
+  // independent of the stamp source (BUILD.md's design fix: the logo is
+  // never the stamp any more) — a merchant's wordmark belongs up top
+  // regardless of whether their stamps use a built-in icon, their own
+  // icon, or a plain disc. Reuses the single normalised upload (in its own
+  // aspect ratio, capped to LOGO_MAX_DIMENSION on its longer side — see
+  // cardImages.ts) for both logo.png and logo@2x.png rather than
+  // generating a distinct 1x/2x pair: Apple scales it to fit the header
+  // regardless, and this avoids a second on-the-fly resize on every pass
+  // build for a cosmetic sizing gain.
+  if (card.logoHash) {
+    const row = await prisma.cardImage.findUnique({ where: { hash: card.logoHash } });
     if (row) {
       const bytes = Buffer.from(row.bytes);
       images['logo.png'] = bytes;
@@ -2751,11 +2870,11 @@ async function handleGetImage(res: http.ServerResponse, hash: string): Promise<v
 }
 
 // ---------------------------------------------------------------------------
-// Route: POST /cards/:id/image — the card designer's logo/cover upload
+// Route: POST /cards/:id/image — the card designer's logo/icon/cover upload
 // (BUILD.md §8.5 step 1 / §8.9 step 2). multipart/form-data with exactly
-// one file part, named "logo" or "cover" — that name is what decides which
-// Card column gets updated, there is no separate "kind" field to trust or
-// distrust. A public, unauthenticated endpoint (no auth yet — same caveat
+// one file part, named "logo", "icon" or "cover" — that name is what
+// decides which Card column gets updated, there is no separate "kind"
+// field to trust or distrust. A public, unauthenticated endpoint (no auth yet — same caveat
 // as every other merchant route in this slice, see getOrCreateMerchant()'s
 // own comment), so every step below is a hard reject, never a best-effort
 // clamp: the Content-Length precheck rejects an oversized body before
@@ -2790,9 +2909,9 @@ async function handleUploadCardImage(req: http.IncomingMessage, res: http.Server
     return;
   }
 
-  const file = parsed.files.find((f) => f.name === 'logo' || f.name === 'cover');
+  const file = parsed.files.find((f) => f.name === 'logo' || f.name === 'icon' || f.name === 'cover');
   if (!file) {
-    sendJson(res, 400, { ok: false, error: 'expected a file field named "logo" or "cover"' });
+    sendJson(res, 400, { ok: false, error: 'expected a file field named "logo", "icon" or "cover"' });
     return;
   }
   const kind = file.name as UploadKind;
@@ -2824,8 +2943,10 @@ async function handleUploadCardImage(req: http.IncomingMessage, res: http.Server
   // ad hoc `prisma.card.update` that could drift from it.
   const patch: CardEditInput =
     kind === 'logo'
-      ? { logoStampHash: result.hash, logoIconUrl: imageUrl(result.hash) }
-      : { coverHash: result.hash, coverUrl: imageUrl(result.hash) };
+      ? { logoHash: result.hash, logoUrl: imageUrl(result.hash) }
+      : kind === 'icon'
+        ? { iconHash: result.hash, iconUrl: imageUrl(result.hash) }
+        : { coverHash: result.hash, coverUrl: imageUrl(result.hash) };
   const updateResult = await updateCard(id, patch);
   if (!updateResult.ok) {
     // Only reachable if the card was deleted between the lookup above and
@@ -2841,9 +2962,10 @@ async function handleUploadCardImage(req: http.IncomingMessage, res: http.Server
     url: imageUrl(result.hash),
     width: result.width,
     height: result.height,
-    // Only meaningful for kind === 'logo' (always false for a cover) — the
-    // designer's upload JS uses this to show the wide-wordmark hint right
-    // after upload, without a second round trip (BUILD.md §8.5's
+    // Meaningful for kind === 'logo' or 'icon' (always false for a cover) —
+    // the designer's upload JS uses this to show the wide-wordmark hint
+    // (logo) or the non-square Fit/Fill reminder (icon) right after
+    // upload, without a second round trip (BUILD.md §8.5's
     // transparent-logo-detection hint follows the same "inform, don't
     // block" pattern).
     wideLogo: result.wideLogo,
@@ -2861,10 +2983,16 @@ function clampFloat01(raw: unknown, fallback: number): number {
 // renderer every other strip (issuance, PassKit rebuild) goes through.
 // Every input clamped or substituted with a safe default before it reaches
 // renderStrip. This is the designer's live preview target (BUILD.md §8.5 /
-// §8.9): `logo=<hash>`/`cover=<hash>` let it show the merchant's own
+// §8.9): `icon=<hash>`/`cover=<hash>` let it show the merchant's own
 // uploads mid-edit, before a card is even saved — so unlike
 // stripSpecForCard() above (which reads a persisted Card row) this reads
 // straight off the query string.
+//
+// `fit` (contain|cover) is the icon Fit/Fill choice — this is the exact
+// query parameter a prior bug report found silently ignored end to end
+// (`fit=contain` and `fit=cover` rendered byte-identical): the stamp-source
+// three-way switch below is what actually threads it through to
+// renderStrip's `iconFit`, only when `stampSource === 'icon'`.
 // ---------------------------------------------------------------------------
 async function handlePreviewPng(res: http.ServerResponse, query: URLSearchParams): Promise<void> {
   const goal = clampInt(query.get('goal'), MIN_GOAL, MAX_GOAL, 8);
@@ -2876,11 +3004,13 @@ async function handlePreviewPng(res: http.ServerResponse, query: URLSearchParams
   const scale: 1 | 2 | 3 = scaleRaw === 2 || scaleRaw === 3 ? scaleRaw : 1;
   const opacity = clampFloat01(query.get('opacity'), 1);
   const shape: 'circle' | 'square' = query.get('shape') === 'square' ? 'square' : 'circle';
-  const customStamps = query.get('customStamps') === '1' || query.get('customStamps') === 'true';
-  const logoFit: Fit = query.get('logoFit') === 'cover' ? 'cover' : 'contain';
+  const stampSource = parseStampSource(query.get('stampSource'), 'plain');
+  const iconFit: Fit = query.get('fit') === 'cover' ? 'cover' : 'contain';
+  const builtinIconRaw = query.get('builtinIcon');
+  const builtinIcon: BuiltinIconId | undefined = isBuiltinIconId(builtinIconRaw) ? builtinIconRaw : undefined;
 
-  const [logo, cover] = await Promise.all([
-    customStamps ? loadImageRef(query.get('logo')) : Promise.resolve(undefined),
+  const [icon, cover] = await Promise.all([
+    stampSource === 'icon' ? loadImageRef(query.get('icon')) : Promise.resolve(undefined),
     loadImageRef(query.get('cover')),
   ]);
 
@@ -2892,11 +3022,32 @@ async function handlePreviewPng(res: http.ServerResponse, query: URLSearchParams
     bgOpacity: opacity,
     activeColor: active,
     inactiveColor: inactive,
-    logo,
-    logoFit,
+    stampSource,
+    icon,
+    iconFit,
+    builtinIcon,
     cover,
     scale,
   });
+  sendPng(res, png);
+}
+
+// ---------------------------------------------------------------------------
+// Route: GET /icon-swatch.png — on-the-fly render of one built-in icon
+// (BUILD.md §8.5 step 2's icon picker). Drawn directly by
+// packages/image/src/raster/icons.ts, never a shipped image file — the
+// designer's picker points each swatch's <img> at this, same "render
+// endpoint, never a second renderer" discipline as /preview.png.
+// ---------------------------------------------------------------------------
+function handleIconSwatchPng(res: http.ServerResponse, query: URLSearchParams): void {
+  const idRaw = query.get('id');
+  if (!isBuiltinIconId(idRaw)) {
+    sendHtml(res, 400, layout('Error', '<div class="panel"><h1>400</h1><p>Unknown icon id.</p></div>'));
+    return;
+  }
+  const size = clampInt(query.get('size'), 8, 512, 64);
+  const color = validHex(query.get('color'), '#33415C');
+  const png = renderIconSwatch(idRaw, size, parseHexColor(color, 1));
   sendPng(res, png);
 }
 
@@ -3607,6 +3758,10 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && pathname === '/qr.png') {
       handleQrPng(res, url.searchParams);
+      return;
+    }
+    if (req.method === 'GET' && pathname === '/icon-swatch.png') {
+      handleIconSwatchPng(res, url.searchParams);
       return;
     }
     // GET /customers and its CSV export (BUILD.md §8.11), and GET /reports
