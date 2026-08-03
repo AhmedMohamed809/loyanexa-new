@@ -118,6 +118,13 @@ note): certificate mode's mTLS handshake and token mode's cached JWT both benefi
 from a session that survives between requests instead of one torn down and rebuilt by a
 cold start.
 
+**Cost note:** `min_machines_running = 1` means this app now bills for one Fly machine
+continuously, 24/7, instead of only while traffic is actually arriving — the tradeoff this
+section exists to make explicit. `auto_stop_machines` staying `true` only adds *extra*
+machines under real load and scales those back down again; it no longer lets the app scale
+to zero the way it could before live updates needed a warm APNs session. Budget for one
+always-on machine as a fixed cost of live Wallet updates, not an occasional one.
+
 Then open `https://loyanexa-demo.fly.dev/` and create a card — the "Scan to
 enrol" QR on the card detail page should encode
 `https://loyanexa-demo.fly.dev/<code>`, not a LAN address. If it doesn't,

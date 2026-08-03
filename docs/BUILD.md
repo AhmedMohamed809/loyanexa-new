@@ -440,6 +440,28 @@ invisible zero-width marker plus a timestamp to guarantee a change.
 **Trap:** `webServiceURL` **must be HTTPS**. Apple refuses http silently; updates never
 arrive with no error. Use ngrok in development.
 
+> **Measured, 2026-08-03.** Two facts settled against Apple's real production APNs
+> gateway with a real registered device token (nothing simulated, nothing assumed) —
+> found while fixing a stale-`.pkpass`-after-a-card-edit regression in the rebuilt-pass
+> cache (`apps/demo/pkpassCache.ts` / `apps/demo/server.ts`'s `PKPASS_STORE`, distinct
+> from the strip cache in §10 below) and recorded here so nobody re-derives them:
+>
+> 1. **`apns-priority: 10` alongside `apns-push-type: background` is accepted for a
+>    PassKit topic.** All four header combinations returned `200`:
+>    ```
+>    push-type=background  priority=10  -> 200   [153ms]
+>    push-type=background  priority=5   -> 200   [145ms]
+>    no push-type          priority=10  -> 200   [140ms]
+>    no push-type          no priority  -> 200   [139ms]
+>    ```
+>    Apple's general APNs documentation says priority 10 is invalid for a background
+>    push; that is not what the PassKit gateway does in practice. `packages/pass/src/apns.ts`
+>    keeps priority 10 deliberately — it is what the 1-2 second target above wants —
+>    as a verified choice now, not an assumed one.
+> 2. **The certificate-mode mTLS round trip to Apple is ~140-155ms** on a warm HTTP/2
+>    session, from `lhr`. That is the bulk of the "network layer" slice of the 1-2
+>    second budget the paragraph above describes.
+
 ### 9.4 Location reminders are free and automatic
 Geofences live **inside the pass** (max 10). The OS surfaces the card when the customer is
 near. **No server call, no cost, and it keeps working if your backend is down.** Tell

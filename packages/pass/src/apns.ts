@@ -295,6 +295,25 @@ export class ApnsClient {
    * this is what the 1-2 second target in BUILD.md §9.3 actually depends
    * on at the network layer; the rest of the budget is the device's own
    * follow-up GET + rebuild.
+   *
+   * **Verified, 2026-08-03**, against Apple's production gateway with a
+   * real registered device token (docs/BUILD.md §9.3 has the full note):
+   * `apns-priority: 10` alongside `apns-push-type: background` is accepted
+   * for a PassKit topic — all four header combinations returned `200`:
+   *
+   * ```
+   * push-type=background  priority=10  -> 200   [153ms]
+   * push-type=background  priority=5   -> 200   [145ms]
+   * no push-type          priority=10  -> 200   [140ms]
+   * no push-type          no priority  -> 200   [139ms]
+   * ```
+   *
+   * Apple's general APNs documentation says priority 10 is invalid for a
+   * background push; that is not what the PassKit gateway actually does.
+   * Priority 10 is kept deliberately here — it is what the 1-2 second
+   * target wants — as a verified choice, not an assumed one. The same
+   * measurement session put the mTLS round trip to Apple (certificate
+   * auth, warm HTTP/2 session, `lhr`) at ~140-155ms per push.
    */
   async sendPush(pushToken: string, passTypeId: string): Promise<PushResult> {
     const session = this.#getSession();

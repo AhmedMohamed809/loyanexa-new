@@ -11,6 +11,11 @@
 //   GET  /              — the marketing landing page (apps/demo/public/)
 //   GET  /app            merchant card list
 //   GET  /cards/new, POST /cards, GET /cards/:id
+//   GET/POST /cards/:id/edit  the card designer (BUILD.md §8.5/§8.9) — POST
+//                          fires an APNs live-update push to every device
+//                          registered for that card's passes after
+//                          responding, same fire-and-forget rule as
+//                          POST /api/stamp below (see pushCardUpdate)
 //   GET  /preview.png, GET /qr.png
 //   GET  /stamp           the merchant stamp screen (BUILD.md §8.15)
 //   POST /api/stamp        its write path — 24h anti-fraud guard (§9.6),
@@ -59,6 +64,9 @@ import {
   getPassForDownload,
 } from './passkit.ts';
 import { updateCard, activateCard, passCountForCard, type CardEditInput } from './cardEdit.ts';
+import { pushCardDevices } from './cardPush.ts';
+import { pkpassCacheKey } from './pkpassCache.ts';
+import { createAppleCredentialsResolver } from './appleCredentials.ts';
 import { csvRow } from './csv.ts';
 import { createPassForEnrolment, deleteOrphanedPass } from './enrol.ts';
 import { RateLimiter, resolveClientIp } from './rateLimit.ts';
@@ -349,21 +357,21 @@ function sendEnrolNotFound(res: http.ServerResponse, code: string): void {
 // teamId/passTypeId are read here — they're plain identifiers, not secrets
 // that need a files-vs-env split.
 // ---------------------------------------------------------------------------
-function resolveAppleCredentials(): PassCredentials {
-  const need = (key: string): string => {
+// Memoized (apps/demo/appleCredentials.ts) — the first call resolves
+// APPLE_TEAM_ID/APPLE_PASS_TYPE_ID and materialises the signer/WWDR PEM
+// paths; every later call in this process reuses that same result rather
+// than re-reading env and rewriting the three temp PEM files on every
+// `.pkpass` request, including the cache *hits* that never sign anything
+// (BUILD.md §18 item 3's "measured, not guessed" spirit — this was found
+// costing a filesystem write per request for no benefit).
+const resolveAppleCredentials = createAppleCredentialsResolver(
+  (key: string): string => {
     const v = process.env[key];
     if (!v) throw new Error(`.env is missing ${key}`);
     return v;
-  };
-  const { signerCertPath, signerKeyPath, wwdrPath } = resolveAppleCredentialPaths(ROOT);
-  return {
-    teamId: need('APPLE_TEAM_ID'),
-    passTypeId: need('APPLE_PASS_TYPE_ID'),
-    certPath: signerCertPath,
-    keyPath: signerKeyPath,
-    wwdrPath,
-  };
-}
+  },
+  () => resolveAppleCredentialPaths(ROOT)
+);
 
 // ---------------------------------------------------------------------------
 // APNs — one ApnsClient for the whole process (BUILD.md §18 item 3: it
@@ -488,6 +496,58 @@ async function pushApnsUpdate(serial: string): Promise<void> {
   );
 }
 
+/**
+ * Pushes the live-update wake-up (BUILD.md §9.3) to every device
+ * registered for any pass issued against `cardId` — the design-edit
+ * counterpart to pushApnsUpdate's per-pass fan-out above. A card's
+ * colours/logo/stamp icon/background/shape are shared by every customer
+ * holding one of its passes, so a single edit can affect every `.pkpass`
+ * that card has ever issued (see PKPASS_STORE's doc comment: the cache key
+ * now includes Card.updatedAt for exactly this reason). Fixing the cache
+ * key alone only means the *next* device poll picks up the new design —
+ * this is what makes it show up immediately instead. Uses
+ * apps/demo/cardPush.ts's devicesForCard()/pushCardDevices() for the DB
+ * side (testable without an ApnsClient); the send itself and its
+ * error/gone handling mirror pushApnsUpdate above. Callers must invoke this
+ * *after* responding to the triggering request (BUILD.md §18 item 6), same
+ * as pushPassUpdate.
+ */
+async function pushCardUpdate(cardId: string): Promise<void> {
+  const client = getApnsClient();
+  if (!client) return; // getApnsClient() already logged why, once.
+  const passTypeId = process.env.APPLE_PASS_TYPE_ID;
+  if (!passTypeId) {
+    console.error('[apns] .env is missing APPLE_PASS_TYPE_ID — cannot set apns-topic, skipping card-edit push');
+    return;
+  }
+
+  await pushCardDevices(cardId, async (device) => {
+    const result = await client.sendPush(device.pushToken, passTypeId);
+    if (result.ok) return { ok: true };
+    if (result.reason === 'gone') {
+      console.log(`[apns] card ${cardId}: pruned device ${device.deviceId} (410 Gone, pass ${device.passSerial})`);
+      return { ok: false, gone: true };
+    }
+    if (isBadEnvironmentKeyError(result.status, result.body)) {
+      // Same actionable line as pushApnsUpdate's own — see that function's
+      // comment for why this particular failure gets special treatment.
+      console.error(
+        `[apns] card ${cardId}: push to device ${device.deviceId} rejected — BadEnvironmentKeyInToken. ` +
+          `APNs key ${process.env.APNS_KEY_ID ?? '(unknown)'} is not provisioned for the '${APNS_ENV}' ` +
+          `environment this server is configured to use (${client.host}). Fix: in the Apple Developer ` +
+          `portal, enable this key for '${APNS_ENV}' push, or set APNS_ENV to the environment the key ` +
+          `actually supports.`
+      );
+    } else {
+      console.error(
+        `[apns] card ${cardId}: push to device ${device.deviceId} (pass ${device.passSerial}) failed — ` +
+          `auth=${client.authMode} host=${client.host} status=${result.status} body=${result.body}`
+      );
+    }
+    return { ok: false };
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Google Wallet — one GoogleWalletClient for the whole process, mirroring
 // ApnsClient just above: it caches its OAuth2 access token, so building a
@@ -558,26 +618,25 @@ const PASS_STRIP_STORE = new MemoryStore();
 // it happens more than once per stamp: the device that owns the pass fetches
 // it, but so can a second device with the same pass added, or the same
 // device retrying after a dropped connection. A build is fully determined
-// by (serial, stamps, updatedAt) — the content and every image the pass
-// carries derive only from those (buildPassContentFor, stripSpecForCard) —
-// so a repeat fetch for a (serial, stamps, updatedAt) already built is
-// served from memory instead of re-signing. Bounded LRU, same MemoryStore
-// used for strips; single-flight below prevents two concurrent requests for
-// a still-uncached key each paying the ~24ms cost.
+// by the owning Pass's own (serial, stamps, updatedAt) *and* its Card's
+// design (bgColor/logo/stampSource/… — everything the card designer lets a
+// merchant change; see apps/demo/pkpassCache.ts's doc comment for the
+// 2026-08-03 regression this covers) — the content and every image the
+// pass carries derive from those and nothing else (buildPassContentFor,
+// stripSpecForCard) — so a repeat fetch for a key already built is served
+// from memory instead of re-signing. Bounded LRU, same MemoryStore used
+// for strips; single-flight below prevents two concurrent requests for a
+// still-uncached key each paying the ~24ms cost.
 // ---------------------------------------------------------------------------
 const PKPASS_STORE = new MemoryStore();
 const pkpassInFlight = new Map<string, Promise<Buffer>>();
-
-function pkpassCacheKey(serial: string, stamps: number, updatedAt: Date): string {
-  return `${serial}:${stamps}:${updatedAt.getTime()}`;
-}
 
 /** Builds (or reuses a cached / in-flight build of) the signed .pkpass for `pass` — see PKPASS_STORE's doc comment above for why this exists and what makes a cache entry valid. */
 async function cachedBuildPass(
   credentials: PassCredentials,
   pass: Pass & { card: Card }
 ): Promise<Buffer> {
-  const key = pkpassCacheKey(pass.serial, pass.stamps, pass.updatedAt);
+  const key = pkpassCacheKey(pass.serial, pass.stamps, pass.updatedAt, pass.card.updatedAt);
   const hit = await PKPASS_STORE.get(key);
   if (hit) return hit;
 
@@ -2178,6 +2237,20 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
 
   res.writeHead(303, { Location: `/cards/${id}` });
   res.end();
+
+  // Fire the live-update push only *after* the response above, and never
+  // awaited by this handler (BUILD.md §18 item 6, same rule POST
+  // /api/stamp's own fan-out follows) — an edit can affect many
+  // passes/devices at once, and none of that should ever slow down, let
+  // alone fail, the merchant's own save. This is also what makes the
+  // `.pkpass` cache-key fix above (PKPASS_STORE / pkpassCacheKey) actually
+  // visible to a customer promptly instead of only on their device's next
+  // unprompted poll.
+  setImmediate(() => {
+    pushCardUpdate(id).catch((err) => {
+      console.error(`[push] card-edit live-update fan-out threw for card ${id}:`, err);
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------

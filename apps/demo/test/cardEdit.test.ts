@@ -234,6 +234,32 @@ test('re-submitting the same economic value a card already has is not an "attemp
   }
 });
 
+test("editing a card's colours bumps Card.updatedAt — this is what lets the .pkpass cache key (apps/demo/pkpassCache.ts) invalidate on a design edit", async () => {
+  const fx = await makeFixture();
+  try {
+    const before = await prisma.card.findUniqueOrThrow({ where: { id: fx.cardId } });
+
+    // Prisma's @updatedAt has millisecond resolution — make sure this test
+    // can't land in the same millisecond as row creation and get a false
+    // pass.
+    await new Promise((r) => setTimeout(r, 5));
+
+    const result = await updateCard(fx.cardId, { bgColor: '#ABCDEF' });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+
+    assert.ok(
+      result.card.updatedAt.getTime() > before.updatedAt.getTime(),
+      'updateCard must bump Card.updatedAt on every write, including an aesthetic-only edit'
+    );
+
+    const after = await prisma.card.findUniqueOrThrow({ where: { id: fx.cardId } });
+    assert.equal(after.updatedAt.getTime(), result.card.updatedAt.getTime());
+  } finally {
+    await cleanup(fx);
+  }
+});
+
 test('activateCard sets active = true', async () => {
   const fx = await makeFixture();
   try {

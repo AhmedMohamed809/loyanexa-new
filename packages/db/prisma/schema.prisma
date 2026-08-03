@@ -96,6 +96,16 @@ model Card {
   active        Boolean   @default(false)
   passes        Pass[]
   createdAt     DateTime  @default(now())
+  /// Bumped by Prisma on every write to this row — including every
+  /// aesthetic card-designer edit (colours, logo, stamp icon, background
+  /// image, labels, shape). A built `.pkpass`'s content depends on these
+  /// fields just as much as on the owning Pass's own (serial, stamps,
+  /// updatedAt) — see apps/demo/pkpassCache.ts's doc comment — so this
+  /// column is folded into the `.pkpass` cache key: a design edit changes
+  /// it, which changes the key, which makes the next fetch rebuild instead
+  /// of serving stale cached bytes to every customer who already holds a
+  /// pass for this card.
+  updatedAt     DateTime  @updatedAt
 
   @@unique([merchantId, slot])
   @@index([linkCode])
