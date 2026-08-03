@@ -32,20 +32,49 @@ model Card {
   linkAlias     String?   @unique
   shortCode     String    @unique
   name          String
-  logoIconUrl   String?
-  logoStampHash String?
-  /// How the logo maps onto the (round) stamp slot when used as the custom
-  /// stamp — 'contain' (default, whole logo visible, letterboxed — the safe
-  /// choice for a wordmark) or 'cover' (fills the circle edge to edge,
-  /// cropped — better for a square-ish mark or a photo). See
-  /// packages/image/src/raster/mask.ts's circularMask for the render itself.
-  logoFit       String    @default("contain")
+  /// The merchant's wordmark — any aspect ratio, shown in the pass header
+  /// (logo.png/logo@2x.png) and at the top of the enrol page (BUILD.md
+  /// §8.16 point 1, §9). Never used as the stamp graphic — see
+  /// `stampSource` below. Renamed from `logoIconUrl`/`logoStampHash`,
+  /// whose names conflated "the logo" with "the thing that fills a
+  /// stamp" — exactly the design bug this migration fixes: a wordmark
+  /// (the owner's real logo is a 1485x302, ~4.9:1 wordmark) fitted into a
+  /// circular stamp is illegible at stamp size. docs/BUILD.md §8.9 always
+  /// described these as two separate images — "logo · icon 512×512,
+  /// required by Google Wallet · cover".
+  logoUrl       String?
+  logoHash      String?
+  /// The merchant's own square-ish mark, used as the filled-stamp graphic
+  /// when `stampSource` is `'icon'`. Ideally 512×512 — BUILD.md §8.9 notes
+  /// this size is what Google Wallet requires. Never shown in the pass
+  /// header; that is `logoUrl` above.
+  iconUrl       String?
+  iconHash      String?
+  /// How `iconUrl`/`iconHash` maps onto the round stamp slot when
+  /// `stampSource === 'icon'` — 'contain' (default, whole icon visible,
+  /// letterboxed) or 'cover' (fills the circle edge to edge, cropped).
+  /// Ignored for 'builtin'/'plain'. Renamed from `logoFit`: the same
+  /// Fit/Fill choice, now correctly scoped to the icon — the logo itself
+  /// never needs a fit, since it only ever renders at its own aspect
+  /// ratio in the pass header / enrol page.
+  iconFit       String    @default("contain")
+  /// Which artwork fills a *completed* stamp slot (BUILD.md §8.5 step 2's
+  /// three-way choice): 'builtin' (a glyph drawn from `builtinIcon`, the
+  /// default — a card looks designed with zero uploads), 'icon' (the
+  /// merchant's own square upload above), or 'plain' (a solid disc/square,
+  /// the original upload-free behaviour). Replaces the old `customStamps`
+  /// boolean, which could only express "wordmark-as-stamp or plain disc" —
+  /// never "a designed default", and let a wordmark become a stamp at all.
+  stampSource   String    @default("builtin")
+  /// The built-in icon id (packages/image/src/raster/icons.ts's
+  /// BUILTIN_ICON_IDS) drawn when `stampSource === 'builtin'`. Ignored
+  /// otherwise.
+  builtinIcon   String    @default("star")
   coverUrl      String?
   coverHash     String?
   stampsGoal    Int       @default(8)
   starterStamps Int       @default(0)
   stampShape    String    @default("circle")
-  customStamps  Boolean   @default(false)
   bgColor       String
   /// Opacity (0..1) applied to the strip's composed background — flat colour
   /// and/or cover image alike (StripSpec.bgOpacity in packages/image). Lets a

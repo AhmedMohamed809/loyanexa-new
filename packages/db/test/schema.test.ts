@@ -17,7 +17,8 @@ test('the indexes BUILD.md §11 says must never be removed are present', () => {
 });
 
 test('Card carries the image content hashes the strip cache needs', () => {
-  assert.match(schema, /logoStampHash\s+String\?/);
+  assert.match(schema, /logoHash\s+String\?/);
+  assert.match(schema, /iconHash\s+String\?/);
   assert.match(schema, /coverHash\s+String\?/);
 });
 
