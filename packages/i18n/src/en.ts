@@ -9,6 +9,7 @@ export const en = {
   stampSuccess: 'Stamped — {stamps}/{goal}',
   passNotFound: 'We could not find a card for that code.',
   stampInputRequired: 'Enter a serial number or short code.',
+  rateLimited: 'Too many requests from this device. Please wait a few minutes and try again.',
 
   // Top nav (BUILD.md §6 / this build's "nav bar across the merchant pages")
   navCards: 'Cards',
@@ -99,4 +100,69 @@ export const en = {
   editTitle: 'Edit card',
   editSaveButton: 'Save changes',
   editCancelButton: 'Cancel',
+
+  // Local-demo auth banner (shown on every merchant page until Firebase
+  // sign-in lands, sub-project 4)
+  authBannerTitle: 'Local demo — no authentication.',
+  authBannerBody:
+    'Anyone who can reach this machine on the network can view and create cards. Firebase sign-in arrives in a later sub-project.',
+
+  // Cards list (GET /app)
+  cardsListTitle: 'Your cards',
+  cardsListCountOne: '{count} card',
+  cardsListCountMany: '{count} cards',
+  createCardButton: 'Create card',
+  cardsEmptyTitle: 'No loyalty cards yet',
+  cardsEmptyBody: 'Create your first card to start giving out stamps.',
+  stampsWord: 'stamps',
+
+  // Create-card form (GET/POST /cards)
+  newCardTitle: 'Create a loyalty card',
+  newCardNameLabel: 'Card name',
+  newCardNamePlaceholder: 'e.g. Shami Bakery',
+  newCardRewardLabel: 'Reward text',
+  newCardRewardPlaceholder: 'e.g. Free coffee',
+  newCardGoalLabel: 'Stamps goal —',
+  newCardBgLabel: 'Card background',
+  newCardActiveLabel: 'Active stamp',
+  newCardInactiveLabel: 'Inactive stamp',
+  cancelButton: 'Cancel',
+  newCardNameRequired: 'Card name is required.',
+  newCardNameTooLong: 'Card name is too long (max 80 characters).',
+  newCardRewardRequired: 'Reward text is required.',
+  newCardRewardTooLong: 'Reward text is too long (max 120 characters).',
+  newCardGoalRange: 'Stamps goal must be a whole number between {min} and {max}.',
+  newCardBgInvalid: 'Card background must be a valid colour.',
+  newCardActiveInvalid: 'Active stamp colour must be a valid colour.',
+  newCardInactiveInvalid: 'Inactive stamp colour must be a valid colour.',
+
+  // Card detail (GET /cards/:id)
+  cardDetailAllCardsLink: 'All cards',
+  cardStatusActive: 'Active',
+  cardStatusDraft: 'Draft',
+  cardDetailKpiStamps: 'Stamps',
+  cardDetailRewardLabel: 'Reward',
+  cardDetailGoalLabel: 'Stamps goal',
+  cardDetailShortCodeLabel: 'Short code',
+  cardDetailEnrolUrlLabel: 'Enrol URL',
+  cardDetailScanHeading: 'Scan to enrol',
+  cardDetailQrPublicNote: 'The QR points at {url}.',
+  cardDetailQrLanNote: 'Open this page from an iPhone on the same network — the QR points at {url}.',
+
+  // Customers (BUILD.md §8.11) — search form buttons
+  customersSearchButton: 'Search',
+  customersClearButton: 'Clear',
+
+  // Stamp screen (BUILD.md §8.15)
+  stampScreenTitle: 'Stamp a card',
+  stampScreenSub: "Scan the QR inside the customer's wallet pass, or type their code below.",
+  stampScreenNotice:
+    'No staff PIN yet in this local demo — anyone who can reach this screen can stamp a card. PIN lock arrives with Firebase auth (sub-project 4).',
+  stampScreenCameraHeading: 'Camera',
+  stampScreenCameraStarting: 'Starting camera…',
+  stampScreenManualHeading: 'Manual entry',
+  stampScreenManualLabel: 'Serial or short code',
+  stampScreenManualPlaceholder: 'e.g. AB12CD34',
+  stampScreenSubmitButton: 'Stamp',
+  stampScreenNetworkError: 'Network error — check the connection and try again.',
 } as const;

@@ -14,6 +14,7 @@ export const ar: Record<keyof typeof en, string> = {
   stampSuccess: 'تم الختم — {stamps}/{goal}',
   passNotFound: 'تعذر العثور على بطاقة بهذا الرمز.',
   stampInputRequired: 'أدخل الرقم التسلسلي أو الرمز المختصر.',
+  rateLimited: 'طلبات كثيرة جدًا من هذا الجهاز. يرجى الانتظار بضع دقائق ثم المحاولة مرة أخرى.',
 
   // Top nav (BUILD.md §6)
   navCards: 'البطاقات',
@@ -103,4 +104,68 @@ export const ar: Record<keyof typeof en, string> = {
   editTitle: 'تعديل البطاقة',
   editSaveButton: 'حفظ التغييرات',
   editCancelButton: 'إلغاء',
+
+  // Local-demo auth banner
+  authBannerTitle: 'نسخة تجريبية محلية — بلا مصادقة.',
+  authBannerBody:
+    'يمكن لأي شخص يصل إلى هذا الجهاز عبر الشبكة عرض البطاقات وإنشاؤها. سيتوفر تسجيل الدخول عبر Firebase في مرحلة لاحقة.',
+
+  // Cards list (GET /app)
+  cardsListTitle: 'بطاقاتك',
+  cardsListCountOne: 'بطاقة واحدة',
+  cardsListCountMany: '{count} بطاقة',
+  createCardButton: 'إنشاء بطاقة',
+  cardsEmptyTitle: 'لا توجد بطاقات ولاء بعد',
+  cardsEmptyBody: 'أنشئ بطاقتك الأولى لتبدأ بمنح الأختام.',
+  stampsWord: 'أختام',
+
+  // Create-card form (GET/POST /cards)
+  newCardTitle: 'إنشاء بطاقة ولاء',
+  newCardNameLabel: 'اسم البطاقة',
+  newCardNamePlaceholder: 'مثال: مخبز الشامي',
+  newCardRewardLabel: 'نص المكافأة',
+  newCardRewardPlaceholder: 'مثال: قهوة مجانية',
+  newCardGoalLabel: 'عدد الأختام المطلوبة —',
+  newCardBgLabel: 'لون خلفية البطاقة',
+  newCardActiveLabel: 'لون الختم النشط',
+  newCardInactiveLabel: 'لون الختم غير النشط',
+  cancelButton: 'إلغاء',
+  newCardNameRequired: 'اسم البطاقة مطلوب.',
+  newCardNameTooLong: 'اسم البطاقة طويل جدًا (الحد الأقصى 80 حرفًا).',
+  newCardRewardRequired: 'نص المكافأة مطلوب.',
+  newCardRewardTooLong: 'نص المكافأة طويل جدًا (الحد الأقصى 120 حرفًا).',
+  newCardGoalRange: 'يجب أن يكون عدد الأختام رقمًا صحيحًا بين {min} و{max}.',
+  newCardBgInvalid: 'لون خلفية البطاقة يجب أن يكون لونًا صالحًا.',
+  newCardActiveInvalid: 'لون الختم النشط يجب أن يكون لونًا صالحًا.',
+  newCardInactiveInvalid: 'لون الختم غير النشط يجب أن يكون لونًا صالحًا.',
+
+  // Card detail (GET /cards/:id)
+  cardDetailAllCardsLink: 'كل البطاقات',
+  cardStatusActive: 'مفعّلة',
+  cardStatusDraft: 'مسودة',
+  cardDetailKpiStamps: 'الأختام',
+  cardDetailRewardLabel: 'المكافأة',
+  cardDetailGoalLabel: 'عدد الأختام المطلوبة',
+  cardDetailShortCodeLabel: 'الرمز المختصر',
+  cardDetailEnrolUrlLabel: 'رابط الانضمام',
+  cardDetailScanHeading: 'امسح للانضمام',
+  cardDetailQrPublicNote: 'يشير رمز QR إلى {url}.',
+  cardDetailQrLanNote: 'افتح هذه الصفحة من آيفون على نفس الشبكة — يشير رمز QR إلى {url}.',
+
+  // Customers (BUILD.md §8.11) — search form buttons
+  customersSearchButton: 'بحث',
+  customersClearButton: 'مسح',
+
+  // Stamp screen (BUILD.md §8.15)
+  stampScreenTitle: 'ختم بطاقة',
+  stampScreenSub: 'امسح رمز QR داخل بطاقة العميل، أو اكتب الرمز أدناه.',
+  stampScreenNotice:
+    'لا يوجد رمز PIN للموظفين بعد في هذه النسخة التجريبية المحلية — يمكن لأي شخص يصل إلى هذه الشاشة ختم بطاقة. سيتوفر قفل PIN مع تسجيل الدخول عبر Firebase.',
+  stampScreenCameraHeading: 'الكاميرا',
+  stampScreenCameraStarting: 'جارٍ تشغيل الكاميرا…',
+  stampScreenManualHeading: 'إدخال يدوي',
+  stampScreenManualLabel: 'الرقم التسلسلي أو الرمز المختصر',
+  stampScreenManualPlaceholder: 'مثال: AB12CD34',
+  stampScreenSubmitButton: 'ختم',
+  stampScreenNetworkError: 'خطأ في الشبكة — تحقق من الاتصال وحاول مرة أخرى.',
 };

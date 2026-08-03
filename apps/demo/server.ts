@@ -35,14 +35,9 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import querystring from 'node:querystring';
 import { fileURLToPath } from 'node:url';
-import { Prisma, type Card, type Pass } from '@prisma/client';
-import {
-  buildPass,
-  invisibleChangeMarker,
-  type PassCredentials,
-  type PassContent,
-  type PassImages,
-} from '../../packages/pass/src/buildPass.ts';
+import { Prisma, type Card } from '@prisma/client';
+import { buildPass, type PassCredentials, type PassImages } from '../../packages/pass/src/buildPass.ts';
+import { buildPassContentFor } from './passContent.ts';
 import {
   resolveAppleCredentials as resolveAppleCredentialPaths,
   resolveApnsKeyPem,
@@ -59,6 +54,9 @@ import {
   getPassForDownload,
 } from './passkit.ts';
 import { updateCard, activateCard, passCountForCard, type CardEditInput } from './cardEdit.ts';
+import { csvRow } from './csv.ts';
+import { createPassForEnrolment, deleteOrphanedPass } from './enrol.ts';
+import { RateLimiter, resolveClientIp } from './rateLimit.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -254,14 +252,14 @@ function readJsonBody(req: http.IncomingMessage, maxBytes = 16 * 1024): Promise<
   });
 }
 
-/** Reads the `lang` cookie (BUILD.md §13 — language persists in cookies, never localStorage, so the server can read it). Defaults to `ar`, matching Card/Merchant's own default locale. */
+/** Reads the `lnx-lang` cookie (BUILD.md §13 — language persists in cookies, never localStorage, so the server can read it). This is the same cookie name the landing page's own language toggle writes (apps/demo/public/index.html) — one name shared by the whole site, or the merchant dashboard and the landing page silently diverge (as they did before this fix: this function used to read a `lang` cookie nothing ever wrote). Defaults to `ar`, matching Card/Merchant's own default locale. */
 function resolveLang(req: http.IncomingMessage): Lang {
   const header = req.headers.cookie;
   if (!header) return 'ar';
   for (const part of header.split(';')) {
     const eq = part.indexOf('=');
     if (eq === -1) continue;
-    if (part.slice(0, eq).trim() !== 'lang') continue;
+    if (part.slice(0, eq).trim() !== 'lnx-lang') continue;
     return part.slice(eq + 1).trim() === 'en' ? 'en' : 'ar';
   }
   return 'ar';
@@ -495,24 +493,6 @@ function makeCardIcon(size: number, bgColor: string, accentColor: string): Buffe
   surface.fill(parseHexColor(bgColor, 1));
   fillDisc(surface, size / 2, size / 2, size * 0.36, parseHexColor(accentColor, 1));
   return encodePNG(surface.toRGBA(), size, size);
-}
-
-/** Auto-generated terms per BUILD.md §8.6 — built from the card's own settings, the merchant writes nothing. */
-function buildTermsText(card: Card): string {
-  const expiry =
-    card.expiryType === 'duration'
-      ? `${card.expiryDays ?? 0} days`
-      : card.expiryType === 'fixed'
-        ? (card.expiryDate?.toISOString().slice(0, 10) ?? 'unlimited')
-        : 'unlimited';
-  return [
-    '1 stamp per visit.',
-    `Collect ${card.stampsGoal} stamps to get a reward.`,
-    `Card, stamps and rewards expiry: ${expiry}.`,
-    'Stamps and rewards cannot be exchanged, returned or bought for cash.',
-    'Cards cannot be transferred or combined with other cards.',
-    'The company reserves the right to amend these terms.',
-  ].join(' ');
 }
 
 /** A filesystem/header-safe filename stem from the card's own name. */
@@ -790,7 +770,9 @@ ${bodyHtml}
 </html>`;
 }
 
-const AUTH_BANNER = `<div class="banner"><b>Local demo — no authentication.</b> Anyone who can reach this machine on the network can view and create cards. Firebase sign-in arrives in a later sub-project.</div>`;
+function authBanner(lang: Lang): string {
+  return `<div class="banner"><b>${escapeHtml(t(lang, 'authBannerTitle'))}</b> ${escapeHtml(t(lang, 'authBannerBody'))}</div>`;
+}
 
 // ---------------------------------------------------------------------------
 // Route: GET /app — list cards. GET / itself now serves the owner's static
@@ -814,10 +796,10 @@ async function handleCardsList(req: http.IncomingMessage, res: http.ServerRespon
   const body = cards.length
     ? `<div class="row" style="margin-bottom:18px;">
          <div>
-           <h1>Your cards</h1>
-           <p class="muted">${cards.length} card${cards.length === 1 ? '' : 's'}</p>
+           <h1>${escapeHtml(t(lang, 'cardsListTitle'))}</h1>
+           <p class="muted">${escapeHtml(t(lang, cards.length === 1 ? 'cardsListCountOne' : 'cardsListCountMany', { count: arabicDigits(cards.length, lang) }))}</p>
          </div>
-         <a class="btn" href="/cards/new">Create card</a>
+         <a class="btn" href="/cards/new">${escapeHtml(t(lang, 'createCardButton'))}</a>
        </div>
        <div class="cards-grid">
          ${cards
@@ -826,19 +808,19 @@ async function handleCardsList(req: http.IncomingMessage, res: http.ServerRespon
                <img src="${cardThumbSrc(c)}" alt="${escapeHtml(c.name)} stamp strip" width="375" height="144">
                <div class="meta">
                  <h3>${escapeHtml(c.name)}</h3>
-                 <p>${escapeHtml(c.rewardText)} · ${c.stampsGoal} stamps</p>
+                 <p>${escapeHtml(c.rewardText)} · ${arabicDigits(c.stampsGoal, lang)} ${escapeHtml(t(lang, 'stampsWord'))}</p>
                </div>
              </a>`
            )
            .join('\n')}
        </div>`
     : `<div class="panel empty">
-         <h1>No loyalty cards yet</h1>
-         <p class="muted">Create your first card to start giving out stamps.</p>
-         <p><a class="btn" href="/cards/new">Create card</a></p>
+         <h1>${escapeHtml(t(lang, 'cardsEmptyTitle'))}</h1>
+         <p class="muted">${escapeHtml(t(lang, 'cardsEmptyBody'))}</p>
+         <p><a class="btn" href="/cards/new">${escapeHtml(t(lang, 'createCardButton'))}</a></p>
        </div>`;
 
-  sendHtml(res, 200, layout('Cards', AUTH_BANNER + body, 'cards', lang));
+  sendHtml(res, 200, layout(t(lang, 'cardsListTitle'), authBanner(lang) + body, 'cards', lang));
 }
 
 // ---------------------------------------------------------------------------
@@ -868,41 +850,41 @@ function renderNewCardForm(
   });
 
   const body = `
-    <h1>Create a loyalty card</h1>
+    <h1>${escapeHtml(t(lang, 'newCardTitle'))}</h1>
     ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
     <div class="panel">
       <form method="POST" action="/cards">
         <div class="field">
-          <label for="name">Card name</label>
-          <input type="text" id="name" name="name" required maxlength="80" value="${escapeHtml(name)}" placeholder="e.g. Shami Bakery">
+          <label for="name">${escapeHtml(t(lang, 'newCardNameLabel'))}</label>
+          <input type="text" id="name" name="name" required maxlength="80" value="${escapeHtml(name)}" placeholder="${escapeHtml(t(lang, 'newCardNamePlaceholder'))}">
         </div>
         <div class="field">
-          <label for="rewardText">Reward text</label>
-          <input type="text" id="rewardText" name="rewardText" required maxlength="120" value="${escapeHtml(rewardText)}" placeholder="e.g. Free coffee">
+          <label for="rewardText">${escapeHtml(t(lang, 'newCardRewardLabel'))}</label>
+          <input type="text" id="rewardText" name="rewardText" required maxlength="120" value="${escapeHtml(rewardText)}" placeholder="${escapeHtml(t(lang, 'newCardRewardPlaceholder'))}">
         </div>
         <div class="field">
-          <label for="goal">Stamps goal — <span id="goalVal">${goalNum}</span></label>
+          <label for="goal">${escapeHtml(t(lang, 'newCardGoalLabel'))} <span id="goalVal">${goalNum}</span></label>
           <input type="range" id="goal" name="goal" min="${MIN_GOAL}" max="${MAX_GOAL}" value="${goalNum}">
         </div>
         <div class="field colors">
           <div class="field">
-            <label for="bg">Card background</label>
-            <input type="color" id="bg" name="bg" value="${bg}">
+            <label for="bg">${escapeHtml(t(lang, 'newCardBgLabel'))}</label>
+            <input type="color" id="bg" name="bg" value="${escapeHtml(bg)}">
           </div>
           <div class="field">
-            <label for="active">Active stamp</label>
-            <input type="color" id="active" name="active" value="${active}">
+            <label for="active">${escapeHtml(t(lang, 'newCardActiveLabel'))}</label>
+            <input type="color" id="active" name="active" value="${escapeHtml(active)}">
           </div>
           <div class="field">
-            <label for="inactive">Inactive stamp</label>
-            <input type="color" id="inactive" name="inactive" value="${inactive}">
+            <label for="inactive">${escapeHtml(t(lang, 'newCardInactiveLabel'))}</label>
+            <input type="color" id="inactive" name="inactive" value="${escapeHtml(inactive)}">
           </div>
         </div>
         <div class="field preview-panel">
           <img id="preview" src="/preview.png?${previewQs.toString()}" alt="Live stamp strip preview" width="375" height="144">
         </div>
-        <button class="btn" type="submit">Create card</button>
-        <a class="btn secondary" href="/app">Cancel</a>
+        <button class="btn" type="submit">${escapeHtml(t(lang, 'createCardButton'))}</button>
+        <a class="btn secondary" href="/app">${escapeHtml(t(lang, 'cancelButton'))}</a>
       </form>
     </div>
     <script>
@@ -937,7 +919,7 @@ function renderNewCardForm(
       })();
     </script>
   `;
-  return layout('Create card', AUTH_BANNER + body, 'cards', lang);
+  return layout(t(lang, 'newCardTitle'), authBanner(lang) + body, 'cards', lang);
 }
 
 async function handleNewCardForm(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -967,18 +949,18 @@ async function handleCreateCard(req: http.IncomingMessage, res: http.ServerRespo
   const inactive = String(fields.inactive ?? '').trim();
 
   const errors: string[] = [];
-  if (!name) errors.push('Card name is required.');
-  if (name.length > 80) errors.push('Card name is too long (max 80 characters).');
-  if (!rewardText) errors.push('Reward text is required.');
-  if (rewardText.length > 120) errors.push('Reward text is too long (max 120 characters).');
+  if (!name) errors.push(t(lang, 'newCardNameRequired'));
+  if (name.length > 80) errors.push(t(lang, 'newCardNameTooLong'));
+  if (!rewardText) errors.push(t(lang, 'newCardRewardRequired'));
+  if (rewardText.length > 120) errors.push(t(lang, 'newCardRewardTooLong'));
 
   const goalNum = Number.parseInt(String(goalRaw), 10);
   if (!Number.isInteger(goalNum) || goalNum < MIN_GOAL || goalNum > MAX_GOAL) {
-    errors.push(`Stamps goal must be a whole number between ${MIN_GOAL} and ${MAX_GOAL}.`);
+    errors.push(t(lang, 'newCardGoalRange', { min: String(MIN_GOAL), max: String(MAX_GOAL) }));
   }
-  if (!HEX_RE.test(bg)) errors.push('Card background must be a valid colour.');
-  if (!HEX_RE.test(active)) errors.push('Active stamp colour must be a valid colour.');
-  if (!HEX_RE.test(inactive)) errors.push('Inactive stamp colour must be a valid colour.');
+  if (!HEX_RE.test(bg)) errors.push(t(lang, 'newCardBgInvalid'));
+  if (!HEX_RE.test(active)) errors.push(t(lang, 'newCardActiveInvalid'));
+  if (!HEX_RE.test(inactive)) errors.push(t(lang, 'newCardInactiveInvalid'));
 
   if (errors.length) {
     sendHtml(
@@ -1095,8 +1077,8 @@ async function handleCardDetail(req: http.IncomingMessage, res: http.ServerRespo
       : '';
 
   const statusPill = card.active
-    ? `<span class="chip active">Active</span>`
-    : `<span class="chip">Draft</span>`;
+    ? `<span class="chip active">${escapeHtml(t(lang, 'cardStatusActive'))}</span>`
+    : `<span class="chip">${escapeHtml(t(lang, 'cardStatusDraft'))}</span>`;
   const activateCta = !card.active
     ? `<a class="btn" href="/cards/${card.id}/activate">${escapeHtml(t(lang, 'activateTitle'))}</a>`
     : '';
@@ -1110,39 +1092,39 @@ async function handleCardDetail(req: http.IncomingMessage, res: http.ServerRespo
         ${activateCta}
         <a class="btn secondary" href="/cards/${card.id}/edit">${escapeHtml(t(lang, 'editTitle'))}</a>
         <a class="btn secondary" href="/cards/${card.id}/print">${escapeHtml(t(lang, 'activatePrintSheetLink'))}</a>
-        <a class="btn secondary" href="/app">All cards</a>
+        <a class="btn secondary" href="/app">${escapeHtml(t(lang, 'cardDetailAllCardsLink'))}</a>
       </div>
     </div>
     ${lockBanner}
     <div class="kpis">
-      <div class="kpi"><div class="n">${passCount}</div><div class="label">Customers</div></div>
-      <div class="kpi"><div class="n">${totalStamps}</div><div class="label">Stamps</div></div>
-      <div class="kpi"><div class="n">${totalRewards}</div><div class="label">Rewards</div></div>
+      <div class="kpi"><div class="n">${arabicDigits(passCount, lang)}</div><div class="label">${escapeHtml(t(lang, 'reportsKpiCustomers'))}</div></div>
+      <div class="kpi"><div class="n">${arabicDigits(totalStamps, lang)}</div><div class="label">${escapeHtml(t(lang, 'cardDetailKpiStamps'))}</div></div>
+      <div class="kpi"><div class="n">${arabicDigits(totalRewards, lang)}</div><div class="label">${escapeHtml(t(lang, 'customersColRewards'))}</div></div>
     </div>
     <div class="panel">
       <div class="preview-panel" style="margin-bottom:20px;">
         <img src="/preview.png?${stripQs.toString()}" alt="${escapeHtml(card.name)} stamp strip" width="375" height="144" style="max-width:375px;">
       </div>
       <dl class="kv">
-        <dt>Reward</dt><dd>${escapeHtml(card.rewardText)}</dd>
-        <dt>Stamps goal</dt><dd>${card.stampsGoal}</dd>
-        <dt>Short code</dt><dd><code class="pill">${escapeHtml(card.shortCode)}</code></dd>
-        <dt>Enrol URL</dt><dd><code class="pill">${escapeHtml(enrolUrl)}</code></dd>
+        <dt>${escapeHtml(t(lang, 'cardDetailRewardLabel'))}</dt><dd>${escapeHtml(card.rewardText)}</dd>
+        <dt>${escapeHtml(t(lang, 'cardDetailGoalLabel'))}</dt><dd>${arabicDigits(card.stampsGoal, lang)}</dd>
+        <dt>${escapeHtml(t(lang, 'cardDetailShortCodeLabel'))}</dt><dd><code class="pill">${escapeHtml(card.shortCode)}</code></dd>
+        <dt>${escapeHtml(t(lang, 'cardDetailEnrolUrlLabel'))}</dt><dd><code class="pill">${escapeHtml(enrolUrl)}</code></dd>
       </dl>
     </div>
     <div class="panel">
-      <h2>Scan to enrol</h2>
+      <h2>${escapeHtml(t(lang, 'cardDetailScanHeading'))}</h2>
       <div class="qr-wrap">
         <img src="/qr.png?${qrQs.toString()}" alt="QR code for ${escapeHtml(enrolUrl)}">
       </div>
       <p class="muted" style="margin-top:14px;">${
         PUBLIC_BASE_URL
-          ? `The QR points at ${escapeHtml(PUBLIC_URL)}.`
-          : `Open this page from an iPhone on the same network — the QR points at ${escapeHtml(PUBLIC_URL)}.`
+          ? escapeHtml(t(lang, 'cardDetailQrPublicNote', { url: PUBLIC_URL }))
+          : escapeHtml(t(lang, 'cardDetailQrLanNote', { url: PUBLIC_URL }))
       }</p>
     </div>
   `;
-  sendHtml(res, 200, layout(card.name, AUTH_BANNER + body, 'cards', lang));
+  sendHtml(res, 200, layout(card.name, authBanner(lang) + body, 'cards', lang));
 }
 
 // ---------------------------------------------------------------------------
@@ -1456,7 +1438,12 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
   const passCount = await passCountForCard(id);
   const locked = passCount > 0;
 
-  const name = String(fields.name ?? '').trim();
+  // Capped at 80 chars, matching POST /cards' own limit (server.ts's
+  // handleCreateCard) — the create form enforces this with a rejecting
+  // error message; here it is a silent truncation, consistent with how
+  // labelStamps/labelRewards just below are already clamped rather than
+  // rejected, since name is otherwise unvalidated on this path.
+  const name = String(fields.name ?? '').trim().slice(0, 80);
   const bgColor = validHex(fields.bgColor, card.bgColor);
   const stampActive = validHex(fields.stampActive, card.stampActive);
   const stampInactive = validHex(fields.stampInactive, card.stampInactive);
@@ -1655,8 +1642,8 @@ async function handleCustomersList(req: http.IncomingMessage, res: http.ServerRe
           </select>
         </div>
         <div class="field" style="margin-bottom:0;">
-          <button class="btn" type="submit">Search</button>
-          ${filtersActive ? `<a class="btn secondary" href="/customers">Clear</a>` : ''}
+          <button class="btn" type="submit">${escapeHtml(t(lang, 'customersSearchButton'))}</button>
+          ${filtersActive ? `<a class="btn secondary" href="/customers">${escapeHtml(t(lang, 'customersClearButton'))}</a>` : ''}
         </div>
       </form>
     </div>
@@ -1664,18 +1651,6 @@ async function handleCustomersList(req: http.IncomingMessage, res: http.ServerRe
     <p class="muted">${escapeHtml(t(lang, 'customersFooter', { shown: String(rows.length), total: String(totalCount) }))}</p>
   `;
   sendHtml(res, 200, layout(t(lang, 'customersTitle'), body, 'customers', lang));
-}
-
-/** Wraps `value` in double quotes (doubling any embedded quote) whenever it contains a comma, quote or line break — the minimal RFC 4180 quoting a CSV field needs. A name like `O'Brien, Jr` or one containing a literal `"` must round-trip through this unharmed, not corrupt the file. */
-function csvField(value: string): string {
-  if (/[",\r\n]/.test(value)) {
-    return `"${value.replace(/"/g, '""')}"`;
-  }
-  return value;
-}
-
-function csvRow(values: string[]): string {
-  return values.map(csvField).join(',');
 }
 
 async function handleCustomersExport(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
@@ -1927,6 +1902,14 @@ function renderEnrolPage(card: Card): string {
     scale: '2',
   });
   const fg = card.fgColor || '#FFFFFF';
+  // Minted fresh on every render of this page, carried as a hidden field on
+  // the enrol form below — server.ts's readEnrolFields()/enrol.ts's
+  // createPassForEnrolment() use it to collapse a same-page-load double
+  // submit (back-button resubmit, or tapping both wallet buttons) into one
+  // Pass row when no phone number was supplied. See enrol.ts's doc comment
+  // for why this is deliberately short-lived and in-memory only, not a
+  // database column.
+  const idempotencyKey = crypto.randomBytes(16).toString('base64url');
 
   return `<!doctype html>
 <html lang="en">
@@ -1992,6 +1975,7 @@ function renderEnrolPage(card: Card): string {
     <img src="/preview.png?${stripQs.toString()}" alt="${escapeHtml(card.name)} empty stamp card" width="375" height="144">
   </div>
   <form method="POST" action="/${card.linkCode}/pass">
+    <input type="hidden" name="idem" value="${escapeHtml(idempotencyKey)}">
     <div class="field">
       <label for="name">Name <span class="opt">(optional)</span></label>
       <input type="text" id="name" name="name" maxlength="80" autocomplete="name" placeholder="Your name">
@@ -2057,51 +2041,10 @@ function buildPassImagesFor(
   };
 }
 
-/**
- * pass.json content for `pass` on `card`. Includes `webServiceURL` /
- * `authenticationToken` only when `PUBLIC_BASE_URL` is configured — see
- * `PassContent`'s doc comment in buildPass.ts for why both-or-neither
- * matters. `webServiceURL` is the app's public origin plus `/apple`; Apple
- * appends `/v1/...` itself, matching this file's own `/apple/v1/...`
- * routes below.
- */
-function buildPassContentFor(card: Card, pass: Pass): PassContent {
-  const stampsRemaining = Math.max(card.stampsGoal - pass.stamps, 0);
-  return {
-    serialNumber: pass.serial,
-    organizationName: card.name,
-    description: `${card.name} loyalty card`,
-    logoText: card.name,
-    backgroundColor: card.bgColor,
-    foregroundColor: card.fgColor,
-    primaryFields: [{ key: 'reward', label: 'REWARD', value: card.rewardText }],
-    secondaryFields: [
-      { key: 'rewards', label: 'REWARDS', value: `${pass.rewards} rewards` },
-      {
-        key: 'stampsRemaining',
-        label: 'STAMPS REMAINING',
-        // The visible count already changes whenever a stamp lands, which
-        // is normally enough to make iOS show the lock-screen banner
-        // (BUILD.md §9.3) — but "normally" isn't "always" (a reward can
-        // reset the count back to a value it held before, or this pass can
-        // get rebuilt with nothing to say). invisibleChangeMarker() makes
-        // the field's *text* unique on every single rebuild without ever
-        // changing what the customer sees — see its doc comment in
-        // buildPass.ts before deleting this thinking it's noise.
-        value: `${stampsRemaining} stamps${invisibleChangeMarker()}`,
-        changeMessage: '%@',
-      },
-    ],
-    backFields: [{ key: 'terms', label: 'Terms', value: buildTermsText(card) }],
-    barcodeMessage: pass.serial,
-    ...(PUBLIC_BASE_URL
-      ? { webServiceURL: `${PUBLIC_BASE_URL}/apple`, authenticationToken: pass.authToken }
-      : {}),
-  };
-}
-
-/** Reads and clamps the optional `name`/`phone` enrolment fields from a POST body — shared by both wallet issuance routes below. A malformed/oversized body must not block enrolment, so any read failure just falls back to "none supplied" rather than a 4xx. */
-async function readEnrolFields(req: http.IncomingMessage): Promise<{ custName: string; custPhone: string }> {
+/** Reads and clamps the optional `name`/`phone`/idempotency-token enrolment fields from a POST body — shared by both wallet issuance routes below. A malformed/oversized body must not block enrolment, so any read failure just falls back to "none supplied" rather than a 4xx. */
+async function readEnrolFields(
+  req: http.IncomingMessage
+): Promise<{ custName: string; custPhone: string; idempotencyKey: string }> {
   let fields: querystring.ParsedUrlQuery = {};
   try {
     fields = await readUrlencodedBody(req);
@@ -2111,44 +2054,28 @@ async function readEnrolFields(req: http.IncomingMessage): Promise<{ custName: s
   return {
     custName: String(fields.name ?? '').trim().slice(0, 80),
     custPhone: String(fields.phone ?? '').trim().slice(0, 30),
+    idempotencyKey: String(fields.idem ?? '').trim().slice(0, 64),
   };
 }
 
-/**
- * Creates the Pass row for a brand-new enrolment on `card` — shared by both
- * wallet issuance routes (POST /:code/pass for Apple, POST /:code/google-pass
- * for Google): whichever wallet button the customer taps, it is the same
- * enrolment, so it gets exactly one Pass row with one `serial`, which is
- * all either platform ever needs to identify and update it later.
- */
-async function createPassForEnrolment(card: Card, custName: string, custPhone: string): Promise<Pass> {
-  const stamps = card.starterStamps;
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const serial = crypto.randomBytes(14).toString('base64url').slice(0, 18); // 18 random base64url chars
-    const shortCode = generateShortCode(); // 8 uppercase hex chars
-    const authToken = crypto.randomBytes(24).toString('base64url'); // 32 random chars
-    try {
-      return await prisma.pass.create({
-        data: {
-          serial,
-          shortCode,
-          cardId: card.id,
-          merchantId: card.merchantId,
-          authToken,
-          stamps,
-          custName,
-          custPhone,
-        },
-      });
-    } catch (err) {
-      // P2002: unique constraint failed (serial or shortCode collision) — retry with fresh values.
-      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002' && attempt < 4) continue;
-      throw err;
-    }
-  }
-  // Unreachable in practice: the loop above always either returns or
-  // rethrows on its final iteration.
-  throw new Error('pass creation loop exited without creating a pass or throwing');
+// ---------------------------------------------------------------------------
+// Rate limiting POST /:code/pass and POST /:code/google-pass — both are
+// public, unauthenticated and expensive (see rateLimit.ts's own doc
+// comment). One shared limiter for both routes, keyed by client IP: 10
+// issuances per IP per 10 minutes is generous for a real customer (nobody
+// legitimately enrols in the same card ten times in ten minutes) and cheap
+// insurance against a script.
+// ---------------------------------------------------------------------------
+const passIssuanceLimiter = new RateLimiter({ limit: 10, windowMs: 10 * 60 * 1000 });
+
+/** true when `req` is still within the pass-issuance rate limit (and counts this call toward it either way). */
+function checkPassIssuanceRateLimit(req: http.IncomingMessage): boolean {
+  const ip = resolveClientIp(req.headers, req.socket.remoteAddress);
+  return passIssuanceLimiter.check(ip);
+}
+
+function sendRateLimited(res: http.ServerResponse, lang: Lang): void {
+  sendHtml(res, 429, layout('Too many requests', `<div class="panel"><h1>429</h1><p>${escapeHtml(t(lang, 'rateLimited'))}</p></div>`, undefined, lang));
 }
 
 // ---------------------------------------------------------------------------
@@ -2170,7 +2097,12 @@ async function handleIssuePass(req: http.IncomingMessage, res: http.ServerRespon
     return;
   }
 
-  const { custName, custPhone } = await readEnrolFields(req);
+  if (!checkPassIssuanceRateLimit(req)) {
+    sendRateLimited(res, resolveLang(req));
+    return;
+  }
+
+  const { custName, custPhone, idempotencyKey } = await readEnrolFields(req);
   const credentials = resolveAppleCredentials();
 
   const stripSet = await renderAllDensities(PASS_STRIP_STORE, {
@@ -2184,9 +2116,21 @@ async function handleIssuePass(req: http.IncomingMessage, res: http.ServerRespon
   });
   const images = buildPassImagesFor(card, stripSet);
 
-  const pass = await createPassForEnrolment(card, custName, custPhone);
-  const content = buildPassContentFor(card, pass);
-  const pkpass = buildPass(credentials, content, images);
+  const { pass, created } = await createPassForEnrolment(card, custName, custPhone, idempotencyKey);
+
+  // If signing/building fails below, a freshly-inserted Pass row must not
+  // survive it — an orphan row with no corresponding wallet pass would show
+  // up on the dashboard as a phantom customer who never actually enrolled
+  // (a reused row from an earlier, successful enrolment is never deleted —
+  // see EnrolmentResult's doc comment in enrol.ts).
+  let pkpass: Buffer;
+  try {
+    const content = buildPassContentFor(card, pass, { publicBaseUrl: PUBLIC_BASE_URL });
+    pkpass = buildPass(credentials, content, images);
+  } catch (err) {
+    if (created) await deleteOrphanedPass(pass.id);
+    throw err;
+  }
 
   await prisma.stampEvent.create({
     data: {
@@ -2233,6 +2177,11 @@ async function handleIssueGooglePass(
     return;
   }
 
+  if (!checkPassIssuanceRateLimit(req)) {
+    sendRateLimited(res, resolveLang(req));
+    return;
+  }
+
   const client = getGoogleWalletClient();
   if (!client) {
     // getGoogleWalletClient() already logged the underlying reason once.
@@ -2250,8 +2199,23 @@ async function handleIssueGooglePass(
     return;
   }
 
-  const { custName, custPhone } = await readEnrolFields(req);
-  const pass = await createPassForEnrolment(card, custName, custPhone);
+  const { custName, custPhone, idempotencyKey } = await readEnrolFields(req);
+  const { pass, created } = await createPassForEnrolment(card, custName, custPhone, idempotencyKey);
+
+  // Same reasoning as POST /:code/pass just above: a freshly-inserted row
+  // must not survive a failure in the steps that make it actually usable —
+  // a reused row (created: false) is left alone either way.
+  let saveLink: string;
+  try {
+    await client.ensureLoyaltyClass({ id: card.id, name: card.name, bgColor: card.bgColor });
+    saveLink = client.saveLink(
+      { serial: pass.serial, stamps: pass.stamps, custName: pass.custName || undefined },
+      { id: card.id, stampsGoal: card.stampsGoal }
+    );
+  } catch (err) {
+    if (created) await deleteOrphanedPass(pass.id);
+    throw err;
+  }
 
   await prisma.stampEvent.create({
     data: {
@@ -2261,12 +2225,6 @@ async function handleIssueGooglePass(
       kind: 'ENROLL',
     },
   });
-
-  await client.ensureLoyaltyClass({ id: card.id, name: card.name, bgColor: card.bgColor });
-  const saveLink = client.saveLink(
-    { serial: pass.serial, stamps: pass.stamps, custName: pass.custName || undefined },
-    { id: card.id, stampsGoal: card.stampsGoal }
-  );
 
   res.writeHead(302, { Location: saveLink });
   res.end();
@@ -2344,7 +2302,7 @@ function renderStampScreen(lang: Lang = 'en'): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Stamp a card · LoyaNexa</title>
+<title>${escapeHtml(t(lang, 'stampScreenTitle'))} · LoyaNexa</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Alexandria:wght@400;600;700;800&display=swap">
@@ -2421,28 +2379,28 @@ function renderStampScreen(lang: Lang = 'en'): string {
 <body>
 ${navBar('stamp', lang)}
 <main>
-  <h1>Stamp a card</h1>
-  <p class="sub">Scan the QR inside the customer's wallet pass, or type their code below.</p>
-  <div class="notice">No staff PIN yet in this local demo — anyone who can reach this screen can stamp a card. PIN lock arrives with Firebase auth (sub-project 4).</div>
+  <h1>${escapeHtml(t(lang, 'stampScreenTitle'))}</h1>
+  <p class="sub">${escapeHtml(t(lang, 'stampScreenSub'))}</p>
+  <div class="notice">${escapeHtml(t(lang, 'stampScreenNotice'))}</div>
 
   <div id="result" role="status" aria-live="polite"></div>
 
   <div class="panel">
-    <h2>Camera</h2>
+    <h2>${escapeHtml(t(lang, 'stampScreenCameraHeading'))}</h2>
     <div class="camera-wrap">
       <video id="video" playsinline muted></video>
     </div>
-    <p class="camera-status" id="cameraStatus">Starting camera…</p>
+    <p class="camera-status" id="cameraStatus">${escapeHtml(t(lang, 'stampScreenCameraStarting'))}</p>
   </div>
 
   <div class="panel">
-    <h2>Manual entry</h2>
+    <h2>${escapeHtml(t(lang, 'stampScreenManualHeading'))}</h2>
     <form class="manual" id="manualForm">
       <div class="field">
-        <label for="manualCode">Serial or short code</label>
-        <input type="text" id="manualCode" name="code" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="e.g. AB12CD34" required>
+        <label for="manualCode">${escapeHtml(t(lang, 'stampScreenManualLabel'))}</label>
+        <input type="text" id="manualCode" name="code" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="${escapeHtml(t(lang, 'stampScreenManualPlaceholder'))}" required>
       </div>
-      <button class="stamp-btn" type="submit" id="manualSubmit">Stamp</button>
+      <button class="stamp-btn" type="submit" id="manualSubmit">${escapeHtml(t(lang, 'stampScreenSubmitButton'))}</button>
     </form>
   </div>
 </main>
@@ -2451,6 +2409,13 @@ ${navBar('stamp', lang)}
 <script>
 (function () {
   'use strict';
+
+  // Translated server-side (this whole page is rendered once per request
+  // via resolveLang(req)) rather than in the client, same as every other
+  // string on this screen — the two messages the fetch() below can show
+  // when the server didn't hand back its own translated message.
+  var MSG_UNKNOWN_ERROR = ${JSON.stringify(t(lang, 'serverError'))};
+  var MSG_NETWORK_ERROR = ${JSON.stringify(t(lang, 'stampScreenNetworkError'))};
 
   var resultEl = document.getElementById('result');
   var video = document.getElementById('video');
@@ -2529,11 +2494,11 @@ ${navBar('stamp', lang)}
         return res.json().then(function (data) { return { ok: res.ok, data: data }; });
       })
       .then(function (result) {
-        var message = result.data && result.data.message ? result.data.message : 'Something went wrong.';
+        var message = result.data && result.data.message ? result.data.message : MSG_UNKNOWN_ERROR;
         showResult(result.ok, message);
       })
       .catch(function () {
-        showResult(false, 'Network error — check the connection and try again.');
+        showResult(false, MSG_NETWORK_ERROR);
       })
       .then(function () {
         setBusy(false);
@@ -2833,7 +2798,7 @@ async function handleGetLatestPass(
     inactiveColor: pass.card.stampInactive,
   });
   const images = buildPassImagesFor(pass.card, stripSet);
-  const content = buildPassContentFor(pass.card, pass);
+  const content = buildPassContentFor(pass.card, pass, { publicBaseUrl: PUBLIC_BASE_URL });
   const pkpass = buildPass(credentials, content, images);
 
   res.writeHead(200, {
@@ -3132,10 +3097,18 @@ const server = http.createServer(async (req, res) => {
 
     sendNotFound(res, `No route for ${req.method} ${pathname}.`);
   } catch (err) {
-    console.error(err);
-    const message = err instanceof Error ? err.message : String(err);
+    // The exception's own message is logged in full here, server-side only
+    // — never sent to the client (see below). It routinely carries things
+    // that must never reach a public response: resolveAppleCredentials()
+    // throws container filesystem paths when a cert is missing, and a
+    // Prisma connection error (P1001) renders the database host and port
+    // straight into `Error#message`. `req.method`/`req.url` are logged
+    // alongside it so this line is still useful for debugging without
+    // having to guess which request failed.
+    console.error(`[500] ${req.method} ${req.url}:`, err);
     if (!res.headersSent) {
-      sendHtml(res, 500, layout('Error', `<div class="panel"><h1>500</h1><p>${escapeHtml(message)}</p></div>`));
+      const lang = resolveLang(req);
+      sendHtml(res, 500, layout('Error', `<div class="panel"><h1>500</h1><p>${escapeHtml(t(lang, 'serverError'))}</p></div>`, undefined, lang));
     } else {
       res.end();
     }
