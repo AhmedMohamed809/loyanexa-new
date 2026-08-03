@@ -13,7 +13,14 @@
 //   GET  /cards/new, POST /cards, GET /cards/:id
 //   GET  /preview.png, GET /qr.png
 //   GET  /stamp           the merchant stamp screen (BUILD.md §8.15)
-//   POST /api/stamp        its write path — 24h anti-fraud guard (§9.6)
+//   POST /api/stamp        its write path — 24h anti-fraud guard (§9.6),
+//                          fires an APNs live-update push after responding
+//   Apple PassKit web service (BUILD.md §9.3 / §12 — paths fixed by Apple):
+//     POST   /apple/v1/devices/:deviceId/registrations/:passTypeId/:serial
+//     GET    /apple/v1/devices/:deviceId/registrations/:passTypeId
+//     GET    /apple/v1/passes/:passTypeId/:serial
+//     DELETE /apple/v1/devices/:deviceId/registrations/:passTypeId/:serial
+//     POST   /apple/v1/log
 //   GET  /:code           the customer enrol page (registered last — catch-all)
 //   POST /:code/pass       issues a real signed Apple Wallet pass
 //   GET  /health
@@ -28,13 +35,24 @@ import { fileURLToPath } from 'node:url';
 import { Prisma, type Card, type Pass } from '@prisma/client';
 import {
   buildPass,
+  invisibleChangeMarker,
   type PassCredentials,
   type PassContent,
   type PassImages,
 } from '../../packages/pass/src/buildPass.ts';
-import { resolveAppleCredentials as resolveAppleCredentialPaths } from '../../packages/pass/src/credentials.ts';
+import {
+  resolveAppleCredentials as resolveAppleCredentialPaths,
+  resolveApnsKeyPem,
+} from '../../packages/pass/src/credentials.ts';
+import { ApnsClient } from '../../packages/pass/src/apns.ts';
 import { t, arabicDigits, type Lang } from '../../packages/i18n/src/index.ts';
 import { loadEnvFile } from './env.ts';
+import {
+  registerDevice,
+  getUpdatedSerials,
+  unregisterDevice,
+  getPassForDownload,
+} from './passkit.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -312,6 +330,69 @@ function resolveAppleCredentials(): PassCredentials {
     keyPath: signerKeyPath,
     wwdrPath,
   };
+}
+
+// ---------------------------------------------------------------------------
+// APNs — one ApnsClient for the whole process (BUILD.md §18 item 3: it
+// caches its JWT and reuses one HTTP/2 session across every push; building
+// a fresh client per push would defeat both). Built lazily on first use,
+// not at module load, so a machine without the .p8 configured (e.g. a
+// contributor's laptop that never set APNS_KEY_PATH) still runs the rest of
+// the demo — it just never sends live-update pushes, which is logged once,
+// clearly, rather than crashing the whole server.
+// ---------------------------------------------------------------------------
+let apnsClient: ApnsClient | null | undefined; // undefined = not yet attempted; null = attempted, unavailable
+function getApnsClient(): ApnsClient | undefined {
+  if (apnsClient !== undefined) return apnsClient ?? undefined;
+  try {
+    const keyId = process.env.APNS_KEY_ID;
+    const teamId = process.env.APPLE_TEAM_ID;
+    if (!keyId) throw new Error('.env is missing APNS_KEY_ID');
+    if (!teamId) throw new Error('.env is missing APPLE_TEAM_ID');
+    const privateKeyPem = resolveApnsKeyPem(ROOT);
+    apnsClient = new ApnsClient({ keyId, teamId, privateKeyPem });
+    return apnsClient;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[apns] not configured — live-update pushes are disabled (${message})`);
+    apnsClient = null;
+    return undefined;
+  }
+}
+
+/**
+ * Pushes the content-free wake-up notification (BUILD.md §9.3) to every
+ * device registered for `serial`, and prunes any Device row APNs reports
+ * as 410 Gone (the pass was removed from that phone). Callers must invoke
+ * this *after* responding to the triggering request (BUILD.md §18 item 6)
+ * — it is never awaited by a request handler, only fired from one.
+ */
+async function pushPassUpdate(serial: string): Promise<void> {
+  const client = getApnsClient();
+  if (!client) return; // getApnsClient() already logged why, once.
+  const passTypeId = process.env.APPLE_PASS_TYPE_ID;
+  if (!passTypeId) {
+    console.error('[apns] .env is missing APPLE_PASS_TYPE_ID — cannot set apns-topic, skipping push');
+    return;
+  }
+
+  const devices = await prisma.device.findMany({ where: { passSerial: serial } });
+  await Promise.all(
+    devices.map(async (device) => {
+      const result = await client.sendPush(device.pushToken, passTypeId);
+      if (result.ok) return;
+      if (result.reason === 'gone') {
+        await prisma.device
+          .delete({ where: { deviceId_passSerial: { deviceId: device.deviceId, passSerial: serial } } })
+          .catch(() => {}); // already gone / raced with an unregister — fine either way
+        console.log(`[apns] pass ${serial}: pruned device ${device.deviceId} (410 Gone)`);
+      } else {
+        console.error(
+          `[apns] pass ${serial}: push to device ${device.deviceId} failed — status=${result.status} body=${result.body}`
+        );
+      }
+    })
+  );
 }
 
 /** A shared strip-render cache, reused across every pass issuance (BUILD.md §10 — the strip cache is a 455x measured win; do not re-render per request). */
@@ -963,12 +1044,74 @@ async function handleEnrolPage(res: http.ServerResponse, code: string): Promise<
 }
 
 // ---------------------------------------------------------------------------
+// Shared pass content/image building — used both by POST /:code/pass
+// (issuing a brand-new pass) and by the PassKit "get latest pass" web
+// service endpoint (rebuilding an existing one after a stamp). One
+// implementation so the two can never drift apart.
+// ---------------------------------------------------------------------------
+
+function buildPassImagesFor(
+  card: Card,
+  stripSet: Pick<PassImages, 'strip.png' | 'strip@2x.png' | 'strip@3x.png'>
+): PassImages {
+  return {
+    'icon.png': makeCardIcon(29, card.bgColor, card.stampActive),
+    'icon@2x.png': makeCardIcon(58, card.bgColor, card.stampActive),
+    'strip.png': stripSet['strip.png'],
+    'strip@2x.png': stripSet['strip@2x.png'],
+    'strip@3x.png': stripSet['strip@3x.png'],
+  };
+}
+
+/**
+ * pass.json content for `pass` on `card`. Includes `webServiceURL` /
+ * `authenticationToken` only when `PUBLIC_BASE_URL` is configured — see
+ * `PassContent`'s doc comment in buildPass.ts for why both-or-neither
+ * matters. `webServiceURL` is the app's public origin plus `/apple`; Apple
+ * appends `/v1/...` itself, matching this file's own `/apple/v1/...`
+ * routes below.
+ */
+function buildPassContentFor(card: Card, pass: Pass): PassContent {
+  const stampsRemaining = Math.max(card.stampsGoal - pass.stamps, 0);
+  return {
+    serialNumber: pass.serial,
+    organizationName: card.name,
+    description: `${card.name} loyalty card`,
+    logoText: card.name,
+    backgroundColor: card.bgColor,
+    foregroundColor: card.fgColor,
+    primaryFields: [{ key: 'reward', label: 'REWARD', value: card.rewardText }],
+    secondaryFields: [
+      { key: 'rewards', label: 'REWARDS', value: `${pass.rewards} rewards` },
+      {
+        key: 'stampsRemaining',
+        label: 'STAMPS REMAINING',
+        // The visible count already changes whenever a stamp lands, which
+        // is normally enough to make iOS show the lock-screen banner
+        // (BUILD.md §9.3) — but "normally" isn't "always" (a reward can
+        // reset the count back to a value it held before, or this pass can
+        // get rebuilt with nothing to say). invisibleChangeMarker() makes
+        // the field's *text* unique on every single rebuild without ever
+        // changing what the customer sees — see its doc comment in
+        // buildPass.ts before deleting this thinking it's noise.
+        value: `${stampsRemaining} stamps${invisibleChangeMarker()}`,
+        changeMessage: '%@',
+      },
+    ],
+    backFields: [{ key: 'terms', label: 'Terms', value: buildTermsText(card) }],
+    barcodeMessage: pass.serial,
+    ...(PUBLIC_BASE_URL
+      ? { webServiceURL: `${PUBLIC_BASE_URL}/apple`, authenticationToken: pass.authToken }
+      : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Route: POST /:code/pass — issue a real, signed .pkpass for this card and
 // hand it back with the exact MIME type iOS uses to decide whether to offer
-// it to Wallet. No webServiceURL / authenticationToken: BUILD.md §9.3 says
-// webServiceURL must be HTTPS or Apple fails silently, and there is no
-// HTTPS endpoint here — a pass that omits both installs cleanly and just
-// doesn't live-update, which beats a placeholder that silently breaks.
+// it to Wallet. Carries `webServiceURL`/`authenticationToken` only when
+// `PUBLIC_BASE_URL` is set (BUILD.md §9.3: `webServiceURL` must be HTTPS or
+// Apple fails silently) — see buildPassContentFor() above.
 // ---------------------------------------------------------------------------
 async function handleIssuePass(req: http.IncomingMessage, res: http.ServerResponse, code: string): Promise<void> {
   const linkCode = parseLinkCode(code);
@@ -1005,13 +1148,7 @@ async function handleIssuePass(req: http.IncomingMessage, res: http.ServerRespon
     activeColor: card.stampActive,
     inactiveColor: card.stampInactive,
   });
-  const images: PassImages = {
-    'icon.png': makeCardIcon(29, card.bgColor, card.stampActive),
-    'icon@2x.png': makeCardIcon(58, card.bgColor, card.stampActive),
-    'strip.png': stripSet['strip.png'],
-    'strip@2x.png': stripSet['strip@2x.png'],
-    'strip@3x.png': stripSet['strip@3x.png'],
-  };
+  const images = buildPassImagesFor(card, stripSet);
 
   let pass: Pass | undefined;
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -1043,25 +1180,7 @@ async function handleIssuePass(req: http.IncomingMessage, res: http.ServerRespon
     throw new Error('pass creation loop exited without creating a pass or throwing');
   }
 
-  const content: PassContent = {
-    serialNumber: pass.serial,
-    organizationName: card.name,
-    description: `${card.name} loyalty card`,
-    logoText: card.name,
-    backgroundColor: card.bgColor,
-    foregroundColor: card.fgColor,
-    primaryFields: [{ key: 'reward', label: 'REWARD', value: card.rewardText }],
-    secondaryFields: [
-      { key: 'rewards', label: 'REWARDS', value: `${pass.rewards} rewards` },
-      {
-        key: 'stampsRemaining',
-        label: 'STAMPS REMAINING',
-        value: `${Math.max(card.stampsGoal - stamps, 0)} stamps`,
-      },
-    ],
-    backFields: [{ key: 'terms', label: 'Terms', value: buildTermsText(card) }],
-    barcodeMessage: pass.serial,
-  };
+  const content = buildPassContentFor(card, pass);
 
   const pkpass = buildPass(credentials, content, images);
 
@@ -1514,6 +1633,169 @@ async function handleApiStamp(req: http.IncomingMessage, res: http.ServerRespons
     rewardEarned: outcome.rewardEarned,
     message,
   });
+
+  // Fire the live-update push only *after* the response above has been
+  // handed to the socket, and never awaited by this handler — BUILD.md §18
+  // item 6: fanning APNs out inside a request handler is what times a
+  // stamp request out. setImmediate defers this past the current
+  // synchronous turn (and past res.end() flushing) so a slow or failed
+  // push can never slow down, let alone fail, the stamp itself.
+  setImmediate(() => {
+    pushPassUpdate(outcome.serial).catch((err) => {
+      console.error(`[apns] push fan-out threw for pass ${outcome.serial}:`, err);
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Apple PassKit web service (BUILD.md §9.3 / §12) — the four endpoints
+// Apple's device and Wallet call directly, plus the diagnostics-log
+// endpoint. Paths are fixed by Apple; do not alter them. DB logic and the
+// `Authorization: ApplePass <token>` check live in apps/demo/passkit.ts
+// (testable without HTTP, same split as apps/demo/stamp.ts); these
+// handlers only translate HTTP <-> those calls.
+// ---------------------------------------------------------------------------
+
+/** The single `Authorization` header value, or undefined — node normalises repeated headers into an array; PassKit never sends more than one. */
+function applePassAuthHeader(req: http.IncomingMessage): string | undefined {
+  const h = req.headers.authorization;
+  return Array.isArray(h) ? h[0] : h;
+}
+
+function readStringField(body: unknown, key: string): string {
+  if (typeof body !== 'object' || body === null || !(key in body)) return '';
+  const v = (body as Record<string, unknown>)[key];
+  return typeof v === 'string' ? v.trim() : '';
+}
+
+/**
+ * POST /apple/v1/devices/:deviceId/registrations/:passTypeId/:serial —
+ * registers this device for live updates to this pass. 201 the first time,
+ * 200 if it was already registered (Apple distinguishes the two).
+ */
+async function handleRegisterDevice(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  deviceId: string,
+  serial: string
+): Promise<void> {
+  let body: unknown;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    body = {};
+  }
+  const pushToken = readStringField(body, 'pushToken');
+  if (!pushToken) {
+    res.writeHead(400);
+    res.end();
+    return;
+  }
+
+  const result = await registerDevice({ deviceId, serial, authHeader: applePassAuthHeader(req), pushToken });
+  res.writeHead(result.status);
+  res.end();
+}
+
+/**
+ * GET /apple/v1/devices/:deviceId/registrations/:passTypeId?passesUpdatedSince=
+ * — "what's changed for this device since last time?" 204 when nothing
+ * has, 200 with the changed serials when something has.
+ */
+async function handleGetUpdatedSerials(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  deviceId: string,
+  url: URL
+): Promise<void> {
+  const result = await getUpdatedSerials({
+    deviceId,
+    authHeader: applePassAuthHeader(req),
+    passesUpdatedSince: url.searchParams.get('passesUpdatedSince') ?? undefined,
+  });
+  if (result.status === 200) {
+    sendJson(res, 200, result.body);
+    return;
+  }
+  res.writeHead(result.status);
+  res.end();
+}
+
+/**
+ * GET /apple/v1/passes/:passTypeId/:serial — the freshly rebuilt, signed
+ * `.pkpass` for this serial. Honours `If-Modified-Since`: 304 when the
+ * pass hasn't changed since the device's cached copy.
+ */
+async function handleGetLatestPass(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  serial: string
+): Promise<void> {
+  const ifModifiedSinceHeader = req.headers['if-modified-since'];
+  const result = await getPassForDownload({
+    serial,
+    authHeader: applePassAuthHeader(req),
+    ifModifiedSince: typeof ifModifiedSinceHeader === 'string' ? ifModifiedSinceHeader : undefined,
+  });
+  if (result.status !== 200) {
+    res.writeHead(result.status);
+    res.end();
+    return;
+  }
+
+  const { pass } = result;
+  const credentials = resolveAppleCredentials();
+  const stripSet = await renderAllDensities(PASS_STRIP_STORE, {
+    goal: pass.card.stampsGoal,
+    filled: pass.stamps,
+    shape: 'circle',
+    bgColor: pass.card.bgColor,
+    bgOpacity: 1,
+    activeColor: pass.card.stampActive,
+    inactiveColor: pass.card.stampInactive,
+  });
+  const images = buildPassImagesFor(pass.card, stripSet);
+  const content = buildPassContentFor(pass.card, pass);
+  const pkpass = buildPass(credentials, content, images);
+
+  res.writeHead(200, {
+    'Content-Type': 'application/vnd.apple.pkpass',
+    'Content-Length': pkpass.length,
+    'Last-Modified': pass.updatedAt.toUTCString(),
+    'Cache-Control': 'no-store',
+  });
+  res.end(pkpass);
+}
+
+/** DELETE /apple/v1/devices/:deviceId/registrations/:passTypeId/:serial — the customer removed the pass from Wallet. */
+async function handleUnregisterDevice(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  deviceId: string,
+  serial: string
+): Promise<void> {
+  const result = await unregisterDevice({ deviceId, serial, authHeader: applePassAuthHeader(req) });
+  res.writeHead(result.status);
+  res.end();
+}
+
+/**
+ * POST /apple/v1/log — no auth (Apple's spec doesn't send one here), no DB.
+ * Apple posts real on-device diagnostics to this endpoint, and it is
+ * frequently the *only* way to learn why a device refused a pass or a
+ * registration — write the body to the server log rather than discarding
+ * it.
+ */
+async function handleApplePassLog(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  let body: unknown;
+  try {
+    body = await readJsonBody(req);
+  } catch {
+    body = undefined;
+  }
+  console.log('[apple-passkit-log]', JSON.stringify(body));
+  res.writeHead(200);
+  res.end();
 }
 
 // ---------------------------------------------------------------------------
@@ -1663,6 +1945,41 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && pathname === '/api/stamp') {
       await handleApiStamp(req, res);
+      return;
+    }
+
+    // The Apple PassKit web service (BUILD.md §12). Paths are fixed by
+    // Apple and must be registered here — above the `GET /:code` catch-all
+    // below — same reasoning as /stamp and /api/stamp just above: `apple`
+    // as the first path segment never collides with the single- or
+    // two-segment catch-alls below regardless, but literal routes belong
+    // above the catch-all on principle (BUILD.md §18 item 10).
+    if (pathname === '/apple/v1/log' && req.method === 'POST') {
+      await handleApplePassLog(req, res);
+      return;
+    }
+    const registrationMatch = pathname.match(
+      /^\/apple\/v1\/devices\/([^/]+)\/registrations\/([^/]+)\/([^/]+)$/
+    );
+    if (registrationMatch) {
+      const [, deviceId, , serial] = registrationMatch;
+      if (req.method === 'POST') {
+        await handleRegisterDevice(req, res, deviceId!, serial!);
+        return;
+      }
+      if (req.method === 'DELETE') {
+        await handleUnregisterDevice(req, res, deviceId!, serial!);
+        return;
+      }
+    }
+    const serialsMatch = pathname.match(/^\/apple\/v1\/devices\/([^/]+)\/registrations\/([^/]+)$/);
+    if (req.method === 'GET' && serialsMatch) {
+      await handleGetUpdatedSerials(req, res, serialsMatch[1]!, url);
+      return;
+    }
+    const getPassMatch = pathname.match(/^\/apple\/v1\/passes\/([^/]+)\/([^/]+)$/);
+    if (req.method === 'GET' && getPassMatch) {
+      await handleGetLatestPass(req, res, getPassMatch[2]!);
       return;
     }
 

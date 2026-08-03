@@ -24,8 +24,15 @@
 // Exactly one implementation: apps/demo/server.ts and
 // scripts/make-demo-pass.ts both call resolveAppleCredentials() instead of
 // each re-implementing "read .env, resolve paths, check existence".
+//
+// resolveApnsKeyPem() below solves the identical problem for the APNs
+// signing key (certs/AuthKey_*.p8): prefer PEM content from the env
+// (APNS_KEY — a Fly secret), fall back to a file path (APNS_KEY_PATH — how
+// local `.env` points at the real .p8). Apple's .p8 *is* a PKCS8 PEM file
+// in every way that matters here; it just carries a `.p8` extension by
+// convention, so the same normalisePem() trap and fix apply unchanged.
 
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -127,4 +134,27 @@ export function resolveAppleCredentials(rootDir: string = process.cwd()): AppleC
     if (!existsSync(p)) throw new Error(`missing cert file: ${p}`);
   }
   return { signerCertPath, signerKeyPath, wwdrPath };
+}
+
+/**
+ * Resolves the APNs signing key (the `.p8` behind push notifications) to
+ * its PEM content, preferring the `APNS_KEY` env var (production, a Fly
+ * secret) over the `APNS_KEY_PATH` file fallback (local dev, matching
+ * `.env`'s existing convention). Unlike the Apple Wallet signer
+ * cert/key/WWDR trio above, `openssl` never touches this value — it's
+ * handed straight to `node:crypto.createPrivateKey`, which reads PEM
+ * content directly — so there is no need to materialise it as a file on
+ * disk; the content (normalised) is all callers need.
+ */
+export function resolveApnsKeyPem(rootDir: string = process.cwd()): string {
+  const content = process.env.APNS_KEY;
+  if (content) return normalisePem(content);
+
+  const rawPath = process.env.APNS_KEY_PATH;
+  if (!rawPath) {
+    throw new Error('.env is missing APNS_KEY_PATH (or set APNS_KEY with the .p8 file contents)');
+  }
+  const resolved = path.resolve(rootDir, rawPath);
+  if (!existsSync(resolved)) throw new Error(`missing APNs key file: ${resolved}`);
+  return normalisePem(readFileSync(resolved, 'utf8'));
 }

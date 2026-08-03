@@ -18,6 +18,12 @@ export interface PkPassField {
   key: string;
   label: string;
   value: string;
+  /**
+   * The lock-screen banner text template shown when this field's `value`
+   * changes, with `%@` replaced by the new value (BUILD.md §9.3). Omit for
+   * fields that shouldn't announce themselves (e.g. static labels).
+   */
+  changeMessage?: string;
 }
 
 /** Where to find the Apple credentials used to sign the bundle. Paths, never inline PEM/DER bytes. */
@@ -30,13 +36,17 @@ export interface PassCredentials {
 }
 
 /**
- * Everything about one specific pass's content. Deliberately no
- * `webServiceURL` / `authenticationToken` fields exist here — BUILD.md
- * §9.3 is explicit that `webServiceURL` must be HTTPS and Apple fails
- * silently over http. There is no HTTPS endpoint in this project yet, and a
- * pass that omits both fields is valid and installs cleanly; it just
- * doesn't live-update. A placeholder value would be worse: it would look
- * configured while silently never working.
+ * Everything about one specific pass's content.
+ *
+ * `webServiceURL` / `authenticationToken` are optional and must be supplied
+ * together or not at all — BUILD.md §9.3 is explicit that `webServiceURL`
+ * must be HTTPS and Apple fails *silently* over http (no error, updates
+ * just never arrive), and a pass carrying one field without the other is
+ * invalid. `buildPassJson` enforces the pairing at runtime. Omitting both
+ * is always valid: the pass installs cleanly and simply doesn't live-update
+ * — the right fallback when there is no public HTTPS origin configured
+ * (e.g. local dev), and far better than a placeholder that looks configured
+ * while silently never working.
  */
 export interface PassContent {
   serialNumber: string;
@@ -55,6 +65,14 @@ export interface PassContent {
   backFields?: PkPassField[];
   /** The QR payload — normally the pass's own serial number. */
   barcodeMessage: string;
+  /**
+   * The Apple PassKit web-service origin, e.g. `https://loyanexa-new.fly.dev/apple`
+   * — Apple appends `/v1/...` itself. Must be HTTPS (see interface doc) and
+   * must be set together with `authenticationToken`, never alone.
+   */
+  webServiceURL?: string;
+  /** This pass's own per-pass auth token — must accompany `webServiceURL`. */
+  authenticationToken?: string;
 }
 
 /** The five image members every storeCard pass needs. */
@@ -89,6 +107,8 @@ export interface PkPassJson {
     messageEncoding: string;
     altText: string;
   }>;
+  webServiceURL?: string;
+  authenticationToken?: string;
 }
 
 /**
@@ -118,8 +138,55 @@ function hexToRgbString(hex: string): string {
   return `rgb(${r},${g},${b})`;
 }
 
+/**
+ * Zero-width Unicode characters used only by {@link invisibleChangeMarker}.
+ * Every character below renders as nothing — no glyph, no width — in every
+ * font Wallet uses, so appending them to a field's value never changes
+ * what the customer sees.
+ */
+const ZERO_WIDTH_SPACE = '​'; // binary digit 0
+const ZERO_WIDTH_NON_JOINER = '‌'; // binary digit 1
+
+/**
+ * BUILD.md §9.3 / §18 item 5: iOS diffs a pass field's *text* to decide
+ * whether to show the lock-screen banner for it — re-sending byte-identical
+ * text shows nothing. The fields callers put real data in (stamp counts,
+ * etc.) normally change on their own, but nothing guarantees that on every
+ * rebuild: two stamps can land in a way that leaves a count reading the
+ * same as an earlier snapshot (e.g. after a reward resets it), or a pass
+ * can be rebuilt with no underlying change at all. Appending this marker
+ * to a field's value guarantees the text differs every single time,
+ * without changing anything the customer sees: it is built entirely from
+ * zero-width Unicode characters (invisible in Wallet's rendering) encoding
+ * the current millisecond timestamp in binary. Do not delete this thinking
+ * it's dead code or noise — it is the fix for the single most common
+ * "I pushed but no banner appeared" bug.
+ */
+export function invisibleChangeMarker(): string {
+  return Date.now()
+    .toString(2)
+    .split('')
+    .map((bit) => (bit === '1' ? ZERO_WIDTH_NON_JOINER : ZERO_WIDTH_SPACE))
+    .join('');
+}
+
 /** Build the pass.json object for a storeCard pass. Pure — no I/O. */
 export function buildPassJson(credentials: PassCredentials, content: PassContent): PkPassJson {
+  const hasWebServiceURL = content.webServiceURL !== undefined;
+  const hasAuthToken = content.authenticationToken !== undefined;
+  if (hasWebServiceURL !== hasAuthToken) {
+    throw new Error(
+      'PassContent.webServiceURL and .authenticationToken must be supplied together or not ' +
+        'at all — a pass carrying one without the other is invalid.'
+    );
+  }
+  if (hasWebServiceURL && !content.webServiceURL!.startsWith('https://')) {
+    // BUILD.md §9.3: Apple refuses http silently — no error, updates just
+    // never arrive. Fail loudly here instead of shipping a pass that looks
+    // configured and quietly never updates.
+    throw new Error(`webServiceURL must be HTTPS, got: ${content.webServiceURL}`);
+  }
+
   return {
     formatVersion: 1,
     passTypeIdentifier: credentials.passTypeId,
@@ -145,6 +212,9 @@ export function buildPassJson(credentials: PassCredentials, content: PassContent
         altText: 'scan here',
       },
     ],
+    ...(hasWebServiceURL
+      ? { webServiceURL: content.webServiceURL, authenticationToken: content.authenticationToken }
+      : {}),
   };
 }
 

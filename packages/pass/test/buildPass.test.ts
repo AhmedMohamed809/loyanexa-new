@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto';
 import {
   buildPass,
   buildPassJson,
+  invisibleChangeMarker,
   PASS_MEMBERS,
   type PassCredentials,
   type PassContent,
@@ -185,6 +186,104 @@ test('buildPassJson omits webServiceURL/authenticationToken and defaults labelCo
   assert.equal(json.labelColor, 'rgb(249,100,0)');
   assert.equal('webServiceURL' in json, false);
   assert.equal('authenticationToken' in json, false);
+});
+
+test('buildPassJson includes both webServiceURL and authenticationToken when set, and omits both when not', () => {
+  const credentials: PassCredentials = {
+    teamId: 'TESTTEAM1234',
+    passTypeId: 'pass.test.loyanexa',
+    certPath: '/dev/null',
+    keyPath: '/dev/null',
+    wwdrPath: '/dev/null',
+  };
+  const baseContent: PassContent = {
+    serialNumber: 'SERIAL',
+    organizationName: 'Test Cafe',
+    description: 'LoyaNexa loyalty card',
+    backgroundColor: '#203757',
+    foregroundColor: '#F96400',
+    barcodeMessage: 'SERIAL',
+  };
+
+  const withoutUrl = buildPassJson(credentials, baseContent);
+  assert.equal('webServiceURL' in withoutUrl, false);
+  assert.equal('authenticationToken' in withoutUrl, false);
+
+  const withUrl = buildPassJson(credentials, {
+    ...baseContent,
+    webServiceURL: 'https://loyanexa-new.fly.dev/apple',
+    authenticationToken: 'per-pass-token-abc123',
+  });
+  assert.equal(withUrl.webServiceURL, 'https://loyanexa-new.fly.dev/apple');
+  assert.equal(withUrl.authenticationToken, 'per-pass-token-abc123');
+});
+
+test('buildPassJson rejects webServiceURL/authenticationToken supplied alone — one without the other is an invalid pass', () => {
+  const credentials: PassCredentials = {
+    teamId: 'TESTTEAM1234',
+    passTypeId: 'pass.test.loyanexa',
+    certPath: '/dev/null',
+    keyPath: '/dev/null',
+    wwdrPath: '/dev/null',
+  };
+  const baseContent: PassContent = {
+    serialNumber: 'SERIAL',
+    organizationName: 'Test Cafe',
+    description: 'LoyaNexa loyalty card',
+    backgroundColor: '#203757',
+    foregroundColor: '#F96400',
+    barcodeMessage: 'SERIAL',
+  };
+
+  assert.throws(() =>
+    buildPassJson(credentials, { ...baseContent, webServiceURL: 'https://example.test/apple' })
+  );
+  assert.throws(() =>
+    buildPassJson(credentials, { ...baseContent, authenticationToken: 'tok' })
+  );
+});
+
+test('buildPassJson rejects a non-HTTPS webServiceURL rather than shipping a pass that silently never updates', () => {
+  const credentials: PassCredentials = {
+    teamId: 'TESTTEAM1234',
+    passTypeId: 'pass.test.loyanexa',
+    certPath: '/dev/null',
+    keyPath: '/dev/null',
+    wwdrPath: '/dev/null',
+  };
+  const baseContent: PassContent = {
+    serialNumber: 'SERIAL',
+    organizationName: 'Test Cafe',
+    description: 'LoyaNexa loyalty card',
+    backgroundColor: '#203757',
+    foregroundColor: '#F96400',
+    barcodeMessage: 'SERIAL',
+  };
+
+  assert.throws(() =>
+    buildPassJson(credentials, {
+      ...baseContent,
+      webServiceURL: 'http://example.test/apple',
+      authenticationToken: 'tok',
+    })
+  );
+});
+
+test('invisibleChangeMarker() is built entirely from zero-width characters and differs across calls', () => {
+  const a = invisibleChangeMarker();
+  const b = invisibleChangeMarker();
+  // Every character must be one of the two zero-width code points — nothing
+  // that could ever render as a visible glyph.
+  for (const marker of [a, b]) {
+    for (const ch of marker) {
+      assert.ok(ch === '​' || ch === '‌', `unexpected non-zero-width character: U+${ch.codePointAt(0)?.toString(16)}`);
+    }
+  }
+  // Appending it to a visible string must not change the visible text —
+  // only invisible code points were added.
+  const visible = '3 stamps left';
+  const decorated = visible + a;
+  assert.equal(decorated.replace(/[​‌]/g, ''), visible);
 });
 
 test('PASS_MEMBERS is the fixed eight-member archive layout', () => {

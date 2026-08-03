@@ -26,11 +26,18 @@ file in an image layer.
 | `PUBLIC_BASE_URL` | yes (production) | `[env]` in `fly.toml`, or `fly secrets set` | The app's public HTTPS origin, e.g. `https://loyanexa-demo.fly.dev`. Every enrol link and QR code uses this host. **Without it, links fall back to the container's own LAN-discovery logic, which is meaningless inside a container** — always set this in production. |
 | `PORT` | no | `[env]` in `fly.toml` (already set to `8080`) | Falls back to `8080` if unset. Fly's `internal_port` in `fly.toml` must match. |
 | `APPLE_SIGNER_CERT_PATH` / `APPLE_SIGNER_KEY_PATH` / `APPLE_WWDR_CERT_PATH` | no (local dev only) | local `.env` | File-path fallback used only when the `APPLE_SIGNER_CERT` / `_KEY` / `APPLE_WWDR_CERT` content vars above are **not** set. This is how local development has always worked; do not set these in Fly — there are no cert files in the container to point at. |
+| `APNS_KEY_ID` | yes (production, for live updates) | `fly secrets set` | The 10-character key ID of the APNs `.p8` auth key. Not secret-shaped, but keep it with the other Apple config. |
+| `APNS_KEY` | yes (production, for live updates) | `fly secrets set` | **PEM contents** of the APNs `.p8` signing key — the file, not a path. Read by `packages/pass/src/credentials.ts`'s `resolveApnsKeyPem()`, same env-content-over-path pattern as the signer cert trio above. |
+| `APNS_KEY_PATH` | no (local dev only) | local `.env` | File-path fallback for `APNS_KEY`, used only when `APNS_KEY` is unset — same local-dev convention as `APPLE_SIGNER_CERT_PATH`. Do not set on Fly. |
 
-Not currently needed: the APNs `.p8` key (`certs/AuthKey_*.p8`). The demo
-issues passes without a `webServiceURL`/`authenticationToken` (see
-`packages/pass/src/buildPass.ts`), so it never calls APNs — push-based live
-updates are sub-project 6's job. Nothing in this deploy depends on it.
+`PUBLIC_BASE_URL` now does double duty: besides enrol links and QR codes,
+every pass issued (or rebuilt by the PassKit web service) while it's set
+carries `webServiceURL: "<PUBLIC_BASE_URL>/apple"` and a per-pass
+`authenticationToken`, which is what makes a stamp show up on the lock
+screen without reopening Wallet (BUILD.md §9.3). Set it to the app's real
+HTTPS origin before relying on live updates — an http origin is rejected by
+`buildPassJson` outright (not just "silently ignored by Apple"), and an
+unset one omits both fields, which is a valid but static pass.
 
 `APPLE_SIGNER_CERT` / `APPLE_SIGNER_KEY` / `APPLE_WWDR_CERT` win whenever
 all three are set — that's the production path. Leave all three unset and
@@ -53,6 +60,8 @@ fly secrets set \
   APPLE_SIGNER_CERT="$(cat certs/signerCert.pem)" \
   APPLE_SIGNER_KEY="$(cat certs/signerKey.pem)" \
   APPLE_WWDR_CERT="$(cat certs/wwdr.pem)" \
+  APNS_KEY_ID="<your APNs Auth Key ID>" \
+  APNS_KEY="$(cat certs/AuthKey_XXXXXXXXXX.p8)" \
   DATABASE_URL="<your production Postgres connection string>"
 ```
 
