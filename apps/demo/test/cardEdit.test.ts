@@ -169,6 +169,41 @@ test('once a pass exists, a cosmetic edit still succeeds', async () => {
   }
 });
 
+test('editing images on a card that already has passes succeeds (they are cosmetic), while editing stampsGoal still returns 409', async () => {
+  const fx = await makeFixture();
+  try {
+    await addPass(fx);
+
+    const imageResult = await updateCard(fx.cardId, {
+      iconHash: 'a'.repeat(64),
+      iconUrl: `/img/${'a'.repeat(64)}`,
+      coverHash: 'b'.repeat(64),
+      coverUrl: `/img/${'b'.repeat(64)}`,
+      stampSource: 'icon',
+      stampShape: 'square',
+      bgOpacity: 0.5,
+    });
+    assert.equal(imageResult.ok, true, 'image/design edits must succeed on a locked card');
+    if (!imageResult.ok) return;
+    assert.equal(imageResult.card.iconHash, 'a'.repeat(64));
+    assert.equal(imageResult.card.coverHash, 'b'.repeat(64));
+    assert.equal(imageResult.card.stampSource, 'icon');
+    assert.equal(imageResult.card.stampShape, 'square');
+    assert.equal(imageResult.card.bgOpacity, 0.5);
+
+    const goalResult = await updateCard(fx.cardId, { stampsGoal: 15 });
+    assert.equal(goalResult.ok, false, 'stampsGoal must still be locked on the very same card');
+    if (goalResult.ok) return;
+    assert.equal(goalResult.reason, 'locked');
+
+    const after = await prisma.card.findUniqueOrThrow({ where: { id: fx.cardId } });
+    assert.equal(after.iconHash, 'a'.repeat(64), 'the successful image edit must persist');
+    assert.equal(after.stampsGoal, 8, 'the rejected economic edit must leave stampsGoal untouched');
+  } finally {
+    await cleanup(fx);
+  }
+});
+
 test('a mixed patch (cosmetic + economic) is rejected wholesale once a pass exists — nothing is written, not even the cosmetic part', async () => {
   const fx = await makeFixture();
   try {

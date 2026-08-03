@@ -75,13 +75,21 @@ export interface PassContent {
   authenticationToken?: string;
 }
 
-/** The five image members every storeCard pass needs. */
+/**
+ * The five image members every storeCard pass needs, plus the two optional
+ * `logo.png`/`logo@2x.png` members that put the merchant's own logo in the
+ * pass header (BUILD.md §8.9) rather than only inside the strip artwork.
+ * Optional because not every card has a logo uploaded — a pass without one
+ * still needs to build (Apple's own placeholder header is used instead).
+ */
 export interface PassImages {
   'icon.png': Buffer;
   'icon@2x.png': Buffer;
   'strip.png': Buffer;
   'strip@2x.png': Buffer;
   'strip@3x.png': Buffer;
+  'logo.png'?: Buffer;
+  'logo@2x.png'?: Buffer;
 }
 
 export interface PkPassJson {
@@ -246,6 +254,18 @@ export function buildPass(
     'strip@2x.png': images['strip@2x.png'],
     'strip@3x.png': images['strip@3x.png'],
   };
+  // logo.png/logo@2x.png are optional (PassImages' own doc comment) — only
+  // added to the archive, the manifest and the member list when supplied,
+  // so a card with no logo uploaded still produces the same fixed
+  // PASS_MEMBERS layout the existing tests pin.
+  const optionalMembers: Array<'logo.png' | 'logo@2x.png'> = [];
+  for (const name of ['logo.png', 'logo@2x.png'] as const) {
+    const buf = images[name];
+    if (buf) {
+      files[name] = buf;
+      optionalMembers.push(name);
+    }
+  }
 
   const staging = mkdtempSync(path.join(tmpdir(), 'loyanexa-pkpass-'));
   try {
@@ -279,7 +299,7 @@ export function buildPass(
     ]);
 
     const archivePath = path.join(staging, 'archive.pkpass');
-    execFileSync('zip', ['-X', archivePath, ...PASS_MEMBERS], { cwd: staging });
+    execFileSync('zip', ['-X', archivePath, ...PASS_MEMBERS, ...optionalMembers], { cwd: staging });
 
     return readFileSync(archivePath);
   } finally {

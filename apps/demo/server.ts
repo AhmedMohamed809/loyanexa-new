@@ -57,6 +57,18 @@ import { updateCard, activateCard, passCountForCard, type CardEditInput } from '
 import { csvRow } from './csv.ts';
 import { createPassForEnrolment, deleteOrphanedPass } from './enrol.ts';
 import { RateLimiter, resolveClientIp } from './rateLimit.ts';
+import {
+  normalizeUpload,
+  storeCardImage,
+  imageUrl,
+  isValidHash,
+  isStoredLogoWide,
+  MAX_UPLOAD_BYTES,
+  MAX_UPLOAD_REQUEST_BYTES,
+  type UploadKind,
+} from './cardImages.ts';
+import { readMultipart } from './multipart.ts';
+import type { ImageRef, StripSpec, StampSource, Fit, BuiltinIconId } from '../../packages/image/src/index.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -84,6 +96,12 @@ const {
   parseHexColor,
   fillDisc,
   encodePNG,
+  decodePNG,
+  contrastRatio,
+  effectiveBackgroundHex,
+  renderIconSwatch,
+  BUILTIN_ICON_IDS,
+  isBuiltinIconId,
 } = await import('../../packages/image/src/index.ts');
 // stamp.ts itself statically imports @loyanexa/db — dynamic here for the
 // same reason as the block above (it must not run before loadEnvFile()).
@@ -135,6 +153,12 @@ function validHex(raw: unknown, fallback: string): string {
   const v = String(raw ?? '').trim();
   if (!HEX_RE.test(v)) return fallback;
   return v.startsWith('#') ? v : `#${v}`;
+}
+
+/** `raw` as a `StampSource` (BUILD.md §8.5 step 2's three-way stamp-source choice) if it names one, else `fallback` — shared by every place a query string or form field supplies this. */
+function parseStampSource(raw: unknown, fallback: StampSource): StampSource {
+  const v = String(raw ?? '').trim();
+  return v === 'builtin' || v === 'icon' || v === 'plain' ? v : fallback;
 }
 
 /** A representative "some stamps punched" count for demo thumbnails/previews. */
@@ -759,6 +783,62 @@ function layout(title: string, bodyHtml: string, active?: NavKey, lang: Lang = '
   .weekday-chart .day-label { font-size: 11px; color: var(--ink-3); }
   .weekday-chart .day-count { font-size: 11px; color: var(--ink-2); }
   .no-data { text-align: center; color: var(--ink-3); padding: 28px 12px; font-size: 14px; }
+
+  /* Card designer (BUILD.md §8.5 / §8.9) — controls on the left, a live,
+     sticky preview on the right; stacks to a single column with the
+     preview pinned above the controls on narrow screens. */
+  .designer { display: grid; grid-template-columns: 1fr 340px; gap: 20px; align-items: start; }
+  .designer-controls { min-width: 0; }
+  .designer-preview { position: sticky; top: 20px; }
+  .designer-preview .preview-panel img { width: 100%; height: auto; border-radius: 10px; }
+  .designer-preview .hint { font-size: 12px; color: var(--ink-3); margin-top: 10px; line-height: 1.5; }
+  @media (max-width: 860px) {
+    .designer { grid-template-columns: 1fr; }
+    .designer-preview { position: static; order: -1; margin-bottom: 4px; }
+  }
+  .designer h2 { margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--line); }
+  .designer h2:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+  .upload-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .upload-thumb {
+    width: 64px; height: 64px; border-radius: 10px; background: var(--sunk);
+    border: 1px solid var(--line); object-fit: cover; display: none;
+  }
+  .upload-thumb.cover-thumb { width: 96px; height: 37px; }
+  .upload-thumb.shown { display: block; }
+  .upload-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  input[type="file"] { display: none; }
+  .btn.small { padding: 8px 16px; font-size: 13px; }
+  .btn.remove { background: transparent; color: var(--red); border: 1px solid rgba(239,68,68,.35); }
+  .btn.remove:hover { background: rgba(239,68,68,.12); }
+  .btn.remove[disabled] { opacity: .4; cursor: default; }
+  .upload-error { color: #FCA5A5; font-size: 13px; margin-top: 6px; }
+  .hex-row { display: flex; align-items: center; gap: 8px; }
+  .hex-row input[type="color"] { flex: none; }
+  .hex-row input[type="text"] { width: 96px; flex: none; text-transform: uppercase; }
+  .range-row { display: flex; align-items: center; gap: 12px; }
+  .range-row input[type="range"] { flex: 1; }
+  .range-row .range-val { font-size: 13px; color: var(--ink-2); min-width: 34px; text-align: end; }
+  .shape-toggle { display: flex; gap: 8px; }
+  .shape-toggle label {
+    display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px 14px; cursor: pointer; font-weight: 500; font-size: 14px; color: var(--ink-2); margin: 0;
+    flex: 1; justify-content: center;
+  }
+  .shape-toggle input { accent-color: var(--accent); }
+  .switch-row { display: flex; align-items: center; gap: 10px; }
+  .switch-row label { margin: 0; font-weight: 500; }
+  .switch-row input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); }
+  .icon-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+  .icon-swatch {
+    position: relative; display: flex; align-items: center; justify-content: center;
+    width: 52px; height: 52px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--sunk); cursor: pointer; margin: 0;
+  }
+  .icon-swatch.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent) inset; }
+  .icon-swatch input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .icon-swatch img { width: 28px; height: 28px; }
+  .field-hint { font-size: 12px; color: var(--ink-3); margin-top: 4px; }
+  .field-hint.amber { color: var(--amber); }
 </style>
 </head>
 <body>
@@ -774,19 +854,42 @@ function authBanner(lang: Lang): string {
   return `<div class="banner"><b>${escapeHtml(t(lang, 'authBannerTitle'))}</b> ${escapeHtml(t(lang, 'authBannerBody'))}</div>`;
 }
 
+/**
+ * The full `/preview.png` query for `card` as it is actually saved — every
+ * designer field, so the list thumbnail, the card detail preview and the
+ * designer's own initial preview (before any control has been touched) all
+ * show the exact same render. `filled` is passed separately because each
+ * caller wants a different stamp count (a representative "some progress"
+ * thumbnail vs. the merchant's own starterStamps).
+ */
+function stripPreviewParams(card: Card, filled: number, scale?: 1 | 2 | 3): URLSearchParams {
+  const qs = new URLSearchParams({
+    goal: String(card.stampsGoal),
+    filled: String(filled),
+    bg: card.bgColor,
+    active: card.stampActive,
+    inactive: card.stampInactive,
+    shape: card.stampShape,
+    opacity: String(card.bgOpacity),
+    stampSource: card.stampSource,
+  });
+  if (scale) qs.set('scale', String(scale));
+  if (card.stampSource === 'icon' && card.iconHash) {
+    qs.set('icon', card.iconHash);
+    qs.set('fit', card.iconFit);
+  } else if (card.stampSource === 'builtin') {
+    qs.set('builtinIcon', card.builtinIcon);
+  }
+  if (card.coverHash) qs.set('cover', card.coverHash);
+  return qs;
+}
+
 // ---------------------------------------------------------------------------
 // Route: GET /app — list cards. GET / itself now serves the owner's static
 // marketing landing page (apps/demo/public/index.html) — see serveStaticFile.
 // ---------------------------------------------------------------------------
 function cardThumbSrc(card: Card): string {
-  const qs = new URLSearchParams({
-    goal: String(card.stampsGoal),
-    filled: String(defaultFilled(card.stampsGoal)),
-    bg: card.bgColor,
-    active: card.stampActive,
-    inactive: card.stampInactive,
-  });
-  return `/preview.png?${qs.toString()}`;
+  return `/preview.png?${stripPreviewParams(card, defaultFilled(card.stampsGoal)).toString()}`;
 }
 
 async function handleCardsList(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -1023,7 +1126,11 @@ async function handleCreateCard(req: http.IncomingMessage, res: http.ServerRespo
     throw new Error('card creation loop exited without creating a card or throwing');
   }
 
-  res.writeHead(303, { Location: `/cards/${card.id}` });
+  // Straight into the designer (BUILD.md §8.5), not the bare detail page —
+  // this quick-create form only collects the economics; logo, cover,
+  // shape and colours are the edit page's job, and a merchant should land
+  // there immediately rather than having to find "Edit" first.
+  res.writeHead(303, { Location: `/cards/${card.id}/edit` });
   res.end();
 }
 
@@ -1058,14 +1165,7 @@ async function handleCardDetail(req: http.IncomingMessage, res: http.ServerRespo
   const totalRewards = sums._sum.rewards ?? 0;
 
   const enrolUrl = `${PUBLIC_URL}/${card.linkCode}`;
-  const stripQs = new URLSearchParams({
-    goal: String(card.stampsGoal),
-    filled: String(defaultFilled(card.stampsGoal)),
-    bg: card.bgColor,
-    active: card.stampActive,
-    inactive: card.stampInactive,
-    scale: '2',
-  });
+  const stripQs = stripPreviewParams(card, defaultFilled(card.stampsGoal), 2);
   const qrQs = new URLSearchParams({ data: enrolUrl });
 
   const lockBanner =
@@ -1298,24 +1398,76 @@ async function handleActivateCard(req: http.IncomingMessage, res: http.ServerRes
 }
 
 // ---------------------------------------------------------------------------
-// Route: GET/POST /cards/:id/edit — BUILD.md §8.9. Renders economic fields
-// as disabled inputs once any Pass exists (so a browser never even submits
-// a locked value), plus the amber banner. The POST handler is a thin HTTP
-// wrapper around cardEdit.ts's updateCard() — the same function
-// apps/demo/test/cardEdit.test.ts exercises directly — so the enforcement
-// a merchant hits through this form and the enforcement the test proves are
-// the exact same code path, not two implementations that could drift apart.
+// Route: GET/POST /cards/:id/edit — the card designer (BUILD.md §8.5 /
+// §8.9): a two-pane layout, controls on the left and a live preview on the
+// right that re-renders by pointing its <img> at GET /preview.png, never by
+// reimplementing the renderer in the browser. Renders economic fields as
+// disabled inputs once any Pass exists (so a browser never even submits a
+// locked value), plus the amber banner — images, colours, shape and labels
+// stay enabled regardless (BUILD.md §8.7's green line: these are cosmetic
+// and never lock). The POST handler is a thin HTTP wrapper around
+// cardEdit.ts's updateCard() — the same function apps/demo/test/cardEdit.test.ts
+// exercises directly — so the enforcement a merchant hits through this form
+// and the enforcement the test proves are the exact same code path.
 // ---------------------------------------------------------------------------
+/** The i18n key naming each built-in icon (BUILTIN_ICON_IDS order) — the designer's picker uses these as each swatch's accessible label. */
+const ICON_LABEL_KEYS: Record<BuiltinIconId, 'iconLabelCoffee' | 'iconLabelCroissant' | 'iconLabelScissors' | 'iconLabelFlower' | 'iconLabelCar' | 'iconLabelDumbbell' | 'iconLabelStar' | 'iconLabelHeart' | 'iconLabelCheck' | 'iconLabelGift'> = {
+  coffee: 'iconLabelCoffee',
+  croissant: 'iconLabelCroissant',
+  scissors: 'iconLabelScissors',
+  flower: 'iconLabelFlower',
+  car: 'iconLabelCar',
+  dumbbell: 'iconLabelDumbbell',
+  star: 'iconLabelStar',
+  heart: 'iconLabelHeart',
+  check: 'iconLabelCheck',
+  gift: 'iconLabelGift',
+};
+
+/** Neutral colour the icon picker's own swatches render in — deliberately not the card's live active-stamp colour, so the picker never needs to reload all ten swatches every time a merchant nudges a colour slider. The strip *preview* (designerPreviewQs below) always uses the real active colour. */
+const ICON_SWATCH_COLOR = '#33415C';
+
 interface EditCardFormValues {
   name: string;
   rewardText: string;
   stampsGoal: number;
   starterStamps: number;
   bgColor: string;
+  bgOpacity: number;
   stampActive: string;
   stampInactive: string;
+  stampShape: string;
+  stampSource: StampSource;
+  builtinIcon: BuiltinIconId;
   labelStamps: string;
   labelRewards: string;
+  logoHash: string;
+  iconHash: string;
+  iconFit: string;
+  coverHash: string;
+}
+
+/** The `/preview.png` query for the designer's *current form values* — distinct from stripPreviewParams() above, which reads a persisted Card row; this reads whatever is in the form right now, including an edit not yet saved. */
+function designerPreviewQs(values: EditCardFormValues, filled: number): URLSearchParams {
+  const qs = new URLSearchParams({
+    goal: String(values.stampsGoal),
+    filled: String(filled),
+    bg: values.bgColor,
+    active: values.stampActive,
+    inactive: values.stampInactive,
+    shape: values.stampShape,
+    opacity: String(values.bgOpacity),
+    stampSource: values.stampSource,
+    scale: '2',
+  });
+  if (values.stampSource === 'icon' && values.iconHash) {
+    qs.set('icon', values.iconHash);
+    qs.set('fit', values.iconFit);
+  } else if (values.stampSource === 'builtin') {
+    qs.set('builtinIcon', values.builtinIcon);
+  }
+  if (values.coverHash) qs.set('cover', values.coverHash);
+  return qs;
 }
 
 function renderEditCardForm(
@@ -1323,6 +1475,7 @@ function renderEditCardForm(
   passCount: number,
   lang: Lang,
   values: EditCardFormValues,
+  wideIcon: boolean,
   error?: string
 ): string {
   const locked = passCount > 0;
@@ -1336,59 +1489,403 @@ function renderEditCardForm(
     : '';
   const dis = locked ? 'disabled' : '';
   const lockedClass = locked ? ' class="lock"' : '';
+  const filled = defaultFilled(values.stampsGoal);
+  const previewSrc = `/preview.png?${designerPreviewQs(values, filled).toString()}`;
+  const hasLogo = values.logoHash.length > 0;
+  const hasIcon = values.iconHash.length > 0;
+  const hasCover = values.coverHash.length > 0;
+  const opacityPct = Math.round(values.bgOpacity * 100);
+  const showNonSquareIconHint = hasIcon && values.stampSource === 'icon' && wideIcon;
+  // BUILD.md §8.7's green line covers every input here (colours, opacity) —
+  // this warning is informational only, never a validation error; see
+  // packages/image/src/contrast.ts's own doc comment for why the
+  // background side of the ratio is a heuristic once a cover photo exists.
+  const effectiveBg = effectiveBackgroundHex(values.bgColor, values.bgOpacity);
+  const lowContrast =
+    contrastRatio(values.stampActive, effectiveBg) < 3 || contrastRatio(values.stampInactive, effectiveBg) < 3;
 
   const body = `
     <h1>${escapeHtml(t(lang, 'editTitle'))} — ${escapeHtml(card.name)}</h1>
     ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
     ${lockBanner}
-    <div class="panel">
-      <form method="POST" action="/cards/${card.id}/edit">
-        <h2>Design (always editable)</h2>
-        <div class="field">
-          <label for="name">Card name</label>
-          <input type="text" id="name" name="name" required maxlength="80" value="${escapeHtml(values.name)}">
-        </div>
-        <div class="field colors">
+    <div class="designer">
+      <div class="designer-controls panel">
+        <form method="POST" action="/cards/${card.id}/edit" id="designerForm">
+          <h2>${escapeHtml(t(lang, 'designerDesignHeading'))}</h2>
           <div class="field">
-            <label for="bgColor">Card background</label>
-            <input type="color" id="bgColor" name="bgColor" value="${escapeHtml(values.bgColor)}">
+            <label for="name">${escapeHtml(t(lang, 'newCardNameLabel'))}</label>
+            <input type="text" id="name" name="name" required maxlength="80" value="${escapeHtml(values.name)}">
           </div>
-          <div class="field">
-            <label for="stampActive">Active stamp</label>
-            <input type="color" id="stampActive" name="stampActive" value="${escapeHtml(values.stampActive)}">
-          </div>
-          <div class="field">
-            <label for="stampInactive">Inactive stamp</label>
-            <input type="color" id="stampInactive" name="stampInactive" value="${escapeHtml(values.stampInactive)}">
-          </div>
-        </div>
-        <div class="field">
-          <label for="labelStamps">Custom stamps label (optional, max 16 chars)</label>
-          <input type="text" id="labelStamps" name="labelStamps" maxlength="16" value="${escapeHtml(values.labelStamps)}">
-        </div>
-        <div class="field">
-          <label for="labelRewards">Custom rewards label (optional, max 16 chars)</label>
-          <input type="text" id="labelRewards" name="labelRewards" maxlength="16" value="${escapeHtml(values.labelRewards)}">
-        </div>
 
-        <h2>Economics${locked ? ' — locked' : ''}</h2>
-        <div class="field"${lockedClass}>
-          <label for="rewardText">Reward text</label>
-          <input type="text" id="rewardText" name="rewardText" required maxlength="120" value="${escapeHtml(values.rewardText)}" ${dis}>
-        </div>
-        <div class="field"${lockedClass}>
-          <label for="stampsGoal">Stamps goal</label>
-          <input type="number" id="stampsGoal" name="stampsGoal" min="${MIN_GOAL}" max="${MAX_GOAL}" value="${values.stampsGoal}" ${dis}>
-        </div>
-        <div class="field"${lockedClass}>
-          <label for="starterStamps">Starter stamps</label>
-          <input type="number" id="starterStamps" name="starterStamps" min="0" max="${MAX_GOAL}" value="${values.starterStamps}" ${dis}>
-        </div>
+          <div class="field">
+            <label>${escapeHtml(t(lang, 'designerLogoHeading'))}</label>
+            <div class="upload-row">
+              <img id="logoThumb" class="upload-thumb${hasLogo ? ' shown' : ''}" src="${hasLogo ? escapeHtml(imageUrl(values.logoHash)) : ''}" alt="">
+              <div class="upload-actions">
+                <label class="btn secondary small" for="logoFile">${escapeHtml(t(lang, 'designerLogoUploadButton'))}</label>
+                <input type="file" id="logoFile" accept="image/png,image/jpeg">
+                <button type="button" class="btn remove small" id="logoRemoveBtn" ${hasLogo ? '' : 'disabled'}>${escapeHtml(t(lang, 'designerRemoveButton'))}</button>
+              </div>
+            </div>
+            <p class="field-hint">${escapeHtml(t(lang, 'designerLogoHint'))}</p>
+            <p class="upload-error" id="logoError" hidden></p>
+            <input type="hidden" name="logoHash" id="logoHash" value="${escapeHtml(values.logoHash)}">
+          </div>
 
-        <button class="btn" type="submit">${escapeHtml(t(lang, 'editSaveButton'))}</button>
-        <a class="btn secondary" href="/cards/${card.id}">${escapeHtml(t(lang, 'editCancelButton'))}</a>
-      </form>
+          <div class="field">
+            <label>${escapeHtml(t(lang, 'designerStampSourceHeading'))}</label>
+            <div class="shape-toggle">
+              <label><input type="radio" name="stampSource" value="builtin" ${values.stampSource === 'builtin' ? 'checked' : ''}> ${escapeHtml(t(lang, 'designerStampSourceBuiltin'))}</label>
+              <label><input type="radio" name="stampSource" value="icon" ${values.stampSource === 'icon' ? 'checked' : ''}> ${escapeHtml(t(lang, 'designerStampSourceIcon'))}</label>
+              <label><input type="radio" name="stampSource" value="plain" ${values.stampSource === 'plain' ? 'checked' : ''}> ${escapeHtml(t(lang, 'designerStampSourcePlain'))}</label>
+            </div>
+          </div>
+
+          <div class="field" id="builtinIconField" ${values.stampSource === 'builtin' ? '' : 'hidden'}>
+            <p class="field-hint">${escapeHtml(t(lang, 'designerIconPickerHint'))}</p>
+            <div class="icon-grid" id="iconGrid">
+              ${BUILTIN_ICON_IDS.map(
+                (id: BuiltinIconId) => `<label class="icon-swatch${values.builtinIcon === id ? ' selected' : ''}" data-icon-swatch="${id}">
+                <input type="radio" name="builtinIcon" value="${id}" ${values.builtinIcon === id ? 'checked' : ''}>
+                <img src="/icon-swatch.png?id=${id}&color=${encodeURIComponent(ICON_SWATCH_COLOR)}&size=56" width="28" height="28" alt="${escapeHtml(t(lang, ICON_LABEL_KEYS[id]))}">
+              </label>`
+              ).join('')}
+            </div>
+          </div>
+
+          <div class="field" id="ownIconField" ${values.stampSource === 'icon' ? '' : 'hidden'}>
+            <label>${escapeHtml(t(lang, 'designerStampSourceIcon'))}</label>
+            <div class="upload-row">
+              <img id="iconThumb" class="upload-thumb${hasIcon ? ' shown' : ''}" src="${hasIcon ? escapeHtml(imageUrl(values.iconHash)) : ''}" alt="">
+              <div class="upload-actions">
+                <label class="btn secondary small" for="iconFile">${escapeHtml(t(lang, 'designerIconUploadButton'))}</label>
+                <input type="file" id="iconFile" accept="image/png,image/jpeg">
+                <button type="button" class="btn remove small" id="iconRemoveBtn" ${hasIcon ? '' : 'disabled'}>${escapeHtml(t(lang, 'designerRemoveButton'))}</button>
+              </div>
+            </div>
+            <p class="field-hint">${escapeHtml(t(lang, 'designerIconHint'))}</p>
+            <p class="upload-error" id="iconError" hidden></p>
+            <input type="hidden" name="iconHash" id="iconHash" value="${escapeHtml(values.iconHash)}" data-wide="${hasIcon && wideIcon ? '1' : ''}">
+            <div class="shape-toggle" style="margin-top:10px;">
+              <label><input type="radio" name="iconFit" value="contain" ${values.iconFit === 'cover' ? '' : 'checked'} ${hasIcon ? '' : 'disabled'}> ${escapeHtml(t(lang, 'designerIconFitContain'))}</label>
+              <label><input type="radio" name="iconFit" value="cover" ${values.iconFit === 'cover' ? 'checked' : ''} ${hasIcon ? '' : 'disabled'}> ${escapeHtml(t(lang, 'designerIconFitFill'))}</label>
+            </div>
+            <p class="field-hint">${escapeHtml(t(lang, 'designerIconFitHint'))}</p>
+            <p class="field-hint amber" id="nonSquareIconHint" ${showNonSquareIconHint ? '' : 'hidden'}>${escapeHtml(t(lang, 'designerNonSquareIconHint'))}</p>
+          </div>
+
+          <div class="field">
+            <label>${escapeHtml(t(lang, 'designerCoverHeading'))}</label>
+            <div class="upload-row">
+              <img id="coverThumb" class="upload-thumb cover-thumb${hasCover ? ' shown' : ''}" src="${hasCover ? escapeHtml(imageUrl(values.coverHash)) : ''}" alt="">
+              <div class="upload-actions">
+                <label class="btn secondary small" for="coverFile">${escapeHtml(t(lang, 'designerCoverUploadButton'))}</label>
+                <input type="file" id="coverFile" accept="image/png,image/jpeg">
+                <button type="button" class="btn remove small" id="coverRemoveBtn" ${hasCover ? '' : 'disabled'}>${escapeHtml(t(lang, 'designerRemoveButton'))}</button>
+              </div>
+            </div>
+            <p class="field-hint">${escapeHtml(t(lang, 'designerCoverHint'))}</p>
+            <p class="upload-error" id="coverError" hidden></p>
+            <input type="hidden" name="coverHash" id="coverHash" value="${escapeHtml(values.coverHash)}">
+          </div>
+          <div class="field">
+            <label for="bgOpacity">${escapeHtml(t(lang, 'designerCoverOpacityLabel'))}</label>
+            <div class="range-row">
+              <input type="range" id="bgOpacity" name="bgOpacity" min="0" max="100" value="${opacityPct}">
+              <span class="range-val" id="bgOpacityVal">${opacityPct}%</span>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>${escapeHtml(t(lang, 'designerShapeHeading'))}</label>
+            <div class="shape-toggle">
+              <label><input type="radio" name="stampShape" value="circle" ${values.stampShape === 'square' ? '' : 'checked'}> ${escapeHtml(t(lang, 'designerShapeCircle'))}</label>
+              <label><input type="radio" name="stampShape" value="square" ${values.stampShape === 'square' ? 'checked' : ''}> ${escapeHtml(t(lang, 'designerShapeSquare'))}</label>
+            </div>
+          </div>
+
+          <h2>${escapeHtml(t(lang, 'designerColoursHeading'))}</h2>
+          <div class="field colors">
+            <div class="field">
+              <label for="bgColor">${escapeHtml(t(lang, 'newCardBgLabel'))}</label>
+              <div class="hex-row">
+                <input type="color" id="bgColor" name="bgColor" value="${escapeHtml(values.bgColor)}">
+                <input type="text" id="bgColorHex" maxlength="7" value="${escapeHtml(values.bgColor)}">
+              </div>
+            </div>
+            <div class="field">
+              <label for="stampActive">${escapeHtml(t(lang, 'newCardActiveLabel'))}</label>
+              <div class="hex-row">
+                <input type="color" id="stampActive" name="stampActive" value="${escapeHtml(values.stampActive)}">
+                <input type="text" id="stampActiveHex" maxlength="7" value="${escapeHtml(values.stampActive)}">
+              </div>
+            </div>
+            <div class="field">
+              <label for="stampInactive">${escapeHtml(t(lang, 'newCardInactiveLabel'))}</label>
+              <div class="hex-row">
+                <input type="color" id="stampInactive" name="stampInactive" value="${escapeHtml(values.stampInactive)}">
+                <input type="text" id="stampInactiveHex" maxlength="7" value="${escapeHtml(values.stampInactive)}">
+              </div>
+            </div>
+          </div>
+          <p class="field-hint amber" id="contrastWarning" ${lowContrast ? '' : 'hidden'}>${escapeHtml(t(lang, 'designerContrastWarning'))}</p>
+
+          <div class="field">
+            <label for="labelStamps">${escapeHtml(t(lang, 'designerLabelStampsLabel'))}</label>
+            <input type="text" id="labelStamps" name="labelStamps" maxlength="16" value="${escapeHtml(values.labelStamps)}">
+          </div>
+          <div class="field">
+            <label for="labelRewards">${escapeHtml(t(lang, 'designerLabelRewardsLabel'))}</label>
+            <input type="text" id="labelRewards" name="labelRewards" maxlength="16" value="${escapeHtml(values.labelRewards)}">
+          </div>
+
+          <h2>${escapeHtml(t(lang, 'designerEconomicsHeading'))}${locked ? escapeHtml(t(lang, 'designerLockedSuffix')) : ''}</h2>
+          <div class="field"${lockedClass}>
+            <label for="rewardText">${escapeHtml(t(lang, 'newCardRewardLabel'))}</label>
+            <input type="text" id="rewardText" name="rewardText" required maxlength="120" value="${escapeHtml(values.rewardText)}" ${dis}>
+          </div>
+          <div class="field"${lockedClass}>
+            <label for="stampsGoal">${escapeHtml(t(lang, 'lockFieldStampsGoal'))} <span id="stampsGoalVal">${values.stampsGoal}</span></label>
+            <input type="range" id="stampsGoal" name="stampsGoal" min="${MIN_GOAL}" max="${MAX_GOAL}" value="${values.stampsGoal}" ${dis}>
+          </div>
+          <div class="field"${lockedClass}>
+            <label for="starterStamps">${escapeHtml(t(lang, 'lockFieldStarterStamps'))}</label>
+            <input type="number" id="starterStamps" name="starterStamps" min="0" max="${MAX_GOAL}" value="${values.starterStamps}" ${dis}>
+          </div>
+
+          <button class="btn" type="submit">${escapeHtml(t(lang, 'editSaveButton'))}</button>
+          <a class="btn secondary" href="/cards/${card.id}">${escapeHtml(t(lang, 'editCancelButton'))}</a>
+        </form>
+      </div>
+      <div class="designer-preview">
+        <div class="preview-panel">
+          <img id="preview" src="${previewSrc}" alt="${escapeHtml(card.name)} stamp strip preview" width="750" height="288">
+        </div>
+      </div>
     </div>
+    <script>
+      (function () {
+        var uploadUrl = ${JSON.stringify(`/cards/${card.id}/image`)};
+        var uploadingLabel = ${JSON.stringify(t(lang, 'designerUploadingLabel'))};
+        var genericError = ${JSON.stringify(t(lang, 'designerUploadErrorGeneric'))};
+
+        var form = document.getElementById('designerForm');
+        var preview = document.getElementById('preview');
+        var stampsGoal = document.getElementById('stampsGoal');
+        var stampsGoalVal = document.getElementById('stampsGoalVal');
+        var bgOpacity = document.getElementById('bgOpacity');
+        var bgOpacityVal = document.getElementById('bgOpacityVal');
+        var iconHash = document.getElementById('iconHash');
+        var coverHash = document.getElementById('coverHash');
+        var iconFitInputs = form.querySelectorAll('input[name="iconFit"]');
+        var stampSourceInputs = form.querySelectorAll('input[name="stampSource"]');
+        var builtinIconField = document.getElementById('builtinIconField');
+        var ownIconField = document.getElementById('ownIconField');
+        var nonSquareIconHint = document.getElementById('nonSquareIconHint');
+        var contrastWarning = document.getElementById('contrastWarning');
+
+        function currentShape() {
+          var checked = form.querySelector('input[name="stampShape"]:checked');
+          return checked ? checked.value : 'circle';
+        }
+
+        function currentStampSource() {
+          var checked = form.querySelector('input[name="stampSource"]:checked');
+          return checked ? checked.value : 'builtin';
+        }
+
+        function currentBuiltinIcon() {
+          var checked = form.querySelector('input[name="builtinIcon"]:checked');
+          return checked ? checked.value : ${JSON.stringify(BUILTIN_ICON_IDS[0])};
+        }
+
+        function currentIconFit() {
+          var checked = form.querySelector('input[name="iconFit"]:checked');
+          return checked ? checked.value : 'contain';
+        }
+
+        function updateStampSourceFields() {
+          var source = currentStampSource();
+          builtinIconField.hidden = source !== 'builtin';
+          ownIconField.hidden = source !== 'icon';
+        }
+
+        function updateNonSquareIconHint() {
+          nonSquareIconHint.hidden = !(currentStampSource() === 'icon' && iconHash.dataset.wide === '1');
+        }
+
+        // Mirrors packages/image/src/contrast.ts — duplicated, not imported,
+        // because this designer script is plain browser JS with no build
+        // step (every other live-preview control on this page works the
+        // same way: point at GET /preview.png, never reimplement the
+        // renderer). Keep the two in sync if the formula ever changes.
+        function hexToRgb(hex) {
+          var h = hex.replace('#', '');
+          return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+        }
+        function relativeLuminance(hex) {
+          var rgb = hexToRgb(hex);
+          var chans = rgb.map(function (c) {
+            var s = c / 255;
+            return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+          });
+          return 0.2126 * chans[0] + 0.7152 * chans[1] + 0.0722 * chans[2];
+        }
+        function contrastRatioJs(hexA, hexB) {
+          var a = relativeLuminance(hexA), b = relativeLuminance(hexB);
+          var lighter = Math.max(a, b), darker = Math.min(a, b);
+          return (lighter + 0.05) / (darker + 0.05);
+        }
+        function effectiveBgHex(bgHex, opacity) {
+          var rgb = hexToRgb(bgHex);
+          var mixed = rgb.map(function (c) { return Math.round(c * opacity + 255 * (1 - opacity)); });
+          return '#' + mixed.map(function (c) { return c.toString(16).padStart(2, '0'); }).join('');
+        }
+        function updateContrastWarning(opacity) {
+          var bg = effectiveBgHex(document.getElementById('bgColor').value, opacity);
+          var low = contrastRatioJs(document.getElementById('stampActive').value, bg) < 3 ||
+                    contrastRatioJs(document.getElementById('stampInactive').value, bg) < 3;
+          contrastWarning.hidden = !low;
+        }
+
+        function refresh() {
+          var goal = parseInt(stampsGoal.value, 10);
+          stampsGoalVal.textContent = goal;
+          var filled = Math.max(1, Math.floor(goal / 3));
+          var opacity = (parseInt(bgOpacity.value, 10) / 100).toFixed(2);
+          bgOpacityVal.textContent = bgOpacity.value + '%';
+          var source = currentStampSource();
+          var qs = new URLSearchParams({
+            goal: String(goal),
+            filled: String(filled),
+            bg: document.getElementById('bgColor').value,
+            active: document.getElementById('stampActive').value,
+            inactive: document.getElementById('stampInactive').value,
+            shape: currentShape(),
+            opacity: opacity,
+            stampSource: source,
+            scale: '2'
+          });
+          if (source === 'icon' && iconHash.value) {
+            qs.set('icon', iconHash.value);
+            qs.set('fit', currentIconFit());
+          } else if (source === 'builtin') {
+            qs.set('builtinIcon', currentBuiltinIcon());
+          }
+          if (coverHash.value) qs.set('cover', coverHash.value);
+          preview.src = '/preview.png?' + qs.toString();
+          updateStampSourceFields();
+          updateNonSquareIconHint();
+          updateContrastWarning(parseFloat(opacity));
+        }
+
+        // Colour picker <-> hex text field, both ways, for each of the three colours.
+        [['bgColor', 'bgColorHex'], ['stampActive', 'stampActiveHex'], ['stampInactive', 'stampInactiveHex']].forEach(function (pair) {
+          var color = document.getElementById(pair[0]);
+          var hex = document.getElementById(pair[1]);
+          color.addEventListener('input', function () {
+            hex.value = color.value;
+            refresh();
+          });
+          hex.addEventListener('input', function () {
+            var v = hex.value.trim();
+            if (/^#?[0-9a-fA-F]{6}$/.test(v)) {
+              color.value = v.startsWith('#') ? v : '#' + v;
+              refresh();
+            }
+          });
+        });
+
+        stampsGoal.addEventListener('input', refresh);
+        bgOpacity.addEventListener('input', refresh);
+        form.querySelectorAll('input[name="stampShape"]').forEach(function (el) {
+          el.addEventListener('change', refresh);
+        });
+        stampSourceInputs.forEach(function (el) {
+          el.addEventListener('change', refresh);
+        });
+        iconFitInputs.forEach(function (el) {
+          el.addEventListener('change', refresh);
+        });
+        form.querySelectorAll('input[name="builtinIcon"]').forEach(function (el) {
+          el.addEventListener('change', function () {
+            document.querySelectorAll('.icon-swatch').forEach(function (label) {
+              label.classList.toggle('selected', label.getAttribute('data-icon-swatch') === el.value);
+            });
+            refresh();
+          });
+        });
+
+        function setThumb(imgEl, url) {
+          imgEl.src = url;
+          imgEl.classList.add('shown');
+        }
+        function clearThumb(imgEl) {
+          imgEl.src = '';
+          imgEl.classList.remove('shown');
+        }
+
+        function wireUpload(fileInputId, hiddenInputId, thumbId, errorId, removeBtnId, kind) {
+          var fileInput = document.getElementById(fileInputId);
+          var hidden = document.getElementById(hiddenInputId);
+          var thumb = document.getElementById(thumbId);
+          var errorEl = document.getElementById(errorId);
+          var removeBtn = document.getElementById(removeBtnId);
+
+          fileInput.addEventListener('change', function () {
+            var file = fileInput.files && fileInput.files[0];
+            if (!file) return;
+            errorEl.hidden = true;
+            errorEl.textContent = uploadingLabel;
+            errorEl.hidden = false;
+            var body = new FormData();
+            body.append(kind, file);
+            fetch(uploadUrl, { method: 'POST', body: body })
+              .then(function (res) {
+                return res.json().then(function (data) {
+                  return { status: res.status, data: data };
+                });
+              })
+              .then(function (result) {
+                if (result.status !== 200 || !result.data || !result.data.ok) {
+                  errorEl.textContent = (result.data && result.data.error) || genericError;
+                  errorEl.hidden = false;
+                  return;
+                }
+                errorEl.hidden = true;
+                hidden.value = result.data.hash;
+                setThumb(thumb, result.data.url);
+                removeBtn.disabled = false;
+                if (kind === 'icon') {
+                  hidden.dataset.wide = result.data.wideLogo ? '1' : '';
+                  iconFitInputs.forEach(function (el) { el.disabled = false; });
+                }
+                refresh();
+              })
+              .catch(function () {
+                errorEl.textContent = genericError;
+                errorEl.hidden = false;
+              });
+          });
+
+          removeBtn.addEventListener('click', function () {
+            hidden.value = '';
+            clearThumb(thumb);
+            removeBtn.disabled = true;
+            errorEl.hidden = true;
+            if (kind === 'icon') {
+              hidden.dataset.wide = '';
+              iconFitInputs.forEach(function (el) { el.disabled = true; });
+            }
+            refresh();
+          });
+        }
+
+        wireUpload('logoFile', 'logoHash', 'logoThumb', 'logoError', 'logoRemoveBtn', 'logo');
+        wireUpload('iconFile', 'iconHash', 'iconThumb', 'iconError', 'iconRemoveBtn', 'icon');
+        wireUpload('coverFile', 'coverHash', 'coverThumb', 'coverError', 'coverRemoveBtn', 'cover');
+      })();
+    </script>
   `;
   return layout(t(lang, 'editTitle'), body, 'cards', lang);
 }
@@ -1401,20 +1898,35 @@ async function handleEditCardForm(req: http.IncomingMessage, res: http.ServerRes
     return;
   }
   const passCount = await passCountForCard(card.id);
+  const wideIcon = await isStoredLogoWide(card.iconHash);
   sendHtml(
     res,
     200,
-    renderEditCardForm(card, passCount, lang, {
-      name: card.name,
-      rewardText: card.rewardText,
-      stampsGoal: card.stampsGoal,
-      starterStamps: card.starterStamps,
-      bgColor: card.bgColor,
-      stampActive: card.stampActive,
-      stampInactive: card.stampInactive,
-      labelStamps: card.labelStamps,
-      labelRewards: card.labelRewards,
-    })
+    renderEditCardForm(
+      card,
+      passCount,
+      lang,
+      {
+        name: card.name,
+        rewardText: card.rewardText,
+        stampsGoal: card.stampsGoal,
+        starterStamps: card.starterStamps,
+        bgColor: card.bgColor,
+        bgOpacity: card.bgOpacity,
+        stampActive: card.stampActive,
+        stampInactive: card.stampInactive,
+        stampShape: card.stampShape,
+        stampSource: parseStampSource(card.stampSource, 'builtin'),
+        builtinIcon: isBuiltinIconId(card.builtinIcon) ? card.builtinIcon : 'star',
+        labelStamps: card.labelStamps,
+        labelRewards: card.labelRewards,
+        logoHash: card.logoHash ?? '',
+        iconHash: card.iconHash ?? '',
+        iconFit: card.iconFit,
+        coverHash: card.coverHash ?? '',
+      },
+      wideIcon
+    )
   );
 }
 
@@ -1449,15 +1961,57 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
   const stampInactive = validHex(fields.stampInactive, card.stampInactive);
   const labelStamps = String(fields.labelStamps ?? '').trim().slice(0, 16);
   const labelRewards = String(fields.labelRewards ?? '').trim().slice(0, 16);
+  const stampShapeRaw = String(fields.stampShape ?? '').trim();
+  const stampShape = stampShapeRaw === 'square' ? 'square' : stampShapeRaw === 'circle' ? 'circle' : card.stampShape;
+  const stampSource = parseStampSource(fields.stampSource, parseStampSource(card.stampSource, 'builtin'));
+  const builtinIconRaw = String(fields.builtinIcon ?? '').trim();
+  const builtinIcon: BuiltinIconId = isBuiltinIconId(builtinIconRaw)
+    ? builtinIconRaw
+    : isBuiltinIconId(card.builtinIcon)
+      ? card.builtinIcon
+      : 'star';
+  const bgOpacity = clampFloat01(
+    fields.bgOpacity !== undefined ? Number.parseInt(String(fields.bgOpacity), 10) / 100 : undefined,
+    card.bgOpacity
+  );
+  const iconFitRaw = String(fields.iconFit ?? '').trim();
+  const iconFit = iconFitRaw === 'cover' ? 'cover' : iconFitRaw === 'contain' ? 'contain' : card.iconFit;
 
   const patch: CardEditInput = {
     name: name || card.name,
     bgColor,
+    bgOpacity,
     stampActive,
     stampInactive,
+    stampShape,
+    stampSource,
+    builtinIcon,
     labelStamps,
     labelRewards,
+    iconFit,
   };
+
+  // Images: images/colours/shape/labels never lock (BUILD.md §8.7's green
+  // line), so these are applied unconditionally, locked card or not. A
+  // hidden field carrying '' means "the merchant removed it" — cardEdit.ts
+  // treats a present-but-empty patch value the same as any other explicit
+  // write, so this clears the column rather than leaving it alone (which is
+  // what an *absent* key would do instead).
+  if ('logoHash' in fields) {
+    const hash = String(fields.logoHash ?? '').trim();
+    patch.logoHash = hash || null;
+    patch.logoUrl = hash ? imageUrl(hash) : null;
+  }
+  if ('iconHash' in fields) {
+    const hash = String(fields.iconHash ?? '').trim();
+    patch.iconHash = hash || null;
+    patch.iconUrl = hash ? imageUrl(hash) : null;
+  }
+  if ('coverHash' in fields) {
+    const hash = String(fields.coverHash ?? '').trim();
+    patch.coverHash = hash || null;
+    patch.coverUrl = hash ? imageUrl(hash) : null;
+  }
 
   // Economic fields: a locked card's form renders these inputs `disabled`,
   // so a normal browser submission never includes them at all — but the
@@ -1489,6 +2043,14 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
     }
     // BUILD.md §8.7: "enforce server-side, not just in the UI" — HTTP 409,
     // translated (BUILD.md §13: server error messages are translated too).
+    // The whole patch was rejected (updateCard's own "wholesale" rule), so
+    // the image hashes below reflect the card's unchanged saved state, not
+    // any just-submitted (and discarded) upload — there is no safe merged
+    // value to show for those without re-uploading. Plain aesthetic fields
+    // (stampSource/builtinIcon/iconFit included) still echo back what the
+    // merchant just typed, same as bgColor/stampShape below, so a rejected
+    // economic edit never throws away an aesthetic one in the same submit.
+    const wideIcon = await isStoredLogoWide(card.iconHash);
     sendHtml(
       res,
       409,
@@ -1502,11 +2064,20 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
           stampsGoal: card.stampsGoal,
           starterStamps: card.starterStamps,
           bgColor,
+          bgOpacity,
           stampActive,
           stampInactive,
+          stampShape,
+          stampSource,
+          builtinIcon,
           labelStamps,
           labelRewards,
+          logoHash: card.logoHash ?? '',
+          iconHash: card.iconHash ?? '',
+          iconFit,
+          coverHash: card.coverHash ?? '',
         },
+        wideIcon,
         t(lang, 'economicFieldLocked')
       )
     );
@@ -1893,14 +2464,8 @@ function parseLinkCode(code: string): number | undefined {
 // or one it can't classify can still pick either wallet.
 // ---------------------------------------------------------------------------
 function renderEnrolPage(card: Card): string {
-  const stripQs = new URLSearchParams({
-    goal: String(card.stampsGoal),
-    filled: '0', // the enrol page always shows an empty card, not the pass's starter stamps
-    bg: card.bgColor,
-    active: card.stampActive,
-    inactive: card.stampInactive,
-    scale: '2',
-  });
+  // filled: 0 — the enrol page always shows an empty card, not the pass's starter stamps.
+  const stripQs = stripPreviewParams(card, 0, 2);
   const fg = card.fgColor || '#FFFFFF';
   // Minted fresh on every render of this page, carried as a hidden field on
   // the enrol form below — server.ts's readEnrolFields()/enrol.ts's
@@ -1964,10 +2529,12 @@ function renderEnrolPage(card: Card): string {
   body.platform-android button.cta.apple { order: 2; }
   body.platform-android button.cta.google { order: 1; }
   .powered { margin-top: 28px; font-size: 12px; opacity: 0.6; }
+  .enrol-logo { max-width: 220px; max-height: 72px; margin: 0 auto 20px; display: block; }
 </style>
 </head>
 <body>
 <main>
+  ${card.logoUrl ? `<img class="enrol-logo" src="${escapeHtml(card.logoUrl)}" alt="${escapeHtml(card.name)}">` : ''}
   <h1>${escapeHtml(card.rewardText)}</h1>
   <p class="lede">Show this page at ${escapeHtml(card.name)} every visit to collect a stamp.</p>
   <p class="lede">Collect ${card.stampsGoal} stamps to get your reward.</p>
@@ -2028,17 +2595,75 @@ async function handleEnrolPage(res: http.ServerResponse, code: string): Promise<
 // implementation so the two can never drift apart.
 // ---------------------------------------------------------------------------
 
-function buildPassImagesFor(
+/** Loads a stored upload as an `ImageRef` (strip.ts's own image input shape), or undefined for a missing/invalid hash. Shared by the strip renderer (preview + issuance + rebuild) and the pass-header logo below — one read path so a bad hash degrades to "no image" everywhere, never a 500. */
+async function loadImageRef(hash: string | null | undefined): Promise<ImageRef | undefined> {
+  if (!isValidHash(hash)) return undefined;
+  const row = await prisma.cardImage.findUnique({ where: { hash } });
+  if (!row) return undefined;
+  return { ...decodePNG(row.bytes), hash };
+}
+
+/**
+ * The strip spec for `card` at `filled` stamps — the one place that turns a
+ * Card row's design fields (shape, colours, opacity, and its logo/cover
+ * hashes) into a `StripSpec`, so `POST /:code/pass`, the PassKit
+ * "get latest pass" rebuild, and nothing else drift out of sync on what a
+ * customer's actual pass looks like. `GET /preview.png` deliberately does
+ * *not* go through this — it renders whatever the designer's controls say
+ * right now, including a card that hasn't been saved yet.
+ */
+async function stripSpecForCard(card: Card, filled: number): Promise<Omit<StripSpec, 'scale'>> {
+  const stampSource = parseStampSource(card.stampSource, 'plain');
+  const [icon, cover] = await Promise.all([
+    stampSource === 'icon' ? loadImageRef(card.iconHash) : Promise.resolve(undefined),
+    loadImageRef(card.coverHash),
+  ]);
+  return {
+    goal: card.stampsGoal,
+    filled,
+    shape: card.stampShape === 'square' ? 'square' : 'circle',
+    bgColor: card.bgColor,
+    bgOpacity: card.bgOpacity,
+    activeColor: card.stampActive,
+    inactiveColor: card.stampInactive,
+    stampSource,
+    icon,
+    iconFit: card.iconFit === 'cover' ? 'cover' : 'contain',
+    builtinIcon: isBuiltinIconId(card.builtinIcon) ? card.builtinIcon : undefined,
+    cover,
+  };
+}
+
+async function buildPassImagesFor(
   card: Card,
   stripSet: Pick<PassImages, 'strip.png' | 'strip@2x.png' | 'strip@3x.png'>
-): PassImages {
-  return {
+): Promise<PassImages> {
+  const images: PassImages = {
     'icon.png': makeCardIcon(29, card.bgColor, card.stampActive),
     'icon@2x.png': makeCardIcon(58, card.bgColor, card.stampActive),
     'strip.png': stripSet['strip.png'],
     'strip@2x.png': stripSet['strip@2x.png'],
     'strip@3x.png': stripSet['strip@3x.png'],
   };
+  // The merchant's logo in the pass *header* (BUILD.md §8.9, §9), entirely
+  // independent of the stamp source (BUILD.md's design fix: the logo is
+  // never the stamp any more) — a merchant's wordmark belongs up top
+  // regardless of whether their stamps use a built-in icon, their own
+  // icon, or a plain disc. Reuses the single normalised upload (in its own
+  // aspect ratio, capped to LOGO_MAX_DIMENSION on its longer side — see
+  // cardImages.ts) for both logo.png and logo@2x.png rather than
+  // generating a distinct 1x/2x pair: Apple scales it to fit the header
+  // regardless, and this avoids a second on-the-fly resize on every pass
+  // build for a cosmetic sizing gain.
+  if (card.logoHash) {
+    const row = await prisma.cardImage.findUnique({ where: { hash: card.logoHash } });
+    if (row) {
+      const bytes = Buffer.from(row.bytes);
+      images['logo.png'] = bytes;
+      images['logo@2x.png'] = bytes;
+    }
+  }
+  return images;
 }
 
 /** Reads and clamps the optional `name`/`phone`/idempotency-token enrolment fields from a POST body — shared by both wallet issuance routes below. A malformed/oversized body must not block enrolment, so any read failure just falls back to "none supplied" rather than a 4xx. */
@@ -2105,16 +2730,8 @@ async function handleIssuePass(req: http.IncomingMessage, res: http.ServerRespon
   const { custName, custPhone, idempotencyKey } = await readEnrolFields(req);
   const credentials = resolveAppleCredentials();
 
-  const stripSet = await renderAllDensities(PASS_STRIP_STORE, {
-    goal: card.stampsGoal,
-    filled: card.starterStamps,
-    shape: 'circle',
-    bgColor: card.bgColor,
-    bgOpacity: 1,
-    activeColor: card.stampActive,
-    inactiveColor: card.stampInactive,
-  });
-  const images = buildPassImagesFor(card, stripSet);
+  const stripSet = await renderAllDensities(PASS_STRIP_STORE, await stripSpecForCard(card, card.starterStamps));
+  const images = await buildPassImagesFor(card, stripSet);
 
   const { pass, created } = await createPassForEnrolment(card, custName, custPhone, idempotencyKey);
 
@@ -2231,10 +2848,153 @@ async function handleIssueGooglePass(
 }
 
 // ---------------------------------------------------------------------------
-// Route: GET /preview.png — on-the-fly strip render. Every input clamped or
-// substituted with a safe default before it reaches renderStrip.
+// Route: GET /img/:hash — the content-addressed image store (BUILD.md §18
+// item 2 / docs/DEPLOY.md's "known consideration"). `hash` is the sha256 of
+// the normalised bytes (cardImages.ts), so a hash can never point at
+// different bytes over time — the immutable, year-long cache below is safe
+// precisely because of that, not just a performance nicety.
 // ---------------------------------------------------------------------------
-function handlePreviewPng(res: http.ServerResponse, query: URLSearchParams): void {
+async function handleGetImage(res: http.ServerResponse, hash: string): Promise<void> {
+  const row = await prisma.cardImage.findUnique({ where: { hash } });
+  if (!row) {
+    res.writeHead(404);
+    res.end();
+    return;
+  }
+  res.writeHead(200, {
+    'Content-Type': row.mime,
+    'Content-Length': row.bytes.length,
+    'Cache-Control': 'public, max-age=31536000, immutable',
+  });
+  res.end(Buffer.from(row.bytes));
+}
+
+// ---------------------------------------------------------------------------
+// Route: POST /cards/:id/image — the card designer's logo/icon/cover upload
+// (BUILD.md §8.5 step 1 / §8.9 step 2). multipart/form-data with exactly
+// one file part, named "logo", "icon" or "cover" — that name is what
+// decides which Card column gets updated, there is no separate "kind"
+// field to trust or distrust. A public, unauthenticated endpoint (no auth yet — same caveat
+// as every other merchant route in this slice, see getOrCreateMerchant()'s
+// own comment), so every step below is a hard reject, never a best-effort
+// clamp: the Content-Length precheck rejects an oversized body before
+// reading any of it, readMultipart() enforces the same cap while streaming
+// (covering a missing/wrong Content-Length), and normalizeUpload() rejects
+// anything that isn't a decodable image within the documented size/pixel
+// limits. Responds JSON — this is called from the designer's own fetch(),
+// never rendered as a full page.
+// ---------------------------------------------------------------------------
+async function handleUploadCardImage(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
+  const card = await prisma.card.findUnique({ where: { id } });
+  if (!card) {
+    sendJson(res, 404, { ok: false, error: 'card not found' });
+    return;
+  }
+
+  // No Content-Length precheck here on purpose — see readMultipart's/
+  // readBodyCapped's own doc comments in multipart.ts. A precheck that
+  // responds and closes before the body has actually finished arriving
+  // reliably breaks a real fetch()-based client's own write with
+  // ECONNRESET (reproduced against the exact API this page's upload JS
+  // uses); readMultipart already drains the body (discarding, never
+  // buffering, past MAX_UPLOAD_REQUEST_BYTES) and only rejects once the
+  // request has fully ended, which is what makes it safe to respond here.
+  let parsed: Awaited<ReturnType<typeof readMultipart>>;
+  try {
+    parsed = await readMultipart(req, req.headers['content-type'], MAX_UPLOAD_REQUEST_BYTES);
+  } catch (err) {
+    const status = isHttpError(err) ? err.statusCode : 400;
+    const message = err instanceof Error ? err.message : String(err);
+    sendJson(res, status, { ok: false, error: message });
+    return;
+  }
+
+  const file = parsed.files.find((f) => f.name === 'logo' || f.name === 'icon' || f.name === 'cover');
+  if (!file) {
+    sendJson(res, 400, { ok: false, error: 'expected a file field named "logo", "icon" or "cover"' });
+    return;
+  }
+  const kind = file.name as UploadKind;
+
+  // The Content-Length precheck and readMultipart()'s own streaming cap
+  // above both bound the *request*, which has some multipart boundary/header
+  // slack over the 2 MB file limit (MAX_UPLOAD_REQUEST_BYTES) — so a file
+  // part that is itself over 2 MB can still make it through parsing. Reject
+  // that specific case as 413 here, same status as the request-level cap;
+  // normalizeUpload()'s own size check below is an inner backstop that
+  // should now be unreachable, not a second source of truth for the status
+  // code.
+  if (file.data.length > MAX_UPLOAD_BYTES) {
+    sendJson(res, 413, { ok: false, error: `image is ${file.data.length} bytes, over the ${MAX_UPLOAD_BYTES}-byte (2 MB) limit` });
+    return;
+  }
+
+  const result = normalizeUpload(kind, file.data);
+  if (!result.ok) {
+    sendJson(res, 400, { ok: false, error: result.error });
+    return;
+  }
+
+  await storeCardImage(result);
+
+  // Aesthetic fields (cardEdit.ts's AESTHETIC_FIELDS) are never subject to
+  // the lock rule — going through updateCard() here anyway keeps this the
+  // one code path that writes a Card's image columns, rather than a second
+  // ad hoc `prisma.card.update` that could drift from it.
+  const patch: CardEditInput =
+    kind === 'logo'
+      ? { logoHash: result.hash, logoUrl: imageUrl(result.hash) }
+      : kind === 'icon'
+        ? { iconHash: result.hash, iconUrl: imageUrl(result.hash) }
+        : { coverHash: result.hash, coverUrl: imageUrl(result.hash) };
+  const updateResult = await updateCard(id, patch);
+  if (!updateResult.ok) {
+    // Only reachable if the card was deleted between the lookup above and
+    // here — aesthetic fields can't produce a 'locked' result.
+    sendJson(res, 404, { ok: false, error: 'card not found' });
+    return;
+  }
+
+  sendJson(res, 200, {
+    ok: true,
+    kind,
+    hash: result.hash,
+    url: imageUrl(result.hash),
+    width: result.width,
+    height: result.height,
+    // Meaningful for kind === 'logo' or 'icon' (always false for a cover) —
+    // the designer's upload JS uses this to show the wide-wordmark hint
+    // (logo) or the non-square Fit/Fill reminder (icon) right after
+    // upload, without a second round trip (BUILD.md §8.5's
+    // transparent-logo-detection hint follows the same "inform, don't
+    // block" pattern).
+    wideLogo: result.wideLogo,
+  });
+}
+
+function clampFloat01(raw: unknown, fallback: number): number {
+  const n = Number.parseFloat(String(raw));
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(1, Math.max(0, n));
+}
+
+// ---------------------------------------------------------------------------
+// Route: GET /preview.png — on-the-fly strip render, the exact same
+// renderer every other strip (issuance, PassKit rebuild) goes through.
+// Every input clamped or substituted with a safe default before it reaches
+// renderStrip. This is the designer's live preview target (BUILD.md §8.5 /
+// §8.9): `icon=<hash>`/`cover=<hash>` let it show the merchant's own
+// uploads mid-edit, before a card is even saved — so unlike
+// stripSpecForCard() above (which reads a persisted Card row) this reads
+// straight off the query string.
+//
+// `fit` (contain|cover) is the icon Fit/Fill choice — this is the exact
+// query parameter a prior bug report found silently ignored end to end
+// (`fit=contain` and `fit=cover` rendered byte-identical): the stamp-source
+// three-way switch below is what actually threads it through to
+// renderStrip's `iconFit`, only when `stampSource === 'icon'`.
+// ---------------------------------------------------------------------------
+async function handlePreviewPng(res: http.ServerResponse, query: URLSearchParams): Promise<void> {
   const goal = clampInt(query.get('goal'), MIN_GOAL, MAX_GOAL, 8);
   const filled = clampInt(query.get('filled'), 0, goal, defaultFilled(goal));
   const bg = validHex(query.get('bg'), '#203757');
@@ -2242,17 +3002,52 @@ function handlePreviewPng(res: http.ServerResponse, query: URLSearchParams): voi
   const inactive = validHex(query.get('inactive'), '#8794A5');
   const scaleRaw = Number.parseInt(String(query.get('scale') ?? '1'), 10);
   const scale: 1 | 2 | 3 = scaleRaw === 2 || scaleRaw === 3 ? scaleRaw : 1;
+  const opacity = clampFloat01(query.get('opacity'), 1);
+  const shape: 'circle' | 'square' = query.get('shape') === 'square' ? 'square' : 'circle';
+  const stampSource = parseStampSource(query.get('stampSource'), 'plain');
+  const iconFit: Fit = query.get('fit') === 'cover' ? 'cover' : 'contain';
+  const builtinIconRaw = query.get('builtinIcon');
+  const builtinIcon: BuiltinIconId | undefined = isBuiltinIconId(builtinIconRaw) ? builtinIconRaw : undefined;
+
+  const [icon, cover] = await Promise.all([
+    stampSource === 'icon' ? loadImageRef(query.get('icon')) : Promise.resolve(undefined),
+    loadImageRef(query.get('cover')),
+  ]);
 
   const png = renderStrip({
     goal,
     filled,
-    shape: 'circle',
+    shape,
     bgColor: bg,
-    bgOpacity: 1,
+    bgOpacity: opacity,
     activeColor: active,
     inactiveColor: inactive,
+    stampSource,
+    icon,
+    iconFit,
+    builtinIcon,
+    cover,
     scale,
   });
+  sendPng(res, png);
+}
+
+// ---------------------------------------------------------------------------
+// Route: GET /icon-swatch.png — on-the-fly render of one built-in icon
+// (BUILD.md §8.5 step 2's icon picker). Drawn directly by
+// packages/image/src/raster/icons.ts, never a shipped image file — the
+// designer's picker points each swatch's <img> at this, same "render
+// endpoint, never a second renderer" discipline as /preview.png.
+// ---------------------------------------------------------------------------
+function handleIconSwatchPng(res: http.ServerResponse, query: URLSearchParams): void {
+  const idRaw = query.get('id');
+  if (!isBuiltinIconId(idRaw)) {
+    sendHtml(res, 400, layout('Error', '<div class="panel"><h1>400</h1><p>Unknown icon id.</p></div>'));
+    return;
+  }
+  const size = clampInt(query.get('size'), 8, 512, 64);
+  const color = validHex(query.get('color'), '#33415C');
+  const png = renderIconSwatch(idRaw, size, parseHexColor(color, 1));
   sendPng(res, png);
 }
 
@@ -2788,16 +3583,8 @@ async function handleGetLatestPass(
 
   const { pass } = result;
   const credentials = resolveAppleCredentials();
-  const stripSet = await renderAllDensities(PASS_STRIP_STORE, {
-    goal: pass.card.stampsGoal,
-    filled: pass.stamps,
-    shape: 'circle',
-    bgColor: pass.card.bgColor,
-    bgOpacity: 1,
-    activeColor: pass.card.stampActive,
-    inactiveColor: pass.card.stampInactive,
-  });
-  const images = buildPassImagesFor(pass.card, stripSet);
+  const stripSet = await renderAllDensities(PASS_STRIP_STORE, await stripSpecForCard(pass.card, pass.stamps));
+  const images = await buildPassImagesFor(pass.card, stripSet);
   const content = buildPassContentFor(pass.card, pass, { publicBaseUrl: PUBLIC_BASE_URL });
   const pkpass = buildPass(credentials, content, images);
 
@@ -2966,11 +3753,15 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && pathname === '/preview.png') {
-      handlePreviewPng(res, url.searchParams);
+      await handlePreviewPng(res, url.searchParams);
       return;
     }
     if (req.method === 'GET' && pathname === '/qr.png') {
       handleQrPng(res, url.searchParams);
+      return;
+    }
+    if (req.method === 'GET' && pathname === '/icon-swatch.png') {
+      handleIconSwatchPng(res, url.searchParams);
       return;
     }
     // GET /customers and its CSV export (BUILD.md §8.11), and GET /reports
@@ -3019,6 +3810,16 @@ const server = http.createServer(async (req, res) => {
         await handleUpdateCard(req, res, cardEditMatch[1]!);
         return;
       }
+    }
+    const cardImageMatch = pathname.match(/^\/cards\/([^/]+)\/image$/);
+    if (req.method === 'POST' && cardImageMatch) {
+      await handleUploadCardImage(req, res, cardImageMatch[1]!);
+      return;
+    }
+    const imgMatch = pathname.match(/^\/img\/([0-9a-f]{64})$/);
+    if (req.method === 'GET' && imgMatch) {
+      await handleGetImage(res, imgMatch[1]!);
+      return;
     }
     const cardMatch = pathname.match(/^\/cards\/([^/]+)$/);
     const cardId = cardMatch?.[1];

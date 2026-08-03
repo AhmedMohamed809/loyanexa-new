@@ -103,6 +103,23 @@ enrol" QR on the card detail page should encode
 `https://loyanexa-demo.fly.dev/<code>`, not a LAN address. If it doesn't,
 `PUBLIC_BASE_URL` isn't set (or isn't set to the app's real hostname).
 
+## Known consideration: card logos/covers live in Postgres until R2 lands (2026-08-03)
+
+Merchant-uploaded logos and cover images (`packages/db/prisma/schema.prisma`'s
+`CardImage` table) are stored as bytes in Postgres, keyed by content hash.
+This is a deliberate interim step, not the intended end state — `docs/BUILD.md`
+§18 item 2 ranks "leaving logos in the database" as a real risk ("rows reach
+megabytes and are read on every query"). The design here avoids the specific
+harm that item describes: `Card` rows themselves stay small (they store only
+a hash, never bytes), and `CardImage` rows are read only by `GET /img/:hash`
+(cached forever, since a hash can never point at different bytes) — never as
+part of an ordinary Card/dashboard query. There are no R2 credentials
+configured for this app yet. When they exist, `CardImage` should be replaced
+with an R2 object keyed the same way (content hash), and `GET /img/:hash`
+becomes a redirect (or proxy) to the object store instead of a Postgres read;
+nothing else in the schema or the upload path should need to change, since
+every consumer already only knows the hash, not where the bytes live.
+
 ## Known consideration: the landing page loads a font from Google (2026-08-03)
 
 `apps/demo/public/index.html` — the marketing landing page served at `GET /` —

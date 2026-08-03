@@ -18,7 +18,14 @@ export function stripCacheKey(spec: StripSpec): string {
     spec.bgOpacity,
     spec.activeColor.toLowerCase(),
     spec.inactiveColor.toLowerCase(),
-    spec.logo?.hash ?? null,
+    // stampSource/icon/iconFit/builtinIcon together decide what fills a
+    // completed slot (strip.ts's StampSource) — every one of them must be
+    // part of the key, or two cards that differ only in, say, which
+    // built-in icon they picked would collide on the same cached bytes.
+    spec.stampSource ?? null,
+    spec.icon?.hash ?? null,
+    spec.iconFit ?? null,
+    spec.builtinIcon ?? null,
     spec.cover?.hash ?? null,
     spec.scale,
   ];

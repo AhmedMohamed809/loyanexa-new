@@ -1,5 +1,5 @@
 import type { DecodedImage } from '../png/decode.ts';
-import { resizeRGBA } from './resize.ts';
+import { resizeToFit, type Fit } from './resize.ts';
 
 const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
 
@@ -7,10 +7,25 @@ const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
  * Crop `src` to a circle of `size` px. `rimWidth` darkens the outermost ring
  * so a logo that is nearly white still reads as a stamp against a white card
  * (BUILD.md §9.2).
+ *
+ * `fit` decides how a non-square source maps onto the (always square)
+ * circle before masking:
+ * - `'contain'` (default): the whole logo is visible, letterboxed on
+ *   transparent — the safe default for a wordmark, which is the common
+ *   shape of a real merchant logo. A wide wordmark ends up as a short,
+ *   correctly-proportioned band rather than a horizontally-stretched smear.
+ * - `'cover'`: the logo fills the circle edge to edge, cropped — better for
+ *   a square-ish mark or a photo, where letterboxing would waste the stamp.
+ *
+ * Previously this stretched `src` to `size`×`size` unconditionally
+ * (`resizeRGBA(src, size, size)`), which silently distorted any non-square
+ * source. A wide wordmark — the overwhelmingly common shape for a real
+ * merchant logo — came out horizontally crushed. `resizeToFit` replaces
+ * that stretch with an aspect-preserving fit.
  */
-export function circularMask(src: DecodedImage, size: number, rimWidth = 0): DecodedImage {
+export function circularMask(src: DecodedImage, size: number, rimWidth = 0, fit: Fit = 'contain'): DecodedImage {
   if (size <= 0) throw new RangeError('size must be positive');
-  const scaled = resizeRGBA(src, size, size);
+  const scaled = resizeToFit(src, size, size, fit);
   const out = new Uint8Array(size * size * 4);
   const c = size / 2;
   const r = size / 2;
