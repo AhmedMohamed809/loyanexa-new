@@ -100,3 +100,25 @@ test('a logo stamp renders differently from a plain disc', () => {
   };
   assert.notDeepEqual(renderStrip(base), renderStrip({ ...base, logo }));
 });
+
+test('logoFit is threaded through to the mask — a wide logo renders differently under contain vs cover', () => {
+  const wideLogo = {
+    rgba: (() => {
+      const rgba = new Uint8Array(100 * 20 * 4);
+      for (let i = 0; i < rgba.length; i += 4) {
+        rgba[i] = 255; rgba[i + 1] = 200; rgba[i + 2] = 0; rgba[i + 3] = 255;
+      }
+      return rgba;
+    })(),
+    width: 100,
+    height: 20,
+    hash: 'test-wide-logo',
+  };
+  const contain = renderStrip({ ...base, logo: wideLogo, logoFit: 'contain' });
+  const cover = renderStrip({ ...base, logo: wideLogo, logoFit: 'cover' });
+  assert.notDeepEqual(contain, cover);
+  // Omitting logoFit must default to 'contain', matching the safe default
+  // documented on StripSpec.logoFit / circularMask.
+  const omitted = renderStrip({ ...base, logo: wideLogo });
+  assert.deepEqual(omitted, contain);
+});

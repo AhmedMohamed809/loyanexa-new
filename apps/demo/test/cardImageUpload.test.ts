@@ -22,7 +22,7 @@ const ROOT = path.resolve(__dirname, '../../..');
 loadEnvFile(path.join(ROOT, '.env'));
 
 const { prisma } = await import('../../../packages/db/src/index.ts');
-const { encodePNG } = await import('../../../packages/image/src/index.ts');
+const { encodePNG, decodePNG, opaqueBoundingBox, BASE_WIDTH, BASE_HEIGHT } = await import('../../../packages/image/src/index.ts');
 
 function randomHex(bytes: number): string {
   return crypto.randomBytes(bytes).toString('hex');
@@ -128,12 +128,19 @@ test('uploading a real logo normalises it, stores one CardImage row, and GET /im
 
     const res = await fetch(`${server.baseUrl}/cards/${card.id}/image`, { method: 'POST', body });
     assert.equal(res.status, 200);
-    const json = (await res.json()) as { ok: boolean; kind: string; hash: string; url: string; width: number; height: number };
+    const json = (await res.json()) as {
+      ok: boolean; kind: string; hash: string; url: string; width: number; height: number; wideLogo: boolean;
+    };
     assert.equal(json.ok, true);
     assert.equal(json.kind, 'logo');
+    // brand/logo.png is a 1485x302 wordmark (~4.9:1) — the exact real-world
+    // shape the mask-stretch bug this test guards against was found on.
+    // Normalising keeps that aspect ratio (bounded to 512 on the wider
+    // side), it does not force an exact 512x512 square.
     assert.equal(json.width, 512);
-    assert.equal(json.height, 512);
+    assert.ok(Math.abs(json.width / json.height - 1485 / 302) < 0.02, `expected the ~4.9:1 aspect ratio to survive normalisation, got ${json.width}x${json.height}`);
     assert.equal(json.url, `/img/${json.hash}`);
+    assert.equal(json.wideLogo, true, 'a ~4.9:1 wordmark must be flagged wide');
 
     const imgRes = await fetch(`${server.baseUrl}${json.url}`);
     assert.equal(imgRes.status, 200);
@@ -143,6 +150,20 @@ test('uploading a real logo normalises it, stores one CardImage row, and GET /im
     assert.ok(imgBytes.length > 0);
     // PNG signature — proves this is genuinely re-encoded image data, not an echo of the upload.
     assert.deepEqual([...imgBytes.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    // The stored logo must keep its own rectangular shape, not be squashed
+    // into a square — its opaque content's own aspect ratio should still
+    // read as the source's ~4.9:1, not the 1:1 the old stretch-resize
+    // (mask.ts's pre-fix circularMask) or the old letterbox-into-a-square
+    // upload normalisation both would have produced.
+    const storedBox = opaqueBoundingBox(decodePNG(imgBytes));
+    assert.ok(storedBox, 'expected some opaque pixels in the stored logo');
+    const storedRatio = storedBox!.width / storedBox!.height;
+    // The logo artwork itself has a little internal transparent padding
+    // (its own ink bounding box is 1466x283 in the original file, not the
+    // full 1485x302 canvas), so the *ink's* ratio runs a bit above the
+    // canvas's ~4.9:1 — a wider tolerance than the exact-canvas assertion
+    // above, but still nowhere near the ~1:1 a stretch would have produced.
+    assert.ok(Math.abs(storedRatio - 1485 / 302) < 0.4, `expected the stored logo's opaque region to stay a wide wordmark shape (~4.9:1-ish), got ${storedBox!.width}x${storedBox!.height} (${storedRatio.toFixed(2)}:1)`);
 
     const saved = await prisma.card.findUniqueOrThrow({ where: { id: card.id } });
     assert.equal(saved.logoStampHash, json.hash);
@@ -150,6 +171,35 @@ test('uploading a real logo normalises it, stores one CardImage row, and GET /im
 
     const rows = await prisma.cardImage.findMany({ where: { hash: json.hash } });
     assert.equal(rows.length, 1);
+
+    // End-to-end through the real HTTP render path: GET /preview.png with
+    // this logo as the custom stamp must actually honour `logoFit` — the
+    // rendered strip's *final* alpha channel is uniformly opaque (the flat
+    // background fill behind it), so it can't be used to measure the
+    // stamp's own aspect ratio here the way the stored-bytes assertion
+    // above does; what this can and does prove is that the fit parameter
+    // is threaded all the way from the query string to a different render,
+    // for the exact real logo this bug was found on.
+    const previewQsFor = (fit: string) =>
+      new URLSearchParams({
+        goal: '8', filled: '3', bg: '#203757', active: '#F96400', inactive: '#8794A5',
+        shape: 'circle', opacity: '1', scale: '3', customStamps: '1', logo: json.hash, logoFit: fit,
+      });
+    const [containRes, coverRes] = await Promise.all([
+      fetch(`${server.baseUrl}/preview.png?${previewQsFor('contain').toString()}`),
+      fetch(`${server.baseUrl}/preview.png?${previewQsFor('cover').toString()}`),
+    ]);
+    assert.equal(containRes.status, 200);
+    assert.equal(coverRes.status, 200);
+    const [containBytes, coverBytes] = await Promise.all([
+      containRes.arrayBuffer().then(Buffer.from),
+      coverRes.arrayBuffer().then(Buffer.from),
+    ]);
+    const containImg = decodePNG(containBytes);
+    const coverImg = decodePNG(coverBytes);
+    assert.equal(containImg.width, BASE_WIDTH * 3);
+    assert.equal(containImg.height, BASE_HEIGHT * 3);
+    assert.notDeepEqual(containBytes, coverBytes, 'contain and cover must render different pixels for this real, wide logo');
   } finally {
     await cleanupMerchant(merchantId);
   }

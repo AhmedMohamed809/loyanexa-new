@@ -62,12 +62,13 @@ import {
   storeCardImage,
   imageUrl,
   isValidHash,
+  isStoredLogoWide,
   MAX_UPLOAD_BYTES,
   MAX_UPLOAD_REQUEST_BYTES,
   type UploadKind,
 } from './cardImages.ts';
 import { readMultipart } from './multipart.ts';
-import type { ImageRef, StripSpec } from '../../packages/image/src/index.ts';
+import type { ImageRef, StripSpec, Fit } from '../../packages/image/src/index.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -96,6 +97,8 @@ const {
   fillDisc,
   encodePNG,
   decodePNG,
+  contrastRatio,
+  effectiveBackgroundHex,
 } = await import('../../packages/image/src/index.ts');
 // stamp.ts itself statically imports @loyanexa/db — dynamic here for the
 // same reason as the block above (it must not run before loadEnvFile()).
@@ -817,6 +820,7 @@ function layout(title: string, bodyHtml: string, active?: NavKey, lang: Lang = '
   .switch-row label { margin: 0; font-weight: 500; }
   .switch-row input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); }
   .field-hint { font-size: 12px; color: var(--ink-3); margin-top: 4px; }
+  .field-hint.amber { color: var(--amber); }
 </style>
 </head>
 <body>
@@ -852,7 +856,10 @@ function stripPreviewParams(card: Card, filled: number, scale?: 1 | 2 | 3): URLS
   });
   if (scale) qs.set('scale', String(scale));
   if (card.customStamps) qs.set('customStamps', '1');
-  if (card.customStamps && card.logoStampHash) qs.set('logo', card.logoStampHash);
+  if (card.customStamps && card.logoStampHash) {
+    qs.set('logo', card.logoStampHash);
+    qs.set('logoFit', card.logoFit);
+  }
   if (card.coverHash) qs.set('cover', card.coverHash);
   return qs;
 }
@@ -1397,6 +1404,7 @@ interface EditCardFormValues {
   labelStamps: string;
   labelRewards: string;
   logoStampHash: string;
+  logoFit: string;
   coverHash: string;
 }
 
@@ -1413,7 +1421,10 @@ function designerPreviewQs(values: EditCardFormValues, filled: number): URLSearc
     scale: '2',
   });
   if (values.customStamps) qs.set('customStamps', '1');
-  if (values.customStamps && values.logoStampHash) qs.set('logo', values.logoStampHash);
+  if (values.customStamps && values.logoStampHash) {
+    qs.set('logo', values.logoStampHash);
+    qs.set('logoFit', values.logoFit);
+  }
   if (values.coverHash) qs.set('cover', values.coverHash);
   return qs;
 }
@@ -1423,6 +1434,7 @@ function renderEditCardForm(
   passCount: number,
   lang: Lang,
   values: EditCardFormValues,
+  wideLogo: boolean,
   error?: string
 ): string {
   const locked = passCount > 0;
@@ -1441,6 +1453,14 @@ function renderEditCardForm(
   const hasLogo = values.logoStampHash.length > 0;
   const hasCover = values.coverHash.length > 0;
   const opacityPct = Math.round(values.bgOpacity * 100);
+  const showWideLogoHint = hasLogo && values.customStamps && wideLogo;
+  // BUILD.md §8.7's green line covers every input here (colours, opacity) —
+  // this warning is informational only, never a validation error; see
+  // packages/image/src/contrast.ts's own doc comment for why the
+  // background side of the ratio is a heuristic once a cover photo exists.
+  const effectiveBg = effectiveBackgroundHex(values.bgColor, values.bgOpacity);
+  const lowContrast =
+    contrastRatio(values.stampActive, effectiveBg) < 3 || contrastRatio(values.stampInactive, effectiveBg) < 3;
 
   const body = `
     <h1>${escapeHtml(t(lang, 'editTitle'))} — ${escapeHtml(card.name)}</h1>
@@ -1467,7 +1487,7 @@ function renderEditCardForm(
             </div>
             <p class="field-hint">${escapeHtml(t(lang, 'designerLogoHint'))}</p>
             <p class="upload-error" id="logoError" hidden></p>
-            <input type="hidden" name="logoHash" id="logoHash" value="${escapeHtml(values.logoStampHash)}">
+            <input type="hidden" name="logoHash" id="logoHash" value="${escapeHtml(values.logoStampHash)}" data-wide="${hasLogo && wideLogo ? '1' : ''}">
           </div>
 
           <div class="field">
@@ -1476,6 +1496,16 @@ function renderEditCardForm(
               <label for="customStamps">${escapeHtml(t(lang, 'designerUseLogoAsStampLabel'))}</label>
             </div>
             <p class="field-hint" id="customStampsHint" ${hasLogo ? 'hidden' : ''}>${escapeHtml(t(lang, 'designerUseLogoAsStampHint'))}</p>
+          </div>
+
+          <div class="field">
+            <label>${escapeHtml(t(lang, 'designerLogoFitLabel'))}</label>
+            <div class="shape-toggle">
+              <label><input type="radio" name="logoFit" value="contain" ${values.logoFit === 'cover' ? '' : 'checked'} ${hasLogo ? '' : 'disabled'}> ${escapeHtml(t(lang, 'designerLogoFitContain'))}</label>
+              <label><input type="radio" name="logoFit" value="cover" ${values.logoFit === 'cover' ? 'checked' : ''} ${hasLogo ? '' : 'disabled'}> ${escapeHtml(t(lang, 'designerLogoFitFill'))}</label>
+            </div>
+            <p class="field-hint">${escapeHtml(t(lang, 'designerLogoFitHint'))}</p>
+            <p class="field-hint amber" id="wideLogoHint" ${showWideLogoHint ? '' : 'hidden'}>${escapeHtml(t(lang, 'designerWideLogoHint'))}</p>
           </div>
 
           <div class="field">
@@ -1532,6 +1562,7 @@ function renderEditCardForm(
               </div>
             </div>
           </div>
+          <p class="field-hint amber" id="contrastWarning" ${lowContrast ? '' : 'hidden'}>${escapeHtml(t(lang, 'designerContrastWarning'))}</p>
 
           <div class="field">
             <label for="labelStamps">${escapeHtml(t(lang, 'designerLabelStampsLabel'))}</label>
@@ -1581,10 +1612,56 @@ function renderEditCardForm(
         var customStamps = document.getElementById('customStamps');
         var logoHash = document.getElementById('logoHash');
         var coverHash = document.getElementById('coverHash');
+        var logoFitInputs = form.querySelectorAll('input[name="logoFit"]');
+        var wideLogoHint = document.getElementById('wideLogoHint');
+        var contrastWarning = document.getElementById('contrastWarning');
 
         function currentShape() {
           var checked = form.querySelector('input[name="stampShape"]:checked');
           return checked ? checked.value : 'circle';
+        }
+
+        function currentLogoFit() {
+          var checked = form.querySelector('input[name="logoFit"]:checked');
+          return checked ? checked.value : 'contain';
+        }
+
+        function updateWideLogoHint() {
+          wideLogoHint.hidden = !(customStamps.checked && logoHash.dataset.wide === '1');
+        }
+
+        // Mirrors packages/image/src/contrast.ts — duplicated, not imported,
+        // because this designer script is plain browser JS with no build
+        // step (every other live-preview control on this page works the
+        // same way: point at GET /preview.png, never reimplement the
+        // renderer). Keep the two in sync if the formula ever changes.
+        function hexToRgb(hex) {
+          var h = hex.replace('#', '');
+          return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+        }
+        function relativeLuminance(hex) {
+          var rgb = hexToRgb(hex);
+          var chans = rgb.map(function (c) {
+            var s = c / 255;
+            return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+          });
+          return 0.2126 * chans[0] + 0.7152 * chans[1] + 0.0722 * chans[2];
+        }
+        function contrastRatioJs(hexA, hexB) {
+          var a = relativeLuminance(hexA), b = relativeLuminance(hexB);
+          var lighter = Math.max(a, b), darker = Math.min(a, b);
+          return (lighter + 0.05) / (darker + 0.05);
+        }
+        function effectiveBgHex(bgHex, opacity) {
+          var rgb = hexToRgb(bgHex);
+          var mixed = rgb.map(function (c) { return Math.round(c * opacity + 255 * (1 - opacity)); });
+          return '#' + mixed.map(function (c) { return c.toString(16).padStart(2, '0'); }).join('');
+        }
+        function updateContrastWarning(opacity) {
+          var bg = effectiveBgHex(document.getElementById('bgColor').value, opacity);
+          var low = contrastRatioJs(document.getElementById('stampActive').value, bg) < 3 ||
+                    contrastRatioJs(document.getElementById('stampInactive').value, bg) < 3;
+          contrastWarning.hidden = !low;
         }
 
         function refresh() {
@@ -1604,9 +1681,14 @@ function renderEditCardForm(
             scale: '2'
           });
           if (customStamps.checked) qs.set('customStamps', '1');
-          if (customStamps.checked && logoHash.value) qs.set('logo', logoHash.value);
+          if (customStamps.checked && logoHash.value) {
+            qs.set('logo', logoHash.value);
+            qs.set('logoFit', currentLogoFit());
+          }
           if (coverHash.value) qs.set('cover', coverHash.value);
           preview.src = '/preview.png?' + qs.toString();
+          updateWideLogoHint();
+          updateContrastWarning(parseFloat(opacity));
         }
 
         // Colour picker <-> hex text field, both ways, for each of the three colours.
@@ -1630,6 +1712,9 @@ function renderEditCardForm(
         bgOpacity.addEventListener('input', refresh);
         customStamps.addEventListener('input', refresh);
         form.querySelectorAll('input[name="stampShape"]').forEach(function (el) {
+          el.addEventListener('change', refresh);
+        });
+        logoFitInputs.forEach(function (el) {
           el.addEventListener('change', refresh);
         });
 
@@ -1676,6 +1761,8 @@ function renderEditCardForm(
                 if (kind === 'logo') {
                   customStamps.disabled = false;
                   document.getElementById('customStampsHint').hidden = true;
+                  hidden.dataset.wide = result.data.wideLogo ? '1' : '';
+                  logoFitInputs.forEach(function (el) { el.disabled = false; });
                 }
                 refresh();
               })
@@ -1694,6 +1781,8 @@ function renderEditCardForm(
               customStamps.checked = false;
               customStamps.disabled = true;
               document.getElementById('customStampsHint').hidden = false;
+              hidden.dataset.wide = '';
+              logoFitInputs.forEach(function (el) { el.disabled = true; });
             }
             refresh();
           });
@@ -1715,25 +1804,33 @@ async function handleEditCardForm(req: http.IncomingMessage, res: http.ServerRes
     return;
   }
   const passCount = await passCountForCard(card.id);
+  const wideLogo = await isStoredLogoWide(card.logoStampHash);
   sendHtml(
     res,
     200,
-    renderEditCardForm(card, passCount, lang, {
-      name: card.name,
-      rewardText: card.rewardText,
-      stampsGoal: card.stampsGoal,
-      starterStamps: card.starterStamps,
-      bgColor: card.bgColor,
-      bgOpacity: card.bgOpacity,
-      stampActive: card.stampActive,
-      stampInactive: card.stampInactive,
-      stampShape: card.stampShape,
-      customStamps: card.customStamps,
-      labelStamps: card.labelStamps,
-      labelRewards: card.labelRewards,
-      logoStampHash: card.logoStampHash ?? '',
-      coverHash: card.coverHash ?? '',
-    })
+    renderEditCardForm(
+      card,
+      passCount,
+      lang,
+      {
+        name: card.name,
+        rewardText: card.rewardText,
+        stampsGoal: card.stampsGoal,
+        starterStamps: card.starterStamps,
+        bgColor: card.bgColor,
+        bgOpacity: card.bgOpacity,
+        stampActive: card.stampActive,
+        stampInactive: card.stampInactive,
+        stampShape: card.stampShape,
+        customStamps: card.customStamps,
+        labelStamps: card.labelStamps,
+        labelRewards: card.labelRewards,
+        logoStampHash: card.logoStampHash ?? '',
+        logoFit: card.logoFit,
+        coverHash: card.coverHash ?? '',
+      },
+      wideLogo
+    )
   );
 }
 
@@ -1775,6 +1872,8 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
     fields.bgOpacity !== undefined ? Number.parseInt(String(fields.bgOpacity), 10) / 100 : undefined,
     card.bgOpacity
   );
+  const logoFitRaw = String(fields.logoFit ?? '').trim();
+  const logoFit = logoFitRaw === 'cover' ? 'cover' : logoFitRaw === 'contain' ? 'contain' : card.logoFit;
 
   const patch: CardEditInput = {
     name: name || card.name,
@@ -1786,6 +1885,7 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
     customStamps,
     labelStamps,
     labelRewards,
+    logoFit,
   };
 
   // Images: images/colours/shape/labels never lock (BUILD.md §8.7's green
@@ -1835,6 +1935,11 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
     }
     // BUILD.md §8.7: "enforce server-side, not just in the UI" — HTTP 409,
     // translated (BUILD.md §13: server error messages are translated too).
+    // The whole patch was rejected (updateCard's own "wholesale" rule), so
+    // logoStampHash/logoFit below reflect the card's unchanged saved state,
+    // not the just-submitted (and discarded) form values — same reasoning
+    // as logoStampHash already used before logoFit existed.
+    const wideLogo = await isStoredLogoWide(card.logoStampHash);
     sendHtml(
       res,
       409,
@@ -1856,8 +1961,10 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
           labelStamps,
           labelRewards,
           logoStampHash: card.logoStampHash ?? '',
+          logoFit: card.logoFit,
           coverHash: card.coverHash ?? '',
         },
+        wideLogo,
         t(lang, 'economicFieldLocked')
       )
     );
@@ -2404,6 +2511,7 @@ async function stripSpecForCard(card: Card, filled: number): Promise<Omit<StripS
     activeColor: card.stampActive,
     inactiveColor: card.stampInactive,
     logo,
+    logoFit: card.logoFit === 'cover' ? 'cover' : 'contain',
     cover,
   };
 }
@@ -2422,10 +2530,12 @@ async function buildPassImagesFor(
   // The merchant's logo in the pass *header* (BUILD.md §8.9), independent
   // of whether it is also used as the filled-stamp graphic (customStamps) —
   // a merchant can want their logo up top without wanting it as every
-  // stamp. Reuses the single normalised 512×512 upload for both logo.png
-  // and logo@2x.png rather than generating a distinct 1x/2x pair: Apple
-  // scales it to fit the header regardless, and this avoids a second
-  // on-the-fly resize on every pass build for a cosmetic sizing gain.
+  // stamp. Reuses the single normalised upload (in its own aspect ratio,
+  // capped to LOGO_MAX_DIMENSION on its longer side — see cardImages.ts)
+  // for both logo.png and logo@2x.png rather than generating a distinct
+  // 1x/2x pair: Apple scales it to fit the header regardless, and this
+  // avoids a second on-the-fly resize on every pass build for a cosmetic
+  // sizing gain.
   if (card.logoStampHash) {
     const row = await prisma.cardImage.findUnique({ where: { hash: card.logoStampHash } });
     if (row) {
@@ -2731,6 +2841,12 @@ async function handleUploadCardImage(req: http.IncomingMessage, res: http.Server
     url: imageUrl(result.hash),
     width: result.width,
     height: result.height,
+    // Only meaningful for kind === 'logo' (always false for a cover) — the
+    // designer's upload JS uses this to show the wide-wordmark hint right
+    // after upload, without a second round trip (BUILD.md §8.5's
+    // transparent-logo-detection hint follows the same "inform, don't
+    // block" pattern).
+    wideLogo: result.wideLogo,
   });
 }
 
@@ -2761,6 +2877,7 @@ async function handlePreviewPng(res: http.ServerResponse, query: URLSearchParams
   const opacity = clampFloat01(query.get('opacity'), 1);
   const shape: 'circle' | 'square' = query.get('shape') === 'square' ? 'square' : 'circle';
   const customStamps = query.get('customStamps') === '1' || query.get('customStamps') === 'true';
+  const logoFit: Fit = query.get('logoFit') === 'cover' ? 'cover' : 'contain';
 
   const [logo, cover] = await Promise.all([
     customStamps ? loadImageRef(query.get('logo')) : Promise.resolve(undefined),
@@ -2776,6 +2893,7 @@ async function handlePreviewPng(res: http.ServerResponse, query: URLSearchParams
     activeColor: active,
     inactiveColor: inactive,
     logo,
+    logoFit,
     cover,
     scale,
   });

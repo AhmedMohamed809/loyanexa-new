@@ -13,15 +13,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 loadEnvFile(path.join(__dirname, '../../../.env'));
 
 const { prisma } = await import('../../../packages/db/src/index.ts');
-const { encodePNG } = await import('../../../packages/image/src/index.ts');
+const { encodePNG, decodePNG } = await import('../../../packages/image/src/index.ts');
 const {
   normalizeUpload,
   storeCardImage,
   imageUrl,
   isValidHash,
+  isStoredLogoWide,
   MAX_UPLOAD_BYTES,
   MAX_UPLOAD_DIMENSION,
-  LOGO_SIZE,
+  LOGO_MAX_DIMENSION,
   COVER_WIDTH,
   COVER_HEIGHT,
 } = await import('../cardImages.ts');
@@ -68,14 +69,75 @@ test('an upload whose dimensions exceed 4000x4000 is rejected with a clear messa
   assert.match(result.error, /4000/);
 });
 
-test('a valid logo upload is normalised to 512x512', () => {
-  const upload = samplePng(37, 61); // an odd, non-square source size
+test('a valid logo upload is scaled to fit within 512 on its longer side, keeping its own aspect ratio', () => {
+  const upload = samplePng(37, 61); // an odd, non-square, portrait source
   const result = normalizeUpload('logo', upload);
   assert.equal(result.ok, true);
   if (!result.ok) return;
-  assert.equal(result.width, LOGO_SIZE);
-  assert.equal(result.height, LOGO_SIZE);
+  // The taller side (61) hits the cap; the narrower side (37) is scaled by
+  // the same factor, not stretched to also hit 512 (that would be the old,
+  // wrong "always exactly 512x512" behaviour).
+  assert.equal(result.height, LOGO_MAX_DIMENSION);
+  assert.ok(result.width < LOGO_MAX_DIMENSION, `expected the narrower side to stay under ${LOGO_MAX_DIMENSION}, got ${result.width}`);
+  assert.ok(Math.abs(result.width / result.height - 37 / 61) < 0.01, `expected aspect ratio to be preserved, got ${result.width}x${result.height}`);
   assert.ok(result.hash.length === 64, 'hash should be a sha256 hex digest');
+});
+
+/** A fully-opaque solid-colour source of an exact aspect ratio, distinct from samplePng's noise (which would make an opaque-bounding-box check meaningless). */
+function solidPng(width: number, height: number, rgb: [number, number, number]): Buffer {
+  const rgba = new Uint8Array(width * height * 4);
+  for (let i = 0; i < rgba.length; i += 4) {
+    rgba[i] = rgb[0]; rgba[i + 1] = rgb[1]; rgba[i + 2] = rgb[2]; rgba[i + 3] = 255;
+  }
+  return encodePNG(rgba, width, height);
+}
+
+test('a wide wordmark logo keeps its own rectangular shape when normalised — not stretched, not padded into a square', () => {
+  // 1485x302 is the exact shape of the owner's real brand/logo.png (~4.9:1).
+  const upload = solidPng(1485, 302, [255, 128, 0]);
+  const result = normalizeUpload('logo', upload);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.wideLogo, true, 'a ~4.9:1 wordmark should be flagged wide');
+  assert.equal(result.width, LOGO_MAX_DIMENSION, 'the wider side hits the cap');
+  assert.ok(Math.abs(result.width / result.height - 1485 / 302) < 0.02, `expected the ~4.9:1 aspect ratio to survive, got ${result.width}x${result.height}`);
+
+  // A fully-opaque source stays fully opaque — there is nothing to pad or
+  // crop once the output is no longer forced into a square canvas.
+  const decoded = decodePNG(result.bytes);
+  assert.equal(decoded.width, result.width);
+  assert.equal(decoded.height, result.height);
+  assert.equal(decoded.rgba[3], 255, 'top-left corner should be opaque, not transparent letterboxing');
+  const lastPixel = (decoded.width * decoded.height - 1) * 4;
+  assert.equal(decoded.rgba[lastPixel + 3], 255, 'bottom-right corner should be opaque, not transparent letterboxing');
+});
+
+test('a square logo upload stays square, unaffected either way', () => {
+  const upload = solidPng(300, 300, [10, 20, 30]);
+  const result = normalizeUpload('logo', upload);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.wideLogo, false);
+  assert.equal(result.width, LOGO_MAX_DIMENSION);
+  assert.equal(result.height, LOGO_MAX_DIMENSION);
+  const decoded = decodePNG(result.bytes);
+  assert.equal(decoded.rgba[3], 255, 'a square source should leave nothing transparent');
+});
+
+test('isStoredLogoWide reflects a previously-stored wide logo by hash, and false for an unknown/invalid hash', async () => {
+  const upload = solidPng(1485, 302, [255, 128, 0]);
+  const result = normalizeUpload('logo', upload);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  try {
+    await storeCardImage(result);
+    assert.equal(await isStoredLogoWide(result.hash), true);
+    assert.equal(await isStoredLogoWide('a'.repeat(64)), false, 'unknown hash');
+    assert.equal(await isStoredLogoWide('not-a-hash'), false, 'invalid hash');
+    assert.equal(await isStoredLogoWide(null), false);
+  } finally {
+    await cleanupHash(result.hash);
+  }
 });
 
 test('a valid cover upload is normalised to the @3x strip size (1125x432)', () => {
@@ -115,7 +177,7 @@ test('storing the same normalised image twice writes exactly one CardImage row',
     await storeCardImage(result);
     const rows = await prisma.cardImage.findMany({ where: { hash: result.hash } });
     assert.equal(rows.length, 1, `expected exactly one row, found ${rows.length}`);
-    assert.equal(rows[0]!.width, LOGO_SIZE);
+    assert.equal(rows[0]!.width, LOGO_MAX_DIMENSION);
     assert.equal(rows[0]!.mime, 'image/png');
     assert.equal(rows[0]!.bytes.length, result.bytes.length);
   } finally {

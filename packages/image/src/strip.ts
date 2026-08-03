@@ -3,7 +3,7 @@ import type { DecodedImage } from './png/decode.ts';
 import { Surface, parseHexColor } from './raster/surface.ts';
 import { fillDisc, strokeRing, fillRoundedRect } from './raster/shapes.ts';
 import { circularMask } from './raster/mask.ts';
-import { resizeRGBA } from './raster/resize.ts';
+import { resizeRGBA, type Fit } from './raster/resize.ts';
 import { slotPositions } from './layout.ts';
 
 export const BASE_WIDTH = 375;
@@ -39,6 +39,13 @@ export interface StripSpec {
   activeColor: string;
   inactiveColor: string;
   logo?: ImageRef;
+  /**
+   * How `logo` maps onto the (always round or square) stamp slot when it is
+   * used as the custom stamp — see `circularMask`'s own doc comment.
+   * Defaults to `'contain'`: the whole logo stays visible, which is the
+   * safe choice for a wordmark (the common shape of a real merchant logo).
+   */
+  logoFit?: Fit;
   cover?: ImageRef;
   scale: 1 | 2 | 3;
 }
@@ -84,7 +91,12 @@ export function renderStrip(spec: StripSpec): Buffer {
   // Circular masking only makes sense for round slots; square slots do not
   // currently support logo stamps, so skip the (otherwise wasted) mask work.
   const maskedLogo = spec.logo && spec.shape === 'circle'
-    ? circularMask(spec.logo, Math.max(2, Math.round(positions[0]!.r * 2)), Math.max(1, positions[0]!.r * 0.12))
+    ? circularMask(
+        spec.logo,
+        Math.max(2, Math.round(positions[0]!.r * 2)),
+        Math.max(1, positions[0]!.r * 0.12),
+        spec.logoFit
+      )
     : undefined;
 
   for (let i = 0; i < positions.length; i++) {

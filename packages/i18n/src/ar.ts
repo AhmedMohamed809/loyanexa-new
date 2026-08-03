@@ -122,7 +122,15 @@ export const ar: Record<keyof typeof en, string> = {
   designerShapeSquare: 'مربع',
   designerUseLogoAsStampLabel: 'استخدم الشعار كختم',
   designerUseLogoAsStampHint: 'ارفع شعارًا لتفعيل هذا الخيار.',
+  designerLogoFitLabel: 'ملاءمة الشعار',
+  designerLogoFitContain: 'ملاءمة',
+  designerLogoFitFill: 'تعبئة',
+  designerLogoFitHint:
+    '"ملاءمة" تُظهر الشعار كاملاً — الأفضل لشعار عريض. "تعبئة" تقصّ الشعار ليملأ الدائرة — الأفضل لعلامة شبه مربّعة أو صورة.',
+  designerWideLogoHint:
+    'شعارك عريض، لذا سيبدو صغيرًا كختم. العلامة المربّعة أو شبه المربّعة أنسب لهذا الموضع — وسيظل شعارك يظهر بشكل صحيح في رأس البطاقة.',
   designerColoursHeading: 'الألوان',
+  designerContrastWarning: 'تباين منخفض — قد يصعب رؤية لون الختم هذا مقابل الخلفية.',
   designerLabelStampsLabel: 'تسمية مخصّصة للأختام (16 حرفًا كحد أقصى)',
   designerLabelRewardsLabel: 'تسمية مخصّصة للمكافآت (16 حرفًا كحد أقصى)',
   designerUploadingLabel: 'جارٍ الرفع…',

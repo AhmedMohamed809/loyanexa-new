@@ -34,6 +34,12 @@ model Card {
   name          String
   logoIconUrl   String?
   logoStampHash String?
+  /// How the logo maps onto the (round) stamp slot when used as the custom
+  /// stamp — 'contain' (default, whole logo visible, letterboxed — the safe
+  /// choice for a wordmark) or 'cover' (fills the circle edge to edge,
+  /// cropped — better for a square-ish mark or a photo). See
+  /// packages/image/src/raster/mask.ts's circularMask for the render itself.
+  logoFit       String    @default("contain")
   coverUrl      String?
   coverHash     String?
   stampsGoal    Int       @default(8)

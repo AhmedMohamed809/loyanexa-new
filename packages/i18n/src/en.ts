@@ -119,7 +119,15 @@ export const en = {
   designerShapeSquare: 'Square',
   designerUseLogoAsStampLabel: 'Use the logo as the stamp',
   designerUseLogoAsStampHint: 'Upload a logo to enable this.',
+  designerLogoFitLabel: 'Stamp fit',
+  designerLogoFitContain: 'Fit',
+  designerLogoFitFill: 'Fill',
+  designerLogoFitHint:
+    '"Fit" shows the whole logo, best for a wide logo. "Fill" crops it to fill the circle, best for a square mark or a photo.',
+  designerWideLogoHint:
+    'Your logo is wide, so it will look small as a stamp. A square or near-square mark works best there — your logo will still look right in the card header.',
   designerColoursHeading: 'Colours',
+  designerContrastWarning: 'Low contrast — this stamp colour may be hard to see against the background.',
   designerLabelStampsLabel: 'Custom stamps label (max 16 characters)',
   designerLabelRewardsLabel: 'Custom rewards label (max 16 characters)',
   designerUploadingLabel: 'Uploading…',
