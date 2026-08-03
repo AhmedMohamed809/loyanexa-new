@@ -244,6 +244,31 @@ test('unregisterDevice 404s for an unknown serial, 401s on a wrong token, and re
   }
 });
 
+test('getPassForDownload 401s on a missing or malformed Authorization header before ever looking up the serial — even for a serial that does not exist', async () => {
+  const unknownSerial = `NOPE${randomHex(8)}`.toUpperCase();
+
+  const missing = await getPassForDownload({
+    serial: unknownSerial,
+    authHeader: undefined,
+    ifModifiedSince: undefined,
+  });
+  assert.deepEqual(missing, { status: 401 }, 'a missing header must 401, not 404, even for an unknown serial');
+
+  const wrongScheme = await getPassForDownload({
+    serial: unknownSerial,
+    authHeader: 'Bearer whatever',
+    ifModifiedSince: undefined,
+  });
+  assert.deepEqual(wrongScheme, { status: 401 }, 'a malformed header (wrong scheme) must also 401 before the lookup');
+
+  const noToken = await getPassForDownload({
+    serial: unknownSerial,
+    authHeader: 'ApplePass',
+    ifModifiedSince: undefined,
+  });
+  assert.deepEqual(noToken, { status: 401 }, '"ApplePass" with no trailing space/token is malformed too');
+});
+
 test('getPassForDownload 404s for an unknown serial, 401s on a wrong token, 304s when unmodified, and 200s with the pass when modified', async () => {
   const fx = await makeFixture();
   try {

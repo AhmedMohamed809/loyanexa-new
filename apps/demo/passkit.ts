@@ -43,6 +43,16 @@ export function isValidPassAuth(authHeader: string | undefined, expectedToken: s
   return crypto.timingSafeEqual(provided, expected);
 }
 
+/**
+ * Cheap, DB-free format check — true only when `authHeader` at least has the
+ * `ApplePass <token>` shape `isValidPassAuth` requires. Exists so a caller
+ * can be rejected *before* any DB lookup that would otherwise let it probe
+ * whether a serial exists (see `getPassForDownload` below).
+ */
+function hasPassAuthHeaderShape(authHeader: string | undefined): boolean {
+  return typeof authHeader === 'string' && authHeader.startsWith('ApplePass ');
+}
+
 export type RegisterResult = { status: 404 } | { status: 401 } | { status: 200 | 201 };
 
 /**
@@ -148,12 +158,20 @@ export type GetPassResult =
  * bytes needs `@loyanexa/pass`/`@loyanexa/image` and the Apple credentials,
  * so that stays in server.ts (mirrors how handleIssuePass already works);
  * this only decides *whether* a rebuild is needed.
+ *
+ * The header-shape check runs *before* the DB lookup: without it, a caller
+ * with no (or a malformed) `Authorization` header would still learn whether
+ * `serial` exists from the 404-vs-401 split below — an unauthenticated
+ * enumeration oracle. Rejecting a missing/malformed header up front closes
+ * that regardless of whether the serial is real.
  */
 export async function getPassForDownload(params: {
   serial: string;
   authHeader: string | undefined;
   ifModifiedSince: string | undefined;
 }): Promise<GetPassResult> {
+  if (!hasPassAuthHeaderShape(params.authHeader)) return { status: 401 };
+
   const pass = await prisma.pass.findUnique({ where: { serial: params.serial }, include: { card: true } });
   if (!pass) return { status: 404 };
   if (!isValidPassAuth(params.authHeader, pass.authToken)) return { status: 401 };
