@@ -101,6 +101,30 @@ export const en = {
   editSaveButton: 'Save changes',
   editCancelButton: 'Cancel',
 
+  // Card designer (BUILD.md §8.5 / §8.9) — the two-pane logo/cover/colour
+  // editor on the card edit page.
+  designerDesignHeading: 'Design (always editable)',
+  designerEconomicsHeading: 'Economics',
+  designerLockedSuffix: ' — locked',
+  designerLogoHeading: 'Business logo',
+  designerLogoUploadButton: 'Upload logo',
+  designerRemoveButton: 'Remove',
+  designerLogoHint: 'Shown on the card, and usable as the stamp itself.',
+  designerCoverHeading: 'Background image',
+  designerCoverUploadButton: 'Upload image',
+  designerCoverHint: 'Shown behind the stamps — lower the opacity so they stay legible.',
+  designerCoverOpacityLabel: 'Background opacity',
+  designerShapeHeading: 'Stamp shape',
+  designerShapeCircle: 'Circle',
+  designerShapeSquare: 'Square',
+  designerUseLogoAsStampLabel: 'Use the logo as the stamp',
+  designerUseLogoAsStampHint: 'Upload a logo to enable this.',
+  designerColoursHeading: 'Colours',
+  designerLabelStampsLabel: 'Custom stamps label (max 16 characters)',
+  designerLabelRewardsLabel: 'Custom rewards label (max 16 characters)',
+  designerUploadingLabel: 'Uploading…',
+  designerUploadErrorGeneric: 'Upload failed. Please try again.',
+
   // Local-demo auth banner (shown on every merchant page until Firebase
   // sign-in lands, sub-project 4)
   authBannerTitle: 'Local demo — no authentication.',

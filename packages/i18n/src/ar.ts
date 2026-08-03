@@ -105,6 +105,29 @@ export const ar: Record<keyof typeof en, string> = {
   editSaveButton: 'حفظ التغييرات',
   editCancelButton: 'إلغاء',
 
+  // Card designer (BUILD.md §8.5 / §8.9)
+  designerDesignHeading: 'التصميم (قابل للتعديل دائمًا)',
+  designerEconomicsHeading: 'الاقتصاديات',
+  designerLockedSuffix: ' — مقفل',
+  designerLogoHeading: 'شعار المتجر',
+  designerLogoUploadButton: 'رفع الشعار',
+  designerRemoveButton: 'إزالة',
+  designerLogoHint: 'يظهر على البطاقة، ويمكن استخدامه كختم بحد ذاته.',
+  designerCoverHeading: 'صورة الخلفية',
+  designerCoverUploadButton: 'رفع الصورة',
+  designerCoverHint: 'تظهر خلف الأختام — قلّل الشفافية لتبقى الأختام واضحة.',
+  designerCoverOpacityLabel: 'شفافية الخلفية',
+  designerShapeHeading: 'شكل الختم',
+  designerShapeCircle: 'دائرة',
+  designerShapeSquare: 'مربع',
+  designerUseLogoAsStampLabel: 'استخدم الشعار كختم',
+  designerUseLogoAsStampHint: 'ارفع شعارًا لتفعيل هذا الخيار.',
+  designerColoursHeading: 'الألوان',
+  designerLabelStampsLabel: 'تسمية مخصّصة للأختام (16 حرفًا كحد أقصى)',
+  designerLabelRewardsLabel: 'تسمية مخصّصة للمكافآت (16 حرفًا كحد أقصى)',
+  designerUploadingLabel: 'جارٍ الرفع…',
+  designerUploadErrorGeneric: 'فشل الرفع. حاول مرة أخرى.',
+
   // Local-demo auth banner
   authBannerTitle: 'نسخة تجريبية محلية — بلا مصادقة.',
   authBannerBody:

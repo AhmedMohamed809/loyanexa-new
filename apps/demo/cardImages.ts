@@ -24,6 +24,16 @@ import { prisma } from '../../packages/db/src/index.ts';
 /** Hard cap on an upload's raw size, checked before it is fully read into memory (server.ts). */
 export const MAX_UPLOAD_BYTES = 2 * 1024 * 1024;
 
+/**
+ * The cap applied to the *whole* multipart request body (server.ts /
+ * multipart.ts), a little above `MAX_UPLOAD_BYTES` to leave room for
+ * multipart boundary/header overhead around the one file part. The file
+ * part itself is still checked against the exact `MAX_UPLOAD_BYTES` limit
+ * in `normalizeUpload` — this constant only bounds how much the server will
+ * ever buffer for one request.
+ */
+export const MAX_UPLOAD_REQUEST_BYTES = MAX_UPLOAD_BYTES + 64 * 1024;
+
 /** Hard cap on an upload's pixel dimensions — well under the decoder's own 100-megapixel cap, so a bad upload fails with a specific, actionable message instead of a generic one. */
 export const MAX_UPLOAD_DIMENSION = 4000;
 
