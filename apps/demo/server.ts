@@ -3711,9 +3711,10 @@ async function handleGetUpdatedSerials(
   deviceId: string,
   url: URL
 ): Promise<void> {
+  // No auth header is read here on purpose — Apple does not send one to this
+  // endpoint. See the comment on getUpdatedSerials in passkit.ts.
   const result = await getUpdatedSerials({
     deviceId,
-    authHeader: applePassAuthHeader(req),
     passesUpdatedSince: url.searchParams.get('passesUpdatedSince') ?? undefined,
   });
   if (result.status === 200) {

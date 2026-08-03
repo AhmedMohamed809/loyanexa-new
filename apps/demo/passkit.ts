@@ -91,15 +91,28 @@ export type SerialsResult =
 /**
  * GET /apple/v1/devices/:deviceId/registrations/:passTypeId?passesUpdatedSince=
  *
- * A device can hold more than one pass under the same passType, so there is
- * no single "the" pass to check the auth header against here (unlike the
- * three serial-scoped endpoints below). Authenticate against any one of
- * the device's own registered passes' tokens — Apple only ever calls this
- * with the token from a pass it itself registered on this exact deviceId.
+ * This endpoint is deliberately NOT authenticated, and that is not an
+ * oversight — Apple's PassKit web service sends no `Authorization` header
+ * here. Only the three serial-scoped endpoints (register, get-latest-pass,
+ * unregister) carry `Authorization: ApplePass`; this one is device-scoped,
+ * and a device can hold several passes under one passType, so there is no
+ * single token to check against.
+ *
+ * We learned this the hard way. An earlier revision required a token here,
+ * so every real iPhone got a 401 and silently stopped updating. It looked
+ * exactly like the push never arriving. The device's own diagnostics,
+ * posted to /apple/v1/log, are what exposed it:
+ *
+ *   Get serial #s task (for device 691020eb…, pass type
+ *   pass.com.loyanexa.loyalty) encountered error: Unexpected response code 401
+ *
+ * The protection here is that `deviceId` is an opaque Apple-generated
+ * identifier we never publish, and the response leaks only serial numbers
+ * for that one device — never pass contents, which stay behind the
+ * authenticated get-latest-pass endpoint.
  */
 export async function getUpdatedSerials(params: {
   deviceId: string;
-  authHeader: string | undefined;
   passesUpdatedSince: string | undefined;
 }): Promise<SerialsResult> {
   const devices = await prisma.device.findMany({
@@ -107,9 +120,6 @@ export async function getUpdatedSerials(params: {
     include: { pass: true },
   });
   if (devices.length === 0) return { status: 404 };
-  if (!devices.some((d) => isValidPassAuth(params.authHeader, d.pass.authToken))) {
-    return { status: 401 };
-  }
 
   let candidates = devices.map((d) => d.pass);
   if (params.passesUpdatedSince) {
