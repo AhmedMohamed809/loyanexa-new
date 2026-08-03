@@ -10,7 +10,12 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import http2 from 'node:http2';
 
-import { ApnsClient } from '../src/apns.ts';
+import {
+  ApnsClient,
+  parseApnsEnvironment,
+  resolveApnsHost,
+  isBadEnvironmentKeyError,
+} from '../src/apns.ts';
 
 /** A throwaway EC P-256 keypair, PKCS8-PEM — exactly the shape of a real Apple .p8 (which is just PKCS8 PEM with a `.p8` extension). */
 function makeEcKeyPair(): { privateKeyPem: string; publicKey: crypto.KeyObject } {
@@ -183,4 +188,54 @@ test('sendPush() reports 410 Gone with reason "gone"', async () => {
     client.close();
     await fake.close();
   }
+});
+
+// ---------------------------------------------------------------------------
+// APNS_ENV / gateway selection (BUILD.md §18 — the live 403 this exists to
+// fix: a key provisioned for one environment gets `BadEnvironmentKeyInToken`
+// pushing to the other). Everything below is pure logic — no network call,
+// no http2.connect — so it never touches Apple's servers, real or sandbox.
+// ---------------------------------------------------------------------------
+
+test('parseApnsEnvironment defaults to production for anything other than the exact string "sandbox"', () => {
+  assert.equal(parseApnsEnvironment(undefined), 'production');
+  assert.equal(parseApnsEnvironment(''), 'production');
+  assert.equal(parseApnsEnvironment('production'), 'production');
+  assert.equal(parseApnsEnvironment('Sandbox'), 'production', 'must be exact, not case-insensitive');
+  assert.equal(parseApnsEnvironment('bogus'), 'production');
+  assert.equal(parseApnsEnvironment('sandbox'), 'sandbox');
+});
+
+test('resolveApnsHost maps each ApnsEnvironment to the right Apple gateway', () => {
+  assert.equal(resolveApnsHost('production'), 'https://api.push.apple.com');
+  assert.equal(resolveApnsHost('sandbox'), 'https://api.sandbox.push.apple.com');
+});
+
+test('ApnsClient.host picks the gateway from `environment`, defaults to production, and `host` overrides both', () => {
+  const { privateKeyPem } = makeEcKeyPair();
+
+  const defaulted = new ApnsClient({ keyId: 'K', teamId: 'T', privateKeyPem });
+  assert.equal(defaulted.host, 'https://api.push.apple.com');
+
+  const explicitProd = new ApnsClient({ keyId: 'K', teamId: 'T', privateKeyPem, environment: 'production' });
+  assert.equal(explicitProd.host, 'https://api.push.apple.com');
+
+  const sandbox = new ApnsClient({ keyId: 'K', teamId: 'T', privateKeyPem, environment: 'sandbox' });
+  assert.equal(sandbox.host, 'https://api.sandbox.push.apple.com');
+
+  const overridden = new ApnsClient({
+    keyId: 'K',
+    teamId: 'T',
+    privateKeyPem,
+    environment: 'sandbox',
+    host: 'http://127.0.0.1:1',
+  });
+  assert.equal(overridden.host, 'http://127.0.0.1:1', 'an explicit host must win over environment');
+});
+
+test('isBadEnvironmentKeyError recognises the exact 403/BadEnvironmentKeyInToken shape and nothing else', () => {
+  assert.equal(isBadEnvironmentKeyError(403, JSON.stringify({ reason: 'BadEnvironmentKeyInToken' })), true);
+  assert.equal(isBadEnvironmentKeyError(403, JSON.stringify({ reason: 'BadDeviceToken' })), false);
+  assert.equal(isBadEnvironmentKeyError(400, JSON.stringify({ reason: 'BadEnvironmentKeyInToken' })), false);
+  assert.equal(isBadEnvironmentKeyError(410, ''), false);
 });

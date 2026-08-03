@@ -14,7 +14,8 @@
 //   GET  /preview.png, GET /qr.png
 //   GET  /stamp           the merchant stamp screen (BUILD.md §8.15)
 //   POST /api/stamp        its write path — 24h anti-fraud guard (§9.6),
-//                          fires an APNs live-update push after responding
+//                          fires APNs + Google Wallet live-update pushes
+//                          after responding
 //   Apple PassKit web service (BUILD.md §9.3 / §12 — paths fixed by Apple):
 //     POST   /apple/v1/devices/:deviceId/registrations/:passTypeId/:serial
 //     GET    /apple/v1/devices/:deviceId/registrations/:passTypeId
@@ -23,6 +24,8 @@
 //     POST   /apple/v1/log
 //   GET  /:code           the customer enrol page (registered last — catch-all)
 //   POST /:code/pass       issues a real signed Apple Wallet pass
+//   POST /:code/google-pass  issues a Google Wallet pass (BUILD.md §9.5) —
+//                          302s to a https://pay.google.com/gp/v/save/<jwt> link
 //   GET  /health
 
 import http from 'node:http';
@@ -43,8 +46,10 @@ import {
 import {
   resolveAppleCredentials as resolveAppleCredentialPaths,
   resolveApnsKeyPem,
+  resolveGoogleServiceAccount,
 } from '../../packages/pass/src/credentials.ts';
-import { ApnsClient } from '../../packages/pass/src/apns.ts';
+import { ApnsClient, parseApnsEnvironment, isBadEnvironmentKeyError } from '../../packages/pass/src/apns.ts';
+import { GoogleWalletClient } from '../../packages/pass/src/googleWallet.ts';
 import { t, arabicDigits, type Lang } from '../../packages/i18n/src/index.ts';
 import { loadEnvFile } from './env.ts';
 import {
@@ -341,6 +346,14 @@ function resolveAppleCredentials(): PassCredentials {
 // the demo — it just never sends live-update pushes, which is logged once,
 // clearly, rather than crashing the whole server.
 // ---------------------------------------------------------------------------
+// APNS_ENV (production|sandbox, default production) picks which of Apple's
+// two gateways every push in this process targets — see apns.ts's
+// parseApnsEnvironment()/resolveApnsHost() doc comments for why a wrong
+// value here shows up as a 403 BadEnvironmentKeyInToken, not a silent
+// failure. Read once at module load: which gateway a running process talks
+// to should never change mid-process.
+const APNS_ENV = parseApnsEnvironment(process.env.APNS_ENV);
+
 let apnsClient: ApnsClient | null | undefined; // undefined = not yet attempted; null = attempted, unavailable
 function getApnsClient(): ApnsClient | undefined {
   if (apnsClient !== undefined) return apnsClient ?? undefined;
@@ -350,7 +363,7 @@ function getApnsClient(): ApnsClient | undefined {
     if (!keyId) throw new Error('.env is missing APNS_KEY_ID');
     if (!teamId) throw new Error('.env is missing APPLE_TEAM_ID');
     const privateKeyPem = resolveApnsKeyPem(ROOT);
-    apnsClient = new ApnsClient({ keyId, teamId, privateKeyPem });
+    apnsClient = new ApnsClient({ keyId, teamId, privateKeyPem, environment: APNS_ENV });
     return apnsClient;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -363,11 +376,19 @@ function getApnsClient(): ApnsClient | undefined {
 /**
  * Pushes the content-free wake-up notification (BUILD.md §9.3) to every
  * device registered for `serial`, and prunes any Device row APNs reports
- * as 410 Gone (the pass was removed from that phone). Callers must invoke
- * this *after* responding to the triggering request (BUILD.md §18 item 6)
- * — it is never awaited by a request handler, only fired from one.
+ * as 410 Gone (the pass was removed from that phone). Also PATCHes the
+ * matching Google Wallet `LoyaltyObject`'s stamp balance, if one exists —
+ * the Android counterpart to the APNs push (BUILD.md §9.5), which needs no
+ * device-registration step of its own (see googleWallet.ts's
+ * `updateLoyaltyObject` doc comment). Callers must invoke this *after*
+ * responding to the triggering request (BUILD.md §18 item 6) — it is never
+ * awaited by a request handler, only fired from one.
  */
-async function pushPassUpdate(serial: string): Promise<void> {
+async function pushPassUpdate(serial: string, stamps: number, goal: number): Promise<void> {
+  await Promise.all([pushApnsUpdate(serial), pushGoogleWalletUpdate(serial, stamps, goal)]);
+}
+
+async function pushApnsUpdate(serial: string): Promise<void> {
   const client = getApnsClient();
   if (!client) return; // getApnsClient() already logged why, once.
   const passTypeId = process.env.APPLE_PASS_TYPE_ID;
@@ -386,6 +407,18 @@ async function pushPassUpdate(serial: string): Promise<void> {
           .delete({ where: { deviceId_passSerial: { deviceId: device.deviceId, passSerial: serial } } })
           .catch(() => {}); // already gone / raced with an unregister — fine either way
         console.log(`[apns] pass ${serial}: pruned device ${device.deviceId} (410 Gone)`);
+      } else if (isBadEnvironmentKeyError(result.status, result.body)) {
+        // The one failure mode worth a special, actionable line instead of
+        // a raw Apple error: this is a portal setting, not a code bug (see
+        // apns.ts's isBadEnvironmentKeyError doc comment) — whoever hits
+        // this next should not have to re-derive that from a bare 403.
+        console.error(
+          `[apns] pass ${serial}: push to device ${device.deviceId} rejected — BadEnvironmentKeyInToken. ` +
+            `APNs key ${process.env.APNS_KEY_ID ?? '(unknown)'} is not provisioned for the '${APNS_ENV}' ` +
+            `environment this server is configured to use (${client.host}). Fix: in the Apple Developer ` +
+            `portal, enable this key for '${APNS_ENV}' push, or set APNS_ENV to the environment the key ` +
+            `actually supports.`
+        );
       } else {
         console.error(
           `[apns] pass ${serial}: push to device ${device.deviceId} failed — status=${result.status} body=${result.body}`
@@ -393,6 +426,63 @@ async function pushPassUpdate(serial: string): Promise<void> {
       }
     })
   );
+}
+
+// ---------------------------------------------------------------------------
+// Google Wallet — one GoogleWalletClient for the whole process, mirroring
+// ApnsClient just above: it caches its OAuth2 access token, so building a
+// fresh client per request would defeat that (BUILD.md §9.5 / the job
+// brief: "reuse the access token across calls with a short cache, the way
+// the APNs JWT is cached"). Built lazily, and — same reasoning as
+// getApnsClient() — a machine without GOOGLE_SERVICE_ACCOUNT_PATH configured
+// still runs the rest of the demo; Google Wallet is just disabled, logged
+// once, not a crash.
+// ---------------------------------------------------------------------------
+let googleWalletClient: GoogleWalletClient | null | undefined; // undefined = not yet attempted; null = attempted, unavailable
+function getGoogleWalletClient(): GoogleWalletClient | undefined {
+  if (googleWalletClient !== undefined) return googleWalletClient ?? undefined;
+  try {
+    const issuerId = process.env.GOOGLE_ISSUER_ID;
+    if (!issuerId) throw new Error('.env is missing GOOGLE_ISSUER_ID');
+    if (!PUBLIC_BASE_URL) {
+      // programLogo and the save-link JWT's `origins` both need a real
+      // public HTTPS origin (BUILD.md §9.5) — there is no meaningful LAN
+      // fallback the way there is for enrol links/QR codes.
+      throw new Error('PUBLIC_BASE_URL is not set — Google Wallet needs a public HTTPS origin');
+    }
+    const serviceAccount = resolveGoogleServiceAccount(ROOT);
+    googleWalletClient = new GoogleWalletClient({
+      issuerId,
+      serviceAccountEmail: serviceAccount.client_email,
+      privateKeyPem: serviceAccount.private_key,
+      publicBaseUrl: PUBLIC_BASE_URL,
+    });
+    return googleWalletClient;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[google-wallet] not configured — Google Wallet is disabled (${message})`);
+    googleWalletClient = null;
+    return undefined;
+  }
+}
+
+/**
+ * PATCHes the Google Wallet `LoyaltyObject` balance for `serial`, if
+ * Google Wallet is configured. `reason: 'not_found'` just means this pass
+ * was never added to Google Wallet (the customer used Apple, or hasn't
+ * saved either yet) — not worth logging, same as APNs' "no devices
+ * registered" case above never logging anything either.
+ */
+async function pushGoogleWalletUpdate(serial: string, stamps: number, goal: number): Promise<void> {
+  const client = getGoogleWalletClient();
+  if (!client) return; // getGoogleWalletClient() already logged why, once.
+
+  const result = await client.updateLoyaltyObject(serial, stamps, goal);
+  if (!result.ok && result.reason === 'error') {
+    console.error(
+      `[google-wallet] pass ${serial}: updateLoyaltyObject failed — status=${result.status} body=${result.body}`
+    );
+  }
 }
 
 /** A shared strip-render cache, reused across every pass issuance (BUILD.md §10 — the strip cache is a 455x measured win; do not re-render per request). */
@@ -932,11 +1022,19 @@ function parseLinkCode(code: string): number | undefined {
 // Route: GET /:code — the customer enrol page. BUILD.md §8.16: the
 // highest-value page in the product. Full-bleed in the merchant's own card
 // colours (not ours — that is the point), the reward as the headline, two
-// supporting lines, an empty-card strip preview, a consent checkbox and one
-// primary "Add to Apple Wallet" button. Plain HTML/CSS, no framework, no
-// external assets, no JavaScript — the checkbox uses the `required`
-// attribute so the browser itself blocks submission until it is ticked.
-// Name and phone are both optional, marked as such, never required.
+// supporting lines, an empty-card strip preview, a consent checkbox and
+// *both* wallet buttons (BUILD.md §8.16 point 6 — "platform-detected"). One
+// consent checkbox and one set of optional name/phone fields serve both
+// buttons: each is a `type="submit"` with its own `formaction`, so the same
+// `<form>` posts to whichever wallet route the customer actually tapped —
+// the checkbox's `required` attribute still blocks either submission until
+// it's ticked, no JavaScript needed for that part. The one bit of
+// JavaScript on this page is a tiny inline `navigator.userAgent` sniff that
+// only *reorders* the two buttons (Android sees Google Wallet listed first,
+// everything else sees Apple Wallet first) — detection is a hint, never a
+// gate: both buttons are always rendered, always enabled, and work
+// regardless of what the sniff guessed, so a customer on a desktop browser
+// or one it can't classify can still pick either wallet.
 // ---------------------------------------------------------------------------
 function renderEnrolPage(card: Card): string {
   const stripQs = new URLSearchParams({
@@ -984,6 +1082,7 @@ function renderEnrolPage(card: Card): string {
   input::placeholder { color: inherit; opacity: 0.55; }
   .consent { display: flex; align-items: flex-start; gap: 10px; margin: 18px 0 22px; font-size: 13px; line-height: 1.5; opacity: 0.92; }
   .consent input { margin-top: 3px; }
+  .wallet-buttons { display: flex; flex-direction: column; gap: 12px; }
   button.cta {
     display: block;
     width: 100%;
@@ -992,11 +1091,14 @@ function renderEnrolPage(card: Card): string {
     padding: 16px 20px;
     font-size: 17px;
     font-weight: 700;
-    color: #fff;
-    background: ${card.stampActive};
     cursor: pointer;
   }
   button.cta:active { opacity: 0.9; }
+  button.cta.apple { order: 1; color: #fff; background: ${card.stampActive}; }
+  button.cta.google { order: 2; color: inherit; background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.4); }
+  /* Set by the platform-detection script below — reorders, never hides: both buttons stay rendered and clickable either way. */
+  body.platform-android button.cta.apple { order: 2; }
+  body.platform-android button.cta.google { order: 1; }
   .powered { margin-top: 28px; font-size: 12px; opacity: 0.6; }
 </style>
 </head>
@@ -1021,10 +1123,21 @@ function renderEnrolPage(card: Card): string {
       <input type="checkbox" name="consent" required>
       <span>I agree to join ${escapeHtml(card.name)}'s loyalty card and receive updates about my rewards.</span>
     </label>
-    <button class="cta" type="submit">Add to Apple Wallet</button>
+    <div class="wallet-buttons">
+      <button class="cta apple" type="submit" formaction="/${card.linkCode}/pass">Add to Apple Wallet</button>
+      <button class="cta google" type="submit" formaction="/${card.linkCode}/google-pass">Add to Google Wallet</button>
+    </div>
   </form>
   <p class="powered">Powered by LoyaNexa</p>
 </main>
+<script>
+  // Platform detection is a hint only — see the block comment above this
+  // function's definition in server.ts. This never disables or removes
+  // either button, it only reorders them via the CSS 'order' rules above.
+  if (/Android/i.test(navigator.userAgent)) {
+    document.body.classList.add('platform-android');
+  }
+</script>
 </body>
 </html>`;
 }
@@ -1106,6 +1219,57 @@ function buildPassContentFor(card: Card, pass: Pass): PassContent {
   };
 }
 
+/** Reads and clamps the optional `name`/`phone` enrolment fields from a POST body — shared by both wallet issuance routes below. A malformed/oversized body must not block enrolment, so any read failure just falls back to "none supplied" rather than a 4xx. */
+async function readEnrolFields(req: http.IncomingMessage): Promise<{ custName: string; custPhone: string }> {
+  let fields: querystring.ParsedUrlQuery = {};
+  try {
+    fields = await readUrlencodedBody(req);
+  } catch {
+    fields = {};
+  }
+  return {
+    custName: String(fields.name ?? '').trim().slice(0, 80),
+    custPhone: String(fields.phone ?? '').trim().slice(0, 30),
+  };
+}
+
+/**
+ * Creates the Pass row for a brand-new enrolment on `card` — shared by both
+ * wallet issuance routes (POST /:code/pass for Apple, POST /:code/google-pass
+ * for Google): whichever wallet button the customer taps, it is the same
+ * enrolment, so it gets exactly one Pass row with one `serial`, which is
+ * all either platform ever needs to identify and update it later.
+ */
+async function createPassForEnrolment(card: Card, custName: string, custPhone: string): Promise<Pass> {
+  const stamps = card.starterStamps;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const serial = crypto.randomBytes(14).toString('base64url').slice(0, 18); // 18 random base64url chars
+    const shortCode = generateShortCode(); // 8 uppercase hex chars
+    const authToken = crypto.randomBytes(24).toString('base64url'); // 32 random chars
+    try {
+      return await prisma.pass.create({
+        data: {
+          serial,
+          shortCode,
+          cardId: card.id,
+          merchantId: card.merchantId,
+          authToken,
+          stamps,
+          custName,
+          custPhone,
+        },
+      });
+    } catch (err) {
+      // P2002: unique constraint failed (serial or shortCode collision) — retry with fresh values.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002' && attempt < 4) continue;
+      throw err;
+    }
+  }
+  // Unreachable in practice: the loop above always either returns or
+  // rethrows on its final iteration.
+  throw new Error('pass creation loop exited without creating a pass or throwing');
+}
+
 // ---------------------------------------------------------------------------
 // Route: POST /:code/pass — issue a real, signed .pkpass for this card and
 // hand it back with the exact MIME type iOS uses to decide whether to offer
@@ -1125,23 +1289,12 @@ async function handleIssuePass(req: http.IncomingMessage, res: http.ServerRespon
     return;
   }
 
-  let fields: querystring.ParsedUrlQuery = {};
-  try {
-    fields = await readUrlencodedBody(req);
-  } catch {
-    // A malformed/oversized body should not block enrolment — name and
-    // phone are optional, so fall back to "none supplied" rather than 4xx.
-    fields = {};
-  }
-  const custName = String(fields.name ?? '').trim().slice(0, 80);
-  const custPhone = String(fields.phone ?? '').trim().slice(0, 30);
-
+  const { custName, custPhone } = await readEnrolFields(req);
   const credentials = resolveAppleCredentials();
 
-  const stamps = card.starterStamps;
   const stripSet = await renderAllDensities(PASS_STRIP_STORE, {
     goal: card.stampsGoal,
-    filled: stamps,
+    filled: card.starterStamps,
     shape: 'circle',
     bgColor: card.bgColor,
     bgOpacity: 1,
@@ -1150,38 +1303,8 @@ async function handleIssuePass(req: http.IncomingMessage, res: http.ServerRespon
   });
   const images = buildPassImagesFor(card, stripSet);
 
-  let pass: Pass | undefined;
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const serial = crypto.randomBytes(14).toString('base64url').slice(0, 18); // 18 random base64url chars
-    const shortCode = generateShortCode(); // 8 uppercase hex chars
-    const authToken = crypto.randomBytes(24).toString('base64url'); // 32 random chars
-    try {
-      pass = await prisma.pass.create({
-        data: {
-          serial,
-          shortCode,
-          cardId: card.id,
-          merchantId: card.merchantId,
-          authToken,
-          stamps,
-          custName,
-          custPhone,
-        },
-      });
-      break;
-    } catch (err) {
-      // P2002: unique constraint failed (serial or shortCode collision) — retry with fresh values.
-      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002' && attempt < 4) continue;
-      throw err;
-    }
-  }
-  if (!pass) {
-    // Unreachable in practice, same shape as the card-creation loop above.
-    throw new Error('pass creation loop exited without creating a pass or throwing');
-  }
-
+  const pass = await createPassForEnrolment(card, custName, custPhone);
   const content = buildPassContentFor(card, pass);
-
   const pkpass = buildPass(credentials, content, images);
 
   await prisma.stampEvent.create({
@@ -1200,6 +1323,72 @@ async function handleIssuePass(req: http.IncomingMessage, res: http.ServerRespon
     'Cache-Control': 'no-store',
   });
   res.end(pkpass);
+}
+
+// ---------------------------------------------------------------------------
+// Route: POST /:code/google-pass — the Google Wallet counterpart to
+// POST /:code/pass above. BUILD.md §9.5: there is no file to hand back —
+// creates the Pass row exactly like the Apple route, makes sure this card's
+// LoyaltyClass exists (ensureLoyaltyClass is idempotent: create the first
+// time, patch every time after), then 302s the browser straight to the
+// signed `https://pay.google.com/gp/v/save/<jwt>` link, which is the entire
+// "add to wallet" action for Google — the JWT itself carries the
+// LoyaltyObject, so nothing else needs to happen server-side before the
+// redirect.
+// ---------------------------------------------------------------------------
+async function handleIssueGooglePass(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  code: string
+): Promise<void> {
+  const linkCode = parseLinkCode(code);
+  if (linkCode === undefined) {
+    sendEnrolNotFound(res, code);
+    return;
+  }
+  const card = await prisma.card.findUnique({ where: { linkCode } });
+  if (!card) {
+    sendEnrolNotFound(res, code);
+    return;
+  }
+
+  const client = getGoogleWalletClient();
+  if (!client) {
+    // getGoogleWalletClient() already logged the underlying reason once.
+    // Google Wallet is genuinely unavailable here — degrade to a clear,
+    // customer-facing message rather than a bare 500, since Apple Wallet
+    // (the other button on this same page) still works.
+    sendHtml(
+      res,
+      503,
+      layout(
+        'Google Wallet unavailable',
+        '<div class="panel"><h1>503</h1><p>Google Wallet isn\'t available on this server right now. Please use the "Add to Apple Wallet" button instead, or try again later.</p></div>'
+      )
+    );
+    return;
+  }
+
+  const { custName, custPhone } = await readEnrolFields(req);
+  const pass = await createPassForEnrolment(card, custName, custPhone);
+
+  await prisma.stampEvent.create({
+    data: {
+      merchantId: card.merchantId,
+      cardId: card.id,
+      serial: pass.serial,
+      kind: 'ENROLL',
+    },
+  });
+
+  await client.ensureLoyaltyClass({ id: card.id, name: card.name, bgColor: card.bgColor });
+  const saveLink = client.saveLink(
+    { serial: pass.serial, stamps: pass.stamps, custName: pass.custName || undefined },
+    { id: card.id, stampsGoal: card.stampsGoal }
+  );
+
+  res.writeHead(302, { Location: saveLink });
+  res.end();
 }
 
 // ---------------------------------------------------------------------------
@@ -1634,15 +1823,16 @@ async function handleApiStamp(req: http.IncomingMessage, res: http.ServerRespons
     message,
   });
 
-  // Fire the live-update push only *after* the response above has been
-  // handed to the socket, and never awaited by this handler — BUILD.md §18
-  // item 6: fanning APNs out inside a request handler is what times a
-  // stamp request out. setImmediate defers this past the current
-  // synchronous turn (and past res.end() flushing) so a slow or failed
-  // push can never slow down, let alone fail, the stamp itself.
+  // Fire the live-update pushes (APNs and Google Wallet both) only *after*
+  // the response above has been handed to the socket, and never awaited by
+  // this handler — BUILD.md §18 item 6: fanning these out inside a request
+  // handler is what times a stamp request out. setImmediate defers this
+  // past the current synchronous turn (and past res.end() flushing) so a
+  // slow or failed push can never slow down, let alone fail, the stamp
+  // itself.
   setImmediate(() => {
-    pushPassUpdate(outcome.serial).catch((err) => {
-      console.error(`[apns] push fan-out threw for pass ${outcome.serial}:`, err);
+    pushPassUpdate(outcome.serial, outcome.stamps, outcome.goal).catch((err) => {
+      console.error(`[push] live-update fan-out threw for pass ${outcome.serial}:`, err);
     });
   });
 }
@@ -1986,11 +2176,17 @@ const server = http.createServer(async (req, res) => {
     // From here down are the public, unauthenticated short-link routes.
     // BUILD.md §12 / §18 item 10: the bare `GET /:code` catch-all must be
     // registered dead last, or it shadows every route above it — every
-    // literal path (including this section's own POST /:code/pass, which
-    // is a distinct two-segment pattern) is matched first.
+    // literal path (including this section's own POST /:code/pass and
+    // POST /:code/google-pass, both distinct two-segment patterns) is
+    // matched first.
     const passIssueMatch = pathname.match(/^\/([^/]+)\/pass$/);
     if (req.method === 'POST' && passIssueMatch) {
       await handleIssuePass(req, res, passIssueMatch[1]!);
+      return;
+    }
+    const googlePassIssueMatch = pathname.match(/^\/([^/]+)\/google-pass$/);
+    if (req.method === 'POST' && googlePassIssueMatch) {
+      await handleIssueGooglePass(req, res, googlePassIssueMatch[1]!);
       return;
     }
     const enrolMatch = pathname.match(/^\/([^/]+)$/);

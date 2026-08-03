@@ -31,6 +31,17 @@
 // local `.env` points at the real .p8). Apple's .p8 *is* a PKCS8 PEM file
 // in every way that matters here; it just carries a `.p8` extension by
 // convention, so the same normalisePem() trap and fix apply unchanged.
+//
+// resolveGoogleServiceAccount() below is the same problem again for Google
+// Wallet's service-account key (certs/service-account.json): prefer the
+// JSON *contents* from GOOGLE_SERVICE_ACCOUNT (a Fly secret — the container
+// has no files), fall back to a file path (GOOGLE_SERVICE_ACCOUNT_PATH, how
+// local `.env` points at the real file). Unlike the APNs .p8, this is JSON,
+// not PEM — there is no normalisePem() step; the `private_key` field inside
+// the parsed JSON already carries real `\n` bytes (JSON.stringify escapes
+// newlines as the two-character `\n` sequence *inside a JSON string*, and
+// JSON.parse reverses that correctly), so the escaped-newline trap that
+// normalisePem() exists for above simply does not apply here.
 
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -157,4 +168,55 @@ export function resolveApnsKeyPem(rootDir: string = process.cwd()): string {
   const resolved = path.resolve(rootDir, rawPath);
   if (!existsSync(resolved)) throw new Error(`missing APNs key file: ${resolved}`);
   return normalisePem(readFileSync(resolved, 'utf8'));
+}
+
+/** The handful of fields googleWallet.ts actually needs out of the service-account JSON. The real file carries several more (project_id, client_id, ...) that we simply never read. */
+export interface GoogleServiceAccount {
+  client_email: string;
+  private_key: string;
+}
+
+function isGoogleServiceAccount(value: unknown): value is GoogleServiceAccount {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { client_email?: unknown }).client_email === 'string' &&
+    typeof (value as { private_key?: unknown }).private_key === 'string'
+  );
+}
+
+/**
+ * Resolves the Google Wallet service-account credentials (the JSON behind
+ * `certs/service-account.json`), preferring JSON content from the
+ * `GOOGLE_SERVICE_ACCOUNT` env var (production, a Fly secret) over the
+ * `GOOGLE_SERVICE_ACCOUNT_PATH` file fallback (local dev, matching `.env`'s
+ * existing convention for the Apple credentials above).
+ */
+export function resolveGoogleServiceAccount(rootDir: string = process.cwd()): GoogleServiceAccount {
+  const parse = (raw: string, source: string): GoogleServiceAccount => {
+    let value: unknown;
+    try {
+      value = JSON.parse(raw);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(`${source} does not contain valid JSON: ${message}`);
+    }
+    if (!isGoogleServiceAccount(value)) {
+      throw new Error(`${source} is missing client_email and/or private_key`);
+    }
+    return value;
+  };
+
+  const content = process.env.GOOGLE_SERVICE_ACCOUNT;
+  if (content) return parse(content, 'GOOGLE_SERVICE_ACCOUNT');
+
+  const rawPath = process.env.GOOGLE_SERVICE_ACCOUNT_PATH;
+  if (!rawPath) {
+    throw new Error(
+      '.env is missing GOOGLE_SERVICE_ACCOUNT_PATH (or set GOOGLE_SERVICE_ACCOUNT with the service-account JSON contents)'
+    );
+  }
+  const resolved = path.resolve(rootDir, rawPath);
+  if (!existsSync(resolved)) throw new Error(`missing Google service account file: ${resolved}`);
+  return parse(readFileSync(resolved, 'utf8'), resolved);
 }

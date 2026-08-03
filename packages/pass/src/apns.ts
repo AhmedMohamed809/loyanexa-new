@@ -24,6 +24,14 @@
 import crypto from 'node:crypto';
 import http2 from 'node:http2';
 
+/**
+ * Which of Apple's two APNs gateways to push to. An APNs Auth Key
+ * (APNS_KEY_ID) is provisioned in the Apple Developer portal for one or the
+ * other — see {@link resolveApnsHost}'s doc comment for how a mismatch
+ * between this and the key's actual provisioning shows up.
+ */
+export type ApnsEnvironment = 'production' | 'sandbox';
+
 export interface ApnsConfig {
   /** The 10-character APNs Auth Key ID (APNS_KEY_ID) — becomes the JWT's `kid`. */
   keyId: string;
@@ -31,7 +39,13 @@ export interface ApnsConfig {
   teamId: string;
   /** PEM contents of the `.p8` signing key (PKCS8, EC P-256). Never a file path — see credentials.ts's resolveApnsKeyPem(). */
   privateKeyPem: string;
-  /** APNs gateway origin. Defaults to the real production endpoint; overridable so tests never touch Apple's servers. */
+  /**
+   * Which APNs gateway to push to (APNS_ENV). Defaults to `'production'`.
+   * Ignored when `host` is also set — `host` exists purely so tests can
+   * point the client at a local stand-in instead of either real gateway.
+   */
+  environment?: ApnsEnvironment;
+  /** Explicit gateway override — takes priority over `environment`. Exists so tests never touch Apple's servers. */
   host?: string;
 }
 
@@ -43,6 +57,38 @@ export type PushResult =
 const TOKEN_LIFETIME_MS = 50 * 60 * 1000;
 
 const PRODUCTION_HOST = 'https://api.push.apple.com';
+const SANDBOX_HOST = 'https://api.sandbox.push.apple.com';
+
+/**
+ * Parses the `APNS_ENV` env var into an {@link ApnsEnvironment}, defaulting
+ * to `'production'` for anything other than the exact string `'sandbox'`
+ * (unset, empty, misspelled, or explicitly `'production'` all land there).
+ * A wrong-but-plausible value failing safe to production — the environment
+ * this app is meant to ship against — beats it silently switching to
+ * sandbox and pushes quietly going nowhere real.
+ */
+export function parseApnsEnvironment(raw: string | undefined): ApnsEnvironment {
+  return raw === 'sandbox' ? 'sandbox' : 'production';
+}
+
+/** Maps an {@link ApnsEnvironment} to its gateway origin. Pure — no I/O, so it's trivially unit-testable without touching Apple. */
+export function resolveApnsHost(environment: ApnsEnvironment): string {
+  return environment === 'sandbox' ? SANDBOX_HOST : PRODUCTION_HOST;
+}
+
+/**
+ * True for the specific Apple error this file exists to make loud instead
+ * of cryptic: a `403` whose body names `BadEnvironmentKeyInToken` means the
+ * APNs Auth Key (`apns-topic`'s key, identified by the JWT's `kid`) is
+ * provisioned in the Apple Developer portal for the *other* environment
+ * than the one this request targeted — e.g. a sandbox-only key pushing to
+ * `api.push.apple.com`. This is a portal setting, not a request/JWT bug:
+ * changing `APNS_ENV` only helps if the key really is provisioned for the
+ * other side; otherwise both hosts 403 identically.
+ */
+export function isBadEnvironmentKeyError(status: number, body: string): boolean {
+  return status === 403 && body.includes('BadEnvironmentKeyInToken');
+}
 
 function base64url(input: Buffer | string): string {
   return (Buffer.isBuffer(input) ? input : Buffer.from(input, 'utf8')).toString('base64url');
@@ -57,12 +103,20 @@ function base64url(input: Buffer | string): string {
 export class ApnsClient {
   readonly #config: ApnsConfig;
   readonly #privateKey: crypto.KeyObject;
+  /** Resolved once at construction: `config.host` if set, otherwise whatever `config.environment` (default production) maps to. */
+  readonly #host: string;
   #cachedJwt: { token: string; issuedAt: number } | undefined;
   #session: http2.ClientHttp2Session | undefined;
 
   constructor(config: ApnsConfig) {
     this.#config = config;
     this.#privateKey = crypto.createPrivateKey({ key: config.privateKeyPem, format: 'pem' });
+    this.#host = config.host ?? resolveApnsHost(config.environment ?? 'production');
+  }
+
+  /** The gateway origin this client pushes to — exposed for logging and tests, never re-derived from `config` after construction. */
+  get host(): string {
+    return this.#host;
   }
 
   /**
@@ -103,7 +157,7 @@ export class ApnsClient {
     if (this.#session && !this.#session.closed && !this.#session.destroyed) {
       return this.#session;
     }
-    const session = http2.connect(this.#config.host ?? PRODUCTION_HOST);
+    const session = http2.connect(this.#host);
     // A session-level error or close (idle timeout, network blip, Apple
     // resetting the connection) must not wedge every push after it into a
     // dead session — drop the reference so the next getSession() call
