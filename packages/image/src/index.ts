@@ -11,3 +11,4 @@ export { slotRows, slotPositions, MIN_GOAL, MAX_GOAL, type SlotPosition } from '
 export { renderStrip, BASE_WIDTH, BASE_HEIGHT, type StripSpec, type ImageRef } from './strip.ts';
 export { stripCacheKey, cachedStrip, MemoryStore, type StripStore } from './stripCache.ts';
 export { renderAllDensities, type StripSet } from './densities.ts';
+export { qrMatrix, renderQrPng } from './qr.ts';

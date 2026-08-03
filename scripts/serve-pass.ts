@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// scripts/serve-pass.mjs
+// scripts/serve-pass.ts
 //
 // Tiny local server so a phone on the same wifi can open a URL and have
-// Apple Wallet offer to install the demo pass built by make-demo-pass.mjs.
+// Apple Wallet offer to install the demo pass built by make-demo-pass.ts.
 // No dependencies: node:http, node:fs, node:os only.
 //
 // The whole point is the Content-Type on /pass. iOS decides whether to hand
@@ -10,7 +10,7 @@
 // serve application/octet-stream and the phone just downloads a file it
 // cannot open. It must be exactly application/vnd.apple.pkpass.
 
-import { createServer } from 'node:http';
+import { createServer, type ServerResponse } from 'node:http';
 import { existsSync, statSync, createReadStream } from 'node:fs';
 import { networkInterfaces, homedir } from 'node:os';
 import { randomBytes } from 'node:crypto';
@@ -32,7 +32,7 @@ const LIFETIME_MS = 10 * 60_000;
 
 if (!existsSync(PASS_PATH)) {
   console.error(`No pass found at ${PASS_PATH}.`);
-  console.error('Run `node scripts/make-demo-pass.mjs` first to build and sign it.');
+  console.error('Run `node scripts/make-demo-pass.ts` first to build and sign it.');
   process.exit(1);
 }
 
@@ -46,7 +46,7 @@ function lanAddress() {
   return null;
 }
 
-function sendHtml(res) {
+function sendHtml(res: ServerResponse): void {
   const passUrl = PASS_URL_PATH;
   const body = `<!doctype html>
 <html lang="en">
@@ -95,7 +95,7 @@ function sendHtml(res) {
   res.end(body);
 }
 
-function sendPass(res) {
+function sendPass(res: ServerResponse): void {
   const { size } = statSync(PASS_PATH);
   res.writeHead(200, {
     'Content-Type': 'application/vnd.apple.pkpass',

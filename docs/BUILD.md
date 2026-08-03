@@ -82,9 +82,14 @@ Firebase-for-auth + Postgres-for-data + a persistent server is a deliberate hybr
 
 ## 3 · Brand
 
+> **Revised 2026-08-03:** the owner's marketing landing page
+> (`apps/demo/public/index.html`) supersedes the light palette immediately below. The
+> product brand is now **dark by default** — see the current token table right after it.
+> The light table is kept only for provenance; do not build new screens against it.
+
 Sampled from the logo file — do not approximate.
 
-| Token | Light | Dark |
+| Token | Light *(superseded 2026-08-03)* | Dark *(superseded 2026-08-03)* |
 |---|---|---|
 | `--brand` navy | `#203757` | `#51637C` |
 | `--brand-deep` | `#16263D` | — |
@@ -96,8 +101,26 @@ Sampled from the logo file — do not approximate.
 | `--line` / `--line-2` | `#E3E8EF` / `#CFD7E2` | `#162334` / `#1C2C41` |
 | `--green` / `--amber` | `#2E8B57` / `#B0802F` | `#5E9B77` / `#C9A055` |
 
+**Current palette (revised 2026-08-03), sampled from the landing page — dark only, no
+light variant:**
+
+| Token | Value | Role |
+|---|---|---|
+| `--accent` | `#F28C38` | primary CTA, stamps, figures |
+| `--accent-hover` | `#E67E22` | accent hover/active state |
+| `--accent-light` | `#F7B267` | accent tint (badges, small highlights) |
+| `--canvas` | `#0F172A` | page background |
+| `--sunk` | `#162338` | recessed surface (nav, wells) |
+| `--paper` | `#1C2A42` | card/panel surface |
+| `--raise` | `#22314C` | raised surface (hover states, popovers) |
+| `--ink` | `#FFFFFF` | primary text |
+| `--ink-2` | `#CBD5E1` | secondary text |
+| `--ink-3` | `#94A3B8` | tertiary text, placeholders |
+
 **Orange is an accent, never a surface.** It carries stamps, figures, and one primary CTA
-per view. Navy does the structural work. Never orange text on navy at body size.
+per view. Navy (canvas/sunk/paper/raise) does the structural work. Never orange text on
+navy at body size. The new dark landing page honours this rule throughout — orange never
+fills a background larger than a control.
 
 Radii `8 / 10 / 14 / 18 / 22px`. Three low shadow levels; borders do most of the separating.
 No gradients, no glass blur.
@@ -116,24 +139,29 @@ html[dir=rtl] .brandmark{background-position:right center}
 
 ## 4 · Typography
 
+> **Revised 2026-08-03:** **Alexandria** replaces the Tajawal/Cairo/Readex Pro/Inter/
+> JetBrains Mono stack below, per the owner's landing page
+> (`apps/demo/public/index.html`). Loading snippets (plain `<link>`, Next.js
+> `next/font/google`, Vite, Tailwind, and the eventual self-hosted Fontsource path) live
+> in `docs/FONTS.md` — reference that file rather than duplicating the code here.
+
 ```css
-font-family: 'Tajawal', 'Cairo', 'Readex Pro', system-ui, -apple-system,
-             BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+font-family: 'Alexandria', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI',
+             Roboto, sans-serif;
 ```
 
-Load **Tajawal, Cairo and Readex Pro as webfonts** in that order — without them the stack
-falls through to a system face on almost every device.
-English prepends **Inter**. Figures and codes use **JetBrains Mono**, falling back to the
-Arabic stack under `lang=ar` so Arabic-Indic digits render.
-
-**Weight scale differs by script** — the same numeric weight reads heavier in Inter:
-```css
-:root         { --wBold:800; --wMed:700 }   /* Tajawal leads */
-html[lang=en] { --wBold:700; --wMed:600 }   /* Inter leads   */
-```
+Alexandria is **bilingual** — one family covers Arabic and Latin — so unlike the old
+stack there is no separate face to load per language and no per-language family swap.
+It also carries figures and codes itself; there is no separate mono face. It ships nine
+weights (100–900); the product uses 300–800.
 
 **Non-negotiable:** `html[lang=ar] * { letter-spacing: 0 !important }` — tracking breaks
-Arabic letter joining. This one rule prevents the most common Arabic typography failure.
+Arabic letter joining. This one rule prevents the most common Arabic typography failure,
+and it still applies unchanged under Alexandria.
+
+**Alexandria is geometrically wider than Inter** — the old stack's heaviest negative
+heading tracking (`-0.045em`) reads as cramped in it. Heading tracking eases to
+`-0.025em`; Arabic headings stay at `0` per the rule above regardless.
 
 ---
 
