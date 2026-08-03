@@ -5,6 +5,7 @@ import { fillDisc, strokeRing, fillRoundedRect } from './raster/shapes.ts';
 import { circularMask } from './raster/mask.ts';
 import { resizeRGBA, type Fit } from './raster/resize.ts';
 import { slotPositions } from './layout.ts';
+import { drawBuiltinIcon, type BuiltinIconId } from './raster/icons.ts';
 
 export const BASE_WIDTH = 375;
 export const BASE_HEIGHT = 144;
@@ -25,6 +26,20 @@ export interface ImageRef extends DecodedImage {
 }
 
 /**
+ * Which artwork fills a *completed* stamp slot (BUILD.md §8.5 step 2's
+ * three-way choice) — an empty slot is always the same hollow ring
+ * regardless of this value.
+ *
+ * - `'builtin'` — a glyph drawn by packages/image/src/raster/icons.ts
+ *   (`builtinIcon` below picks which one). The default: a card looks
+ *   designed with zero uploads.
+ * - `'icon'` — the merchant's own uploaded square-ish mark (`icon` below),
+ *   masked into the circle exactly like the old "logo as stamp" did.
+ * - `'plain'` — a solid disc, the original, upload-free behaviour.
+ */
+export type StampSource = 'builtin' | 'icon' | 'plain';
+
+/**
  * Everything a strip's appearance depends on — and nothing else.
  *
  * There is deliberately no customer, pass, serial or merchant field here.
@@ -38,14 +53,32 @@ export interface StripSpec {
   bgOpacity: number;
   activeColor: string;
   inactiveColor: string;
-  logo?: ImageRef;
   /**
-   * How `logo` maps onto the (always round or square) stamp slot when it is
-   * used as the custom stamp — see `circularMask`'s own doc comment.
-   * Defaults to `'contain'`: the whole logo stays visible, which is the
-   * safe choice for a wordmark (the common shape of a real merchant logo).
+   * See `StampSource`'s own doc comment. Only meaningful for `shape:
+   * 'circle'` — a square slot has never supported anything but a plain
+   * filled/hollow rounded rect (see the render loop below), same
+   * limitation this had before `icon`/`builtinIcon` existed.
    */
-  logoFit?: Fit;
+  stampSource?: StampSource;
+  /**
+   * The merchant's own uploaded icon, used when `stampSource === 'icon'`.
+   * Renamed from the old `logo` field — a wordmark logo is never masked
+   * into a stamp any more (see mask.ts's own doc comment on why a wide
+   * wordmark reads illegibly at stamp size); this is always meant to be a
+   * square-ish mark.
+   */
+  icon?: ImageRef;
+  /**
+   * How `icon` maps onto the round stamp slot when `stampSource ===
+   * 'icon'` — see `circularMask`'s own doc comment. Defaults to
+   * `'contain'`. Renamed from `logoFit`: the same Fit/Fill choice, now
+   * correctly scoped to the icon (the logo itself never needs a fit — it
+   * only ever appears in the pass header/enrol page at its own aspect
+   * ratio).
+   */
+  iconFit?: Fit;
+  /** Which built-in icon to draw when `stampSource === 'builtin'`. */
+  builtinIcon?: BuiltinIconId;
   cover?: ImageRef;
   scale: 1 | 2 | 3;
 }
@@ -89,13 +122,13 @@ export function renderStrip(spec: StripSpec): Buffer {
   const active = parseHexColor(spec.activeColor);
   const inactive = parseHexColor(spec.inactiveColor);
   // Circular masking only makes sense for round slots; square slots do not
-  // currently support logo stamps, so skip the (otherwise wasted) mask work.
-  const maskedLogo = spec.logo && spec.shape === 'circle'
+  // currently support icon stamps, so skip the (otherwise wasted) mask work.
+  const maskedIcon = spec.icon && spec.shape === 'circle' && spec.stampSource === 'icon'
     ? circularMask(
-        spec.logo,
+        spec.icon,
         Math.max(2, Math.round(positions[0]!.r * 2)),
         Math.max(1, positions[0]!.r * 0.12),
-        spec.logoFit
+        spec.iconFit
       )
     : undefined;
 
@@ -120,21 +153,23 @@ export function renderStrip(spec: StripSpec): Buffer {
 
     if (!isFilled) {
       strokeRing(surface, p.x, p.y, p.r, Math.max(1, p.r * 0.16), inactive);
-    } else if (maskedLogo) {
-      const size = maskedLogo.width;
+    } else if (maskedIcon) {
+      const size = maskedIcon.width;
       const ox = Math.round(p.x - size / 2);
       const oy = Math.round(p.y - size / 2);
       for (let y = 0; y < size; y++) {
         for (let x = 0; x < size; x++) {
           const o = (y * size + x) * 4;
-          const a = maskedLogo.rgba[o + 3]! / 255;
+          const a = maskedIcon.rgba[o + 3]! / 255;
           if (a > 0) {
             surface.blend(ox + x, oy + y, {
-              r: maskedLogo.rgba[o]!, g: maskedLogo.rgba[o + 1]!, b: maskedLogo.rgba[o + 2]!, a,
+              r: maskedIcon.rgba[o]!, g: maskedIcon.rgba[o + 1]!, b: maskedIcon.rgba[o + 2]!, a,
             }, 1);
           }
         }
       }
+    } else if (spec.stampSource === 'builtin' && spec.builtinIcon) {
+      drawBuiltinIcon(surface, p.x, p.y, p.r * 0.82, active, spec.builtinIcon);
     } else {
       fillDisc(surface, p.x, p.y, p.r, active);
     }

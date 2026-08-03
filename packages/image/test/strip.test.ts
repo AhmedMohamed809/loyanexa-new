@@ -11,6 +11,7 @@ const base: StripSpec = {
   bgOpacity: 1,
   activeColor: '#F96400',
   inactiveColor: '#8794A5',
+  stampSource: 'plain',
   scale: 1,
 };
 
@@ -91,18 +92,18 @@ test('a spec with a cover differs from the same spec without one', () => {
   assert.notDeepEqual(renderStrip(base), renderStrip({ ...base, cover }));
 });
 
-test('a logo stamp renders differently from a plain disc', () => {
-  const logo = {
+test('an icon stamp renders differently from a plain disc', () => {
+  const icon = {
     rgba: new Uint8Array(32 * 32 * 4).fill(255),
     width: 32,
     height: 32,
-    hash: 'test-logo',
+    hash: 'test-icon',
   };
-  assert.notDeepEqual(renderStrip(base), renderStrip({ ...base, logo }));
+  assert.notDeepEqual(renderStrip(base), renderStrip({ ...base, stampSource: 'icon', icon }));
 });
 
-test('logoFit is threaded through to the mask — a wide logo renders differently under contain vs cover', () => {
-  const wideLogo = {
+test('iconFit is threaded through to the mask — a wide icon renders differently under contain vs cover', () => {
+  const wideIcon = {
     rgba: (() => {
       const rgba = new Uint8Array(100 * 20 * 4);
       for (let i = 0; i < rgba.length; i += 4) {
@@ -112,13 +113,21 @@ test('logoFit is threaded through to the mask — a wide logo renders differentl
     })(),
     width: 100,
     height: 20,
-    hash: 'test-wide-logo',
+    hash: 'test-wide-icon',
   };
-  const contain = renderStrip({ ...base, logo: wideLogo, logoFit: 'contain' });
-  const cover = renderStrip({ ...base, logo: wideLogo, logoFit: 'cover' });
+  const contain = renderStrip({ ...base, stampSource: 'icon', icon: wideIcon, iconFit: 'contain' });
+  const cover = renderStrip({ ...base, stampSource: 'icon', icon: wideIcon, iconFit: 'cover' });
   assert.notDeepEqual(contain, cover);
-  // Omitting logoFit must default to 'contain', matching the safe default
-  // documented on StripSpec.logoFit / circularMask.
-  const omitted = renderStrip({ ...base, logo: wideLogo });
+  // Omitting iconFit must default to 'contain', matching the safe default
+  // documented on StripSpec.iconFit / circularMask.
+  const omitted = renderStrip({ ...base, stampSource: 'icon', icon: wideIcon });
   assert.deepEqual(omitted, contain);
+});
+
+test('a built-in icon stamp renders differently from a plain disc', () => {
+  assert.notDeepEqual(renderStrip(base), renderStrip({ ...base, stampSource: 'builtin', builtinIcon: 'coffee' }));
+});
+
+test('stampSource "icon" without an icon supplied falls back to a plain disc, not a crash', () => {
+  assert.deepEqual(renderStrip({ ...base, stampSource: 'icon' }), renderStrip(base));
 });

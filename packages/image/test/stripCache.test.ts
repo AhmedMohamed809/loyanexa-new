@@ -7,11 +7,12 @@ const base: StripSpec = {
   goal: 8, filled: 3, shape: 'circle',
   bgColor: '#203757', bgOpacity: 1,
   activeColor: '#F96400', inactiveColor: '#8794A5',
+  stampSource: 'plain',
   scale: 1,
 };
 
-const logoA = { rgba: new Uint8Array(16 * 16 * 4).fill(255), width: 16, height: 16, hash: 'logo-a' };
-const logoB = { rgba: new Uint8Array(16 * 16 * 4).fill(255), width: 16, height: 16, hash: 'logo-b' };
+const iconA = { rgba: new Uint8Array(16 * 16 * 4).fill(255), width: 16, height: 16, hash: 'icon-a' };
+const iconB = { rgba: new Uint8Array(16 * 16 * 4).fill(255), width: 16, height: 16, hash: 'icon-b' };
 const coverA = { rgba: new Uint8Array(16 * 16 * 4).fill(255), width: 16, height: 16, hash: 'cover-a' };
 
 test('the key is a stable hex SHA-256', () => {
@@ -24,6 +25,7 @@ test('key order in the object literal does not matter', () => {
   const reordered: StripSpec = {
     scale: 1, inactiveColor: '#8794A5', activeColor: '#F96400',
     bgOpacity: 1, bgColor: '#203757', shape: 'circle', filled: 3, goal: 8,
+    stampSource: 'plain',
   };
   assert.equal(stripCacheKey(base), stripCacheKey(reordered));
 });
@@ -33,22 +35,36 @@ test('every visual field changes the key', () => {
     { ...base, goal: 9 }, { ...base, filled: 4 }, { ...base, shape: 'square' },
     { ...base, bgColor: '#000000' }, { ...base, bgOpacity: 0.5 },
     { ...base, activeColor: '#000000' }, { ...base, inactiveColor: '#000000' },
-    { ...base, scale: 2 }, { ...base, logo: logoA }, { ...base, cover: coverA },
+    { ...base, scale: 2 },
+    { ...base, stampSource: 'icon', icon: iconA },
+    { ...base, stampSource: 'builtin', builtinIcon: 'coffee' },
+    { ...base, stampSource: 'icon', icon: iconA, iconFit: 'cover' },
+    { ...base, cover: coverA },
   ];
   const keys = new Set(variants.map(stripCacheKey));
   keys.add(stripCacheKey(base));
   assert.equal(keys.size, variants.length + 1, 'each variant must hash differently');
 });
 
-test('different logos never collide', () => {
-  assert.notEqual(stripCacheKey({ ...base, logo: logoA }), stripCacheKey({ ...base, logo: logoB }));
+test('different icons never collide', () => {
+  assert.notEqual(
+    stripCacheKey({ ...base, stampSource: 'icon', icon: iconA }),
+    stripCacheKey({ ...base, stampSource: 'icon', icon: iconB })
+  );
 });
 
-test('the logo hash, not its bytes, drives the key', () => {
-  const sameHashDifferentPixels = { ...logoA, rgba: new Uint8Array(16 * 16 * 4).fill(7) };
+test('the icon hash, not its bytes, drives the key', () => {
+  const sameHashDifferentPixels = { ...iconA, rgba: new Uint8Array(16 * 16 * 4).fill(7) };
   assert.equal(
-    stripCacheKey({ ...base, logo: logoA }),
-    stripCacheKey({ ...base, logo: sameHashDifferentPixels })
+    stripCacheKey({ ...base, stampSource: 'icon', icon: iconA }),
+    stripCacheKey({ ...base, stampSource: 'icon', icon: sameHashDifferentPixels })
+  );
+});
+
+test('two different built-in icons never collide — the icon choice is part of the cache key', () => {
+  assert.notEqual(
+    stripCacheKey({ ...base, stampSource: 'builtin', builtinIcon: 'coffee' }),
+    stripCacheKey({ ...base, stampSource: 'builtin', builtinIcon: 'star' })
   );
 });
 
