@@ -29,6 +29,8 @@ file in an image layer.
 | `APNS_KEY_ID` | yes (production, for live updates) | `fly secrets set` | The 10-character key ID of the APNs `.p8` auth key. Not secret-shaped, but keep it with the other Apple config. |
 | `APNS_KEY` | yes (production, for live updates) | `fly secrets set` | **PEM contents** of the APNs `.p8` signing key — the file, not a path. Read by `packages/pass/src/credentials.ts`'s `resolveApnsKeyPem()`, same env-content-over-path pattern as the signer cert trio above. |
 | `APNS_KEY_PATH` | no (local dev only) | local `.env` | File-path fallback for `APNS_KEY`, used only when `APNS_KEY` is unset — same local-dev convention as `APPLE_SIGNER_CERT_PATH`. Do not set on Fly. |
+| `APNS_AUTH` | no | `[env]` in `fly.toml`, or `fly secrets set` | `certificate` (default) or `token` — which of the two ways `packages/pass/src/apns.ts` authenticates to APNs. **Leave unset in production**: `certificate` mode reuses the `APPLE_SIGNER_CERT`/`_KEY`/`APPLE_WWDR_CERT` values above as an mTLS client certificate and is the only mode proven to work against production right now — see `docs/BUILD.md` §2's 2026-08-03 note. `token` mode needs `APNS_KEY_ID`/`APNS_KEY` and 403s (`BadEnvironmentKeyInToken`) until that key is provisioned for Production in the Apple Developer portal. |
+| `APNS_ENV` | no | `[env]` in `fly.toml`, or `fly secrets set` | `production` (default) or `sandbox` — which Apple gateway to push to. Wallet devices register against production; leave unset. |
 
 `PUBLIC_BASE_URL` now does double duty: besides enrol links and QR codes,
 every pass issued (or rebuilt by the PassKit web service) while it's set
@@ -97,6 +99,24 @@ leave your machine), runs `prisma generate` inside the container against
 curl https://loyanexa-demo.fly.dev/health
 # => {"status":"ok"}
 ```
+
+## Live Wallet updates need a warm machine (added 2026-08-03)
+
+`fly.toml`'s `[http_service]` now sets `min_machines_running = 1` (was `0`). This is not
+optional for live pass updates: `packages/pass/src/apns.ts` keeps one long-lived HTTP/2
+session to Apple's APNs gateway open and reuses it for every push (BUILD.md §18 item 3),
+because a fresh TLS handshake to Apple costs hundreds of milliseconds — a large fraction
+of the 1-2 second stamp-to-banner target on its own. Scaling to zero machines
+(`auto_stop_machines` with no floor) tears that session down along with the container;
+the next stamp then pays for a cold container start *and* a cold TLS handshake to Apple on
+the same request that is supposed to land in 1-2 seconds. `auto_stop_machines` stays `true`
+so a genuine traffic spike can still add capacity — only the floor changed, from "scale to
+nothing when idle" to "always keep one machine, and its one warm APNs session, running."
+
+This also affects `APNS_AUTH` (see the table above and `docs/BUILD.md` §2's 2026-08-03
+note): certificate mode's mTLS handshake and token mode's cached JWT both benefit equally
+from a session that survives between requests instead of one torn down and rebuilt by a
+cold start.
 
 Then open `https://loyanexa-demo.fly.dev/` and create a card — the "Scan to
 enrol" QR on the card detail page should encode

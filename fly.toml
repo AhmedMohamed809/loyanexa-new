@@ -26,9 +26,14 @@ primary_region = "lhr"
   force_https = true
   auto_stop_machines = true
   auto_start_machines = true
-  # A demo app has no business staying warm around the clock — let it scale
-  # to zero machines when nobody's hitting it, so an idle demo costs nothing.
-  min_machines_running = 0
+  # Changed 2026-08-03: was 0. Live Wallet updates need a warm long-lived
+  # HTTP/2 session to Apple's APNs gateway (BUILD.md §18 item 3) — scaling
+  # to zero drops that session, and the cold start it costs on the next
+  # request (fresh container + fresh TLS handshake to Apple) blows the
+  # 1-2 second stamp-to-banner target on whichever request pays for it. Keep
+  # one machine running always; auto_stop_machines can still reclaim any
+  # *extra* machines a traffic spike started. See docs/DEPLOY.md.
+  min_machines_running = 1
   processes = ["app"]
 
   [[http_service.checks]]

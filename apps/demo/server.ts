@@ -35,7 +35,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import querystring from 'node:querystring';
 import { fileURLToPath } from 'node:url';
-import { Prisma, type Card } from '@prisma/client';
+import { Prisma, type Card, type Pass } from '@prisma/client';
 import { buildPass, type PassCredentials, type PassImages } from '../../packages/pass/src/buildPass.ts';
 import { buildPassContentFor } from './passContent.ts';
 import {
@@ -43,7 +43,12 @@ import {
   resolveApnsKeyPem,
   resolveGoogleServiceAccount,
 } from '../../packages/pass/src/credentials.ts';
-import { ApnsClient, parseApnsEnvironment, isBadEnvironmentKeyError } from '../../packages/pass/src/apns.ts';
+import {
+  ApnsClient,
+  parseApnsEnvironment,
+  parseApnsAuthMode,
+  isBadEnvironmentKeyError,
+} from '../../packages/pass/src/apns.ts';
 import { GoogleWalletClient } from '../../packages/pass/src/googleWallet.ts';
 import { t, arabicDigits, type Lang } from '../../packages/i18n/src/index.ts';
 import { loadEnvFile } from './env.ts';
@@ -362,35 +367,61 @@ function resolveAppleCredentials(): PassCredentials {
 
 // ---------------------------------------------------------------------------
 // APNs — one ApnsClient for the whole process (BUILD.md §18 item 3: it
-// caches its JWT and reuses one HTTP/2 session across every push; building
-// a fresh client per push would defeat both). Built lazily on first use,
-// not at module load, so a machine without the .p8 configured (e.g. a
-// contributor's laptop that never set APNS_KEY_PATH) still runs the rest of
-// the demo — it just never sends live-update pushes, which is logged once,
-// clearly, rather than crashing the whole server.
+// reuses one HTTP/2 session across every push, and — in token mode —
+// caches its JWT; building a fresh client per push would defeat both).
+// Built lazily on first use, not at module load, so a machine missing its
+// credentials (e.g. a contributor's laptop that never set the cert/key
+// paths) still runs the rest of the demo — it just never sends live-update
+// pushes, which is logged once, clearly, rather than crashing the whole
+// server.
 // ---------------------------------------------------------------------------
 // APNS_ENV (production|sandbox, default production) picks which of Apple's
-// two gateways every push in this process targets — see apns.ts's
-// parseApnsEnvironment()/resolveApnsHost() doc comments for why a wrong
-// value here shows up as a 403 BadEnvironmentKeyInToken, not a silent
-// failure. Read once at module load: which gateway a running process talks
-// to should never change mid-process.
+// two gateways every push in this process targets. APNS_AUTH
+// (certificate|token, default certificate) picks how it authenticates —
+// see apns.ts's file-level comment and parseApnsAuthMode()'s doc comment
+// for why certificate is the default: this deployment's APNs Auth Key is
+// provisioned sandbox-only, so token mode 403s (BadEnvironmentKeyInToken)
+// against production until that's fixed in the Apple Developer portal,
+// while the Pass Type ID certificate we already hold for signing works
+// against both gateways today (docs/BUILD.md §2's 2026-08-03 note has the
+// measured evidence). Both read once at module load: which gateway/mode a
+// running process talks to should never change mid-process.
 const APNS_ENV = parseApnsEnvironment(process.env.APNS_ENV);
+const APNS_AUTH = parseApnsAuthMode(process.env.APNS_AUTH);
 
 let apnsClient: ApnsClient | null | undefined; // undefined = not yet attempted; null = attempted, unavailable
 function getApnsClient(): ApnsClient | undefined {
   if (apnsClient !== undefined) return apnsClient ?? undefined;
   try {
-    const keyId = process.env.APNS_KEY_ID;
-    const teamId = process.env.APPLE_TEAM_ID;
-    if (!keyId) throw new Error('.env is missing APNS_KEY_ID');
-    if (!teamId) throw new Error('.env is missing APPLE_TEAM_ID');
-    const privateKeyPem = resolveApnsKeyPem(ROOT);
-    apnsClient = new ApnsClient({ keyId, teamId, privateKeyPem, environment: APNS_ENV });
+    if (APNS_AUTH === 'certificate') {
+      // Reuse exactly the credentials already materialised for *signing*
+      // passes (resolveAppleCredentialPaths(), just above) as the mTLS
+      // client certificate — Apple's pre-token APNs provider-auth method.
+      // The chain must carry the WWDR intermediate too (see apns.ts's
+      // ApnsCertificateAuth doc comment for why), so read both files and
+      // concatenate rather than just the leaf cert.
+      const { signerCertPath, signerKeyPath, wwdrPath } = resolveAppleCredentialPaths(ROOT);
+      const certChainPem = `${fs.readFileSync(signerCertPath, 'utf8')}\n${fs.readFileSync(wwdrPath, 'utf8')}`;
+      const keyPem = fs.readFileSync(signerKeyPath, 'utf8');
+      apnsClient = new ApnsClient({
+        auth: { mode: 'certificate', certChainPem, keyPem },
+        environment: APNS_ENV,
+      });
+    } else {
+      const keyId = process.env.APNS_KEY_ID;
+      const teamId = process.env.APPLE_TEAM_ID;
+      if (!keyId) throw new Error('.env is missing APNS_KEY_ID');
+      if (!teamId) throw new Error('.env is missing APPLE_TEAM_ID');
+      const privateKeyPem = resolveApnsKeyPem(ROOT);
+      apnsClient = new ApnsClient({
+        auth: { mode: 'token', keyId, teamId, privateKeyPem },
+        environment: APNS_ENV,
+      });
+    }
     return apnsClient;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`[apns] not configured — live-update pushes are disabled (${message})`);
+    console.error(`[apns] not configured (auth=${APNS_AUTH}) — live-update pushes are disabled (${message})`);
     apnsClient = null;
     return undefined;
   }
@@ -443,8 +474,14 @@ async function pushApnsUpdate(serial: string): Promise<void> {
             `actually supports.`
         );
       } else {
+        // One clear line naming the auth mode, the host and Apple's own
+        // `reason` — so the next person debugging a failed push does not
+        // have to re-derive any of what's in apns.ts's file-level comment
+        // (which mode is active, which gateway it's talking to) from a
+        // bare status/body pair.
         console.error(
-          `[apns] pass ${serial}: push to device ${device.deviceId} failed — status=${result.status} body=${result.body}`
+          `[apns] pass ${serial}: push to device ${device.deviceId} failed — auth=${client.authMode} ` +
+            `host=${client.host} status=${result.status} body=${result.body}`
         );
       }
     })
@@ -510,6 +547,61 @@ async function pushGoogleWalletUpdate(serial: string, stamps: number, goal: numb
 
 /** A shared strip-render cache, reused across every pass issuance (BUILD.md §10 — the strip cache is a 455x measured win; do not re-render per request). */
 const PASS_STRIP_STORE = new MemoryStore();
+
+// ---------------------------------------------------------------------------
+// Rebuilt-.pkpass cache for the PassKit "get latest pass" web service
+// (BUILD.md §9.3 step 5). The strip cache above already makes strip
+// rendering cheap; signing does not — buildPass() shells out to `openssl
+// smime` and `zip` on every call, measured at ~24ms even with a cached
+// strip. That is a meaningful slice of the 1-2 second live-update budget
+// when it happens on the critical path of the device's post-push GET, and
+// it happens more than once per stamp: the device that owns the pass fetches
+// it, but so can a second device with the same pass added, or the same
+// device retrying after a dropped connection. A build is fully determined
+// by (serial, stamps, updatedAt) — the content and every image the pass
+// carries derive only from those (buildPassContentFor, stripSpecForCard) —
+// so a repeat fetch for a (serial, stamps, updatedAt) already built is
+// served from memory instead of re-signing. Bounded LRU, same MemoryStore
+// used for strips; single-flight below prevents two concurrent requests for
+// a still-uncached key each paying the ~24ms cost.
+// ---------------------------------------------------------------------------
+const PKPASS_STORE = new MemoryStore();
+const pkpassInFlight = new Map<string, Promise<Buffer>>();
+
+function pkpassCacheKey(serial: string, stamps: number, updatedAt: Date): string {
+  return `${serial}:${stamps}:${updatedAt.getTime()}`;
+}
+
+/** Builds (or reuses a cached / in-flight build of) the signed .pkpass for `pass` — see PKPASS_STORE's doc comment above for why this exists and what makes a cache entry valid. */
+async function cachedBuildPass(
+  credentials: PassCredentials,
+  pass: Pass & { card: Card }
+): Promise<Buffer> {
+  const key = pkpassCacheKey(pass.serial, pass.stamps, pass.updatedAt);
+  const hit = await PKPASS_STORE.get(key);
+  if (hit) return hit;
+
+  const pending = pkpassInFlight.get(key);
+  if (pending) return pending;
+
+  const task = (async () => {
+    const stripSet = await renderAllDensities(PASS_STRIP_STORE, await stripSpecForCard(pass.card, pass.stamps));
+    const images = await buildPassImagesFor(pass.card, stripSet);
+    const content = buildPassContentFor(pass.card, pass, { publicBaseUrl: PUBLIC_BASE_URL });
+    const pkpass = buildPass(credentials, content, images);
+    await PKPASS_STORE.set(key, pkpass);
+    return pkpass;
+  })();
+  pkpassInFlight.set(key, task);
+  try {
+    return await task;
+  } finally {
+    // Always clear, on success or failure — otherwise a single thrown build
+    // poisons this key forever (mirrors packages/image/src/stripCache.ts's
+    // cachedStrip, which this is deliberately modelled on).
+    pkpassInFlight.delete(key);
+  }
+}
 
 /** icon.png / icon@2x.png — the merchant's own card colours, not ours (same principle as the enrol page). */
 function makeCardIcon(size: number, bgColor: string, accentColor: string): Buffer {
@@ -3583,10 +3675,7 @@ async function handleGetLatestPass(
 
   const { pass } = result;
   const credentials = resolveAppleCredentials();
-  const stripSet = await renderAllDensities(PASS_STRIP_STORE, await stripSpecForCard(pass.card, pass.stamps));
-  const images = await buildPassImagesFor(pass.card, stripSet);
-  const content = buildPassContentFor(pass.card, pass, { publicBaseUrl: PUBLIC_BASE_URL });
-  const pkpass = buildPass(credentials, content, images);
+  const pkpass = await cachedBuildPass(credentials, pass);
 
   res.writeHead(200, {
     'Content-Type': 'application/vnd.apple.pkpass',

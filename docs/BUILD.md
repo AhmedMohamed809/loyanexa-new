@@ -76,6 +76,31 @@ server handles this **provided the strip cache exists** (§10).
   directly**, authenticated by the Pass Type ID certificate. FCM is for app notifications,
   and there is no app.
 
+> **Correction, 2026-08-03.** An earlier revision of this section stated that token-based
+> `.p8` authentication (a JWT signed with the APNs Auth Key) supersedes the certificate as
+> the way this deployment talks to APNs. That is wrong for the certificate/key pair this
+> app actually holds, and it sent live-update pushes to production nowhere for a while
+> before it was caught. **Certificate-based mTLS — the line above, restored — is the
+> working path**, not a fallback. Measured against the real Apple Wallet certificate and
+> a deliberately invalid device token (so nothing was ever delivered to a real device):
+>
+> ```
+> token (.p8)  api.push.apple.com          -> 403 BadEnvironmentKeyInToken
+> token (.p8)  api.sandbox.push.apple.com  -> 400 BadDeviceToken   (works, wrong env)
+> mTLS (cert)  api.push.apple.com          -> 400 BadDeviceToken   (Apple accepted the cert)
+> ```
+>
+> `400 BadDeviceToken` in response to a token that cannot possibly be valid is Apple's
+> signal that everything *before* device-token validation — including which auth method
+> was presented — succeeded. The APNs Auth Key behind `APNS_KEY_ID`/`APNS_KEY` is
+> provisioned **sandbox-only** in the Apple Developer portal; every token-authenticated
+> push to `api.push.apple.com` (where Wallet devices actually register) is refused until
+> that key is re-provisioned for Production there — a portal change, not a code fix. Until
+> then, `packages/pass/src/apns.ts` defaults `APNS_AUTH` to `certificate`; `token` remains
+> available and is the better *long-term* choice once the portal is fixed (a key doesn't
+> expire yearly the way a certificate does), but it is not usable against production
+> today. See `docs/DEPLOY.md`'s `APNS_AUTH` row for the operational detail.
+
 Firebase-for-auth + Postgres-for-data + a persistent server is a deliberate hybrid.
 
 ---
