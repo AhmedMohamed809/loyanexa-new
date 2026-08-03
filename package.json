@@ -2,10 +2,14 @@
   "name": "loyanexa",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*"],
-  "engines": { "node": ">=25" },
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=25"
+  },
   "scripts": {
-    "postinstall": "prisma generate --schema packages/db/prisma/schema.prisma",
+    "postinstall": "prisma generate --schema packages/db/prisma/schema.prisma && node scripts/vendor-jsqr.ts",
     "typecheck": "tsc --noEmit -p tsconfig.base.json",
     "test": "node --test 'packages/*/test/*.test.ts' 'apps/demo/test/*.test.ts'",
     "test:i18n": "node scripts/check-i18n.ts",
@@ -13,5 +17,11 @@
     "serve:pass": "node scripts/serve-pass.ts",
     "demo": "node apps/demo/server.ts"
   },
-  "devDependencies": { "typescript": "^5.7.0", "@types/node": "^25" }
+  "devDependencies": {
+    "@types/node": "^25",
+    "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "jsqr": "^1.4.0"
+  }
 }

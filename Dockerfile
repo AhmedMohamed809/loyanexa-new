@@ -29,11 +29,13 @@ WORKDIR /app
 # files baked into the image.
 COPY . .
 
-# npm ci's own postinstall hook runs `prisma generate`, but call it again
-# explicitly — an image build should not depend on a lifecycle script
+# npm ci's own postinstall hook runs `prisma generate` and vendors jsQR
+# (scripts/vendor-jsqr.ts — see apps/demo/public/jsQR.js), but call both
+# again explicitly — an image build should not depend on a lifecycle script
 # quietly doing the right thing.
 RUN npm ci \
-    && npx prisma generate --schema packages/db/prisma/schema.prisma
+    && npx prisma generate --schema packages/db/prisma/schema.prisma \
+    && node scripts/vendor-jsqr.ts
 
 ENV NODE_ENV=production
 ENV PORT=8080

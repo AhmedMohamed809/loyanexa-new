@@ -1135,10 +1135,14 @@ function handleQrPng(res: http.ServerResponse, query: URLSearchParams): void {
 // whatever phone or tablet is at the counter, that scans the QR *inside a
 // customer's wallet pass* (the "Card QR" in BUILD.md §7.3's table — it
 // encodes the pass `serial`, never the printed, static "Join QR" that the
-// card detail page shows). Manual entry (serial or shortCode) works fully
-// independently of the camera path — see the inline script's comment on
-// the QR decode interface for why the camera path itself is honestly a
-// stub right now. Dark brand tokens per BUILD.md §3 (2026-08-03 revision):
+// card detail page shows). Decodes real camera frames with jsQR (vendored
+// same-origin at /jsQR.js — see scripts/vendor-jsqr.ts), with
+// `BarcodeDetector` as an opt-in fast path only where the browser actually
+// has it (§8.15's own warning: it's absent on iOS/iPadOS, every Firefox,
+// and Chrome on Windows/Linux — never rely on it alone). Manual entry
+// (serial or shortCode) works fully independently of the camera path, and
+// both converge on the same POST /api/stamp write below. Dark brand tokens
+// per BUILD.md §3 (2026-08-03 revision):
 // canvas #0F172A, paper #1C2A42, accent #F28C38, Alexandria typeface.
 // ---------------------------------------------------------------------------
 function renderStampScreen(): string {
@@ -1247,6 +1251,7 @@ function renderStampScreen(): string {
   </div>
 </main>
 <canvas id="canvas" style="display:none;"></canvas>
+<script src="/jsQR.js"></script>
 <script>
 (function () {
   'use strict';
@@ -1261,30 +1266,50 @@ function renderStampScreen(): string {
   var manualSubmit = document.getElementById('manualSubmit');
 
   // -----------------------------------------------------------------------
-  // QR decode interface — BUILD.md §8.15 requires a WASM QR decoder
-  // (zxing-wasm / jsQR) because BarcodeDetector is absent on iOS/iPadOS
-  // Safari, every Firefox, and Chrome on Windows/Linux — exactly the
-  // "café stamping on an iPad" scenario this screen exists to serve, so
-  // BarcodeDetector is deliberately not used here, even as a fast path.
-  //
-  // This repo takes no new npm dependencies and has no build step to vendor
-  // a .wasm asset through, so no decoder is wired in below — HONEST LIMIT:
-  // decode() always returns null. This interface is the seam a real one
-  // plugs into: swap the body of decode() for a real WASM QR reader and
-  // nothing else on this page needs to change. The camera loop already
-  // captures real frames and hands them to decode() at ~6fps below, exactly
-  // as it would with a working decoder wired in.
-  //
-  // Manual entry (below) does not depend on this and is fully working.
+  // QR decode interface — BUILD.md §8.15. jsQR (vendored same-origin at
+  // /jsQR.js — see scripts/vendor-jsqr.ts, loaded via the <script> tag just
+  // above this one) is the decoder that must always work: it is pure JS,
+  // runs everywhere, and is what BUILD.md names for exactly this screen.
+  // BarcodeDetector is used ONLY as an opt-in fast path when the browser
+  // actually has a working one — never the other way around, and never
+  // relied on alone, because it is absent on iOS/iPadOS Safari, every
+  // Firefox, and Chrome on Windows/Linux (the "café stamping on an iPad"
+  // case this screen exists to serve). The choice between the two is made
+  // once, at startup, from feature detection — not re-decided per frame —
+  // so a capable browser never pays for both a BarcodeDetector call and a
+  // canvas grab + jsQR pass on the same frame.
   // -----------------------------------------------------------------------
-  var qrDecoder = {
-    decode: function (_imageData) {
-      return null; // TODO: wire a real WASM QR decoder in here
+  var hasBarcodeDetector = false;
+  var barcodeDetector = null;
+  if (typeof window.BarcodeDetector === 'function') {
+    try {
+      barcodeDetector = new window.BarcodeDetector({ formats: ['qr_code'] });
+      hasBarcodeDetector = true;
+    } catch (e) {
+      hasBarcodeDetector = false;
+      barcodeDetector = null;
     }
-  };
+  }
+
+  function decodeWithJsQR(imageData) {
+    if (typeof window.jsQR !== 'function') return null; // /jsQR.js failed to load — camera scanning degrades to manual entry
+    var result = window.jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'attemptBoth' });
+    return result && result.data ? result.data : null;
+  }
 
   var busy = false;
   var lastScanAt = 0;
+  var scanBusy = false; // guards overlapping BarcodeDetector.detect() calls, which are async
+  var currentStream = null;
+  var scanRAF = null;
+
+  // Debounce: a QR code held in front of the lens would otherwise decode
+  // and fire submitCode() on every ~150ms tick — dozens of times a second
+  // relative to a human moving the pass away. The server's 24h guard would
+  // reject every repeat anyway, but hammering /api/stamp is still wrong.
+  var SCAN_COOLDOWN_MS = 4000;
+  var lastScannedCode = null;
+  var lastScannedAt = 0;
 
   function showResult(ok, message) {
     resultEl.className = ok ? 'success' : 'error';
@@ -1319,6 +1344,19 @@ function renderStampScreen(): string {
       });
   }
 
+  // Camera decodes reach the exact same submitCode() / POST /api/stamp path
+  // manual entry uses — one write path, two ways to reach it — but only
+  // camera decodes pass through the repeat-code cooldown above; a member of
+  // staff retyping the same code by hand is a deliberate action, not a
+  // held-up QR still in frame.
+  function handleScannedCode(code, ts) {
+    if (!code) return;
+    if (code === lastScannedCode && ts - lastScannedAt < SCAN_COOLDOWN_MS) return;
+    lastScannedCode = code;
+    lastScannedAt = ts;
+    submitCode(code);
+  }
+
   manualForm.addEventListener('submit', function (e) {
     e.preventDefault();
     var value = manualCode.value.trim();
@@ -1329,37 +1367,83 @@ function renderStampScreen(): string {
   });
 
   function scanLoop(ts) {
-    if (video.readyState >= video.HAVE_ENOUGH_DATA && ts - lastScanAt > 150) {
-      lastScanAt = ts;
-      var w = video.videoWidth, h = video.videoHeight;
-      if (w && h) {
-        canvas.width = w;
-        canvas.height = h;
-        ctx.drawImage(video, 0, 0, w, h);
-        var imageData = ctx.getImageData(0, 0, w, h);
-        var code = qrDecoder.decode(imageData);
-        if (code) submitCode(code);
-      }
+    scanRAF = requestAnimationFrame(scanLoop);
+    if (scanBusy) return;
+    if (video.readyState < video.HAVE_ENOUGH_DATA) return;
+    if (ts - lastScanAt <= 150) return;
+    lastScanAt = ts;
+    var w = video.videoWidth, h = video.videoHeight;
+    if (!w || !h) return;
+
+    if (hasBarcodeDetector) {
+      scanBusy = true;
+      barcodeDetector.detect(video)
+        .then(function (codes) {
+          var value = codes && codes.length && codes[0] && codes[0].rawValue ? codes[0].rawValue : null;
+          if (value) handleScannedCode(value, ts);
+        })
+        .catch(function () { /* transient decode failure — try again next frame */ })
+        .then(function () { scanBusy = false; });
+      return;
     }
-    requestAnimationFrame(scanLoop);
+
+    canvas.width = w;
+    canvas.height = h;
+    ctx.drawImage(video, 0, 0, w, h);
+    var imageData = ctx.getImageData(0, 0, w, h);
+    var code = decodeWithJsQR(imageData);
+    if (code) handleScannedCode(code, ts);
   }
 
-  if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+  // Stops the live camera track (and the scan loop driving it) — called
+  // when the tab is hidden/backgrounded and on pagehide. A camera left
+  // running on a counter tablet drains the battery and is a privacy risk;
+  // there is nothing to see once the page is not the active tab.
+  function stopCamera() {
+    if (scanRAF !== null) {
+      cancelAnimationFrame(scanRAF);
+      scanRAF = null;
+    }
+    if (currentStream) {
+      currentStream.getTracks().forEach(function (track) { track.stop(); });
+      currentStream = null;
+    }
+  }
+
+  function startCamera() {
+    if (currentStream) return; // already running
+    if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+      cameraStatus.textContent = 'Camera not supported on this browser — use manual entry below.';
+      return;
+    }
+    cameraStatus.textContent = 'Starting camera…';
     navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
       .then(function (stream) {
+        currentStream = stream;
         video.srcObject = stream;
         return video.play();
       })
       .then(function () {
-        cameraStatus.textContent = 'Camera live. Auto-detect is not wired up yet — use manual entry below.';
-        requestAnimationFrame(scanLoop);
+        cameraStatus.textContent = 'Camera live — point it at the pass QR code.';
+        lastScanAt = 0;
+        scanRAF = requestAnimationFrame(scanLoop);
       })
       .catch(function () {
         cameraStatus.textContent = 'Camera unavailable — use manual entry below.';
+        currentStream = null;
       });
-  } else {
-    cameraStatus.textContent = 'Camera not supported on this browser — use manual entry below.';
   }
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) {
+      stopCamera();
+    } else {
+      startCamera();
+    }
+  });
+  window.addEventListener('pagehide', stopCamera);
+
+  startCamera();
 })();
 </script>
 </body>
@@ -1508,9 +1592,14 @@ function serveStaticFile(res: http.ServerResponse, pathname: string): boolean {
 
   const ext = path.extname(filePath).toLowerCase();
   const contentType = STATIC_CONTENT_TYPES[ext] ?? 'application/octet-stream';
-  // HTML is revalidated every time (the landing page can change); other
-  // assets (fonts, images) are named by content and safe to cache longer.
-  const cacheControl = ext === '.html' ? 'no-cache' : 'public, max-age=3600';
+  // HTML is revalidated every time (the landing page can change); every
+  // other static asset in apps/demo/public/ (logo.png, logo-dark.png,
+  // jsQR.js, fonts) is a stable filename with no content hash, and a new
+  // build simply overwrites it — a year-long, immutable cache is safe and
+  // saves re-fetching them (the logo alone would otherwise be requested on
+  // every page load; see scripts/resize-logo.ts's before/after byte sizes
+  // for why that matters).
+  const cacheControl = ext === '.html' ? 'no-cache' : 'public, max-age=31536000, immutable';
   res.writeHead(200, {
     'Content-Type': contentType,
     'Content-Length': data.length,
