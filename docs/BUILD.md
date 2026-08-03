@@ -76,6 +76,31 @@ server handles this **provided the strip cache exists** (§10).
   directly**, authenticated by the Pass Type ID certificate. FCM is for app notifications,
   and there is no app.
 
+> **Correction, 2026-08-03.** An earlier revision of this section stated that token-based
+> `.p8` authentication (a JWT signed with the APNs Auth Key) supersedes the certificate as
+> the way this deployment talks to APNs. That is wrong for the certificate/key pair this
+> app actually holds, and it sent live-update pushes to production nowhere for a while
+> before it was caught. **Certificate-based mTLS — the line above, restored — is the
+> working path**, not a fallback. Measured against the real Apple Wallet certificate and
+> a deliberately invalid device token (so nothing was ever delivered to a real device):
+>
+> ```
+> token (.p8)  api.push.apple.com          -> 403 BadEnvironmentKeyInToken
+> token (.p8)  api.sandbox.push.apple.com  -> 400 BadDeviceToken   (works, wrong env)
+> mTLS (cert)  api.push.apple.com          -> 400 BadDeviceToken   (Apple accepted the cert)
+> ```
+>
+> `400 BadDeviceToken` in response to a token that cannot possibly be valid is Apple's
+> signal that everything *before* device-token validation — including which auth method
+> was presented — succeeded. The APNs Auth Key behind `APNS_KEY_ID`/`APNS_KEY` is
+> provisioned **sandbox-only** in the Apple Developer portal; every token-authenticated
+> push to `api.push.apple.com` (where Wallet devices actually register) is refused until
+> that key is re-provisioned for Production there — a portal change, not a code fix. Until
+> then, `packages/pass/src/apns.ts` defaults `APNS_AUTH` to `certificate`; `token` remains
+> available and is the better *long-term* choice once the portal is fixed (a key doesn't
+> expire yearly the way a certificate does), but it is not usable against production
+> today. See `docs/DEPLOY.md`'s `APNS_AUTH` row for the operational detail.
+
 Firebase-for-auth + Postgres-for-data + a persistent server is a deliberate hybrid.
 
 ---
@@ -414,6 +439,28 @@ whose value changed. **Trap:** sending identical text twice shows no banner — 
 invisible zero-width marker plus a timestamp to guarantee a change.
 **Trap:** `webServiceURL` **must be HTTPS**. Apple refuses http silently; updates never
 arrive with no error. Use ngrok in development.
+
+> **Measured, 2026-08-03.** Two facts settled against Apple's real production APNs
+> gateway with a real registered device token (nothing simulated, nothing assumed) —
+> found while fixing a stale-`.pkpass`-after-a-card-edit regression in the rebuilt-pass
+> cache (`apps/demo/pkpassCache.ts` / `apps/demo/server.ts`'s `PKPASS_STORE`, distinct
+> from the strip cache in §10 below) and recorded here so nobody re-derives them:
+>
+> 1. **`apns-priority: 10` alongside `apns-push-type: background` is accepted for a
+>    PassKit topic.** All four header combinations returned `200`:
+>    ```
+>    push-type=background  priority=10  -> 200   [153ms]
+>    push-type=background  priority=5   -> 200   [145ms]
+>    no push-type          priority=10  -> 200   [140ms]
+>    no push-type          no priority  -> 200   [139ms]
+>    ```
+>    Apple's general APNs documentation says priority 10 is invalid for a background
+>    push; that is not what the PassKit gateway does in practice. `packages/pass/src/apns.ts`
+>    keeps priority 10 deliberately — it is what the 1-2 second target above wants —
+>    as a verified choice now, not an assumed one.
+> 2. **The certificate-mode mTLS round trip to Apple is ~140-155ms** on a warm HTTP/2
+>    session, from `lhr`. That is the bulk of the "network layer" slice of the 1-2
+>    second budget the paragraph above describes.
 
 ### 9.4 Location reminders are free and automatic
 Geofences live **inside the pass** (max 10). The OS surfaces the card when the customer is

@@ -1,0 +1,16 @@
+-- Card design-edit cache regression fix: a built .pkpass's content depends
+-- on Card's own mutable design fields (colours, logo, stamp icon,
+-- background image, labels, shape — everything the card designer that
+-- shipped 2026-08-03 lets a merchant change) just as much as on the owning
+-- Pass's (serial, stamps, updatedAt). Card had no updatedAt column at all,
+-- so a design edit could not change the .pkpass cache key introduced
+-- alongside it — every customer who already held a pass kept being served
+-- the old design from cache until their next stamp happened to change the
+-- key. See apps/demo/pkpassCache.ts's doc comment and schema.prisma's own
+-- comment on Card.updatedAt for the full story.
+--
+-- DEFAULT CURRENT_TIMESTAMP backfills existing rows so the column can be
+-- NOT NULL immediately — Prisma's `@updatedAt` itself is enforced
+-- client-side (it stamps every future `update`/`upsert` call); the DB
+-- default here only satisfies NOT NULL for rows that already exist.
+ALTER TABLE "Card" ADD COLUMN "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;
