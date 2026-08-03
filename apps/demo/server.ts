@@ -58,6 +58,7 @@ import {
   unregisterDevice,
   getPassForDownload,
 } from './passkit.ts';
+import { updateCard, activateCard, passCountForCard, type CardEditInput } from './cardEdit.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -558,87 +559,138 @@ function generateShortCode(): string {
 }
 
 // ---------------------------------------------------------------------------
-// HTML shell — brand tokens: navy #203757, accent orange #F96400, canvas
-// #F4F6FA, white panels, radius 18px, borders doing the separating.
+// HTML shell — BUILD.md §3 as revised 2026-08-03: dark canvas #0F172A, paper
+// #1C2A42, sunk #162338, accent #F28C38, Alexandria typeface, radius
+// 14-18px, borders doing the separating (no gradients, no glass blur). The
+// same token set already used standalone by renderStampScreen() above — one
+// shell for every merchant page from here on, so the two never drift apart.
 // ---------------------------------------------------------------------------
-function layout(title: string, bodyHtml: string): string {
+type NavKey = 'cards' | 'customers' | 'reports' | 'stamp';
+
+/** The top nav bar BUILD.md §6 wants reachable from every merchant page: Cards · Customers · Reports · Stamp screen (this build's revision of the historical bottom tab bar list). Shared between layout() below and renderStampScreen(), so the stamp screen — reached *from* this nav — also carries it. */
+function navBar(active: NavKey | undefined, lang: Lang = 'en'): string {
+  const items: Array<{ key: NavKey; href: string; label: string }> = [
+    { key: 'cards', href: '/app', label: t(lang, 'navCards') },
+    { key: 'customers', href: '/customers', label: t(lang, 'navCustomers') },
+    { key: 'reports', href: '/reports', label: t(lang, 'navReports') },
+    { key: 'stamp', href: '/stamp', label: t(lang, 'navStamp') },
+  ];
+  return `<header class="top">
+  <a class="brand" href="/app">LoyaNexa</a>
+  <nav class="nav">
+    ${items
+      .map(
+        (i) =>
+          `<a href="${i.href}"${i.key === active ? ' class="active" aria-current="page"' : ''}>${escapeHtml(i.label)}</a>`
+      )
+      .join('\n    ')}
+  </nav>
+</header>`;
+}
+
+function layout(title: string, bodyHtml: string, active?: NavKey, lang: Lang = 'en'): string {
   return `<!doctype html>
-<html lang="en">
+<html lang="${lang}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(title)} · LoyaNexa</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Alexandria:wght@300;400;500;600;700;800&display=swap">
 <style>
   :root {
-    --navy: #203757;
-    --accent: #F96400;
-    --canvas: #F4F6FA;
-    --border: #DCE2EA;
-    --muted: #6B7A90;
-    --radius: 18px;
+    --canvas: #0F172A;
+    --paper: #1C2A42;
+    --sunk: #162338;
+    --raise: #22314C;
+    --accent: #F28C38;
+    --accent-hover: #E67E22;
+    --accent-light: #F7B267;
+    --on-accent: #0F172A;
+    --ink: #FFFFFF;
+    --ink-2: #CBD5E1;
+    --ink-3: #94A3B8;
+    --line: rgba(255,255,255,.10);
+    --green: #22C55E;
+    --red: #EF4444;
+    --amber: #F7B267;
+    --radius: 14px;
+    --radius-lg: 18px;
   }
+  html[lang="ar"] * { letter-spacing: 0 !important; }
   * { box-sizing: border-box; }
   body {
     margin: 0;
     background: var(--canvas);
-    color: var(--navy);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    font-family: 'Alexandria', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   }
   header.top {
-    background: var(--navy);
-    color: #fff;
-    padding: 20px 24px;
+    background: var(--sunk);
+    border-bottom: 1px solid var(--line);
+    padding: 14px 24px;
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: 28px;
   }
-  header.top a { color: #fff; text-decoration: none; font-weight: 700; font-size: 18px; letter-spacing: 0.2px; }
+  header.top a.brand { color: var(--ink); text-decoration: none; font-weight: 800; font-size: 17px; letter-spacing: 0.2px; }
+  header.top nav.nav { display: flex; gap: 4px; flex-wrap: wrap; margin-inline-start: auto; }
+  header.top nav.nav a {
+    color: var(--ink-2); text-decoration: none; font-weight: 600; font-size: 14px;
+    padding: 8px 14px; border-radius: 100px;
+  }
+  header.top nav.nav a:hover { color: var(--ink); background: var(--raise); }
+  header.top nav.nav a.active { color: var(--on-accent); background: var(--accent); }
   main {
-    max-width: 880px;
+    max-width: 1000px;
     margin: 0 auto;
     padding: 24px 20px 64px;
   }
   .banner {
-    background: #FFF4E8;
-    border: 1px solid #F6C99A;
-    color: #7A3E00;
-    border-radius: var(--radius);
+    background: rgba(242,140,56,.10);
+    border: 1px solid rgba(242,140,56,.30);
+    color: var(--accent-light);
+    border-radius: var(--radius-lg);
     padding: 14px 18px;
     margin-bottom: 20px;
     font-size: 14px;
     line-height: 1.5;
   }
-  .banner b { color: #5C2E00; }
+  .banner b { color: var(--ink); }
   .panel {
-    background: #fff;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
     padding: 24px;
     margin-bottom: 20px;
   }
-  h1 { font-size: 24px; margin: 0 0 6px; }
-  h2 { font-size: 18px; margin: 0 0 14px; }
+  h1 { font-size: 24px; margin: 0 0 6px; color: var(--ink); }
+  h2 { font-size: 16px; margin: 0 0 14px; color: var(--ink); }
   p { line-height: 1.5; }
-  .muted { color: var(--muted); }
+  .muted { color: var(--ink-3); }
   .row { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
   .btn {
     display: inline-block;
     background: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
     border: none;
     border-radius: 100px;
     padding: 12px 22px;
-    font-weight: 600;
+    font-weight: 700;
     font-size: 15px;
     text-decoration: none;
     cursor: pointer;
+    font-family: inherit;
   }
-  .btn:hover { opacity: 0.92; }
+  .btn:hover { background: var(--accent-hover); }
   .btn.secondary {
-    background: #fff;
-    color: var(--navy);
-    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--ink);
+    border: 1px solid var(--line);
   }
+  .btn.secondary:hover { background: var(--raise); }
+  .btn[disabled] { opacity: .5; cursor: default; }
   .cards-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
@@ -646,58 +698,91 @@ function layout(title: string, bodyHtml: string): string {
   }
   .card-tile {
     display: block;
-    background: #fff;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
     overflow: hidden;
     text-decoration: none;
     color: inherit;
   }
-  .card-tile img { display: block; width: 100%; height: auto; background: var(--canvas); }
-  .card-tile .meta { padding: 14px 16px; border-top: 1px solid var(--border); }
-  .card-tile .meta h3 { margin: 0 0 4px; font-size: 15px; }
-  .card-tile .meta p { margin: 0; font-size: 13px; color: var(--muted); }
+  .card-tile img { display: block; width: 100%; height: auto; background: var(--sunk); }
+  .card-tile .meta { padding: 14px 16px; border-top: 1px solid var(--line); }
+  .card-tile .meta h3 { margin: 0 0 4px; font-size: 15px; color: var(--ink); }
+  .card-tile .meta p { margin: 0; font-size: 13px; color: var(--ink-3); }
   .empty {
     text-align: center;
     padding: 48px 24px;
   }
   form .field { margin-bottom: 18px; }
-  label { display: block; font-weight: 600; font-size: 13px; margin-bottom: 6px; color: var(--navy); }
-  input[type="text"], input[type="number"] {
+  label { display: block; font-weight: 600; font-size: 13px; margin-bottom: 6px; color: var(--ink-2); }
+  input[type="text"], input[type="number"], input[type="tel"], select, textarea {
     width: 100%;
-    border: 1px solid var(--border);
+    border: 1px solid var(--line);
     border-radius: 10px;
     padding: 12px 14px;
     font-size: 15px;
-    background: var(--canvas);
+    background: var(--sunk);
+    color: var(--ink);
+    font-family: inherit;
   }
+  select { appearance: auto; }
+  input[disabled], select[disabled], textarea[disabled] { opacity: .55; cursor: not-allowed; }
   input[type="range"] { width: 100%; }
   input[type="color"] {
     width: 56px;
     height: 40px;
-    border: 1px solid var(--border);
+    border: 1px solid var(--line);
     border-radius: 10px;
     padding: 2px;
-    background: #fff;
+    background: var(--paper);
   }
   .colors { display: flex; gap: 24px; flex-wrap: wrap; }
   .colors .field { margin-bottom: 0; }
-  .preview-panel { text-align: center; background: var(--canvas); border: 1px dashed var(--border); border-radius: var(--radius); padding: 20px; }
+  .preview-panel { text-align: center; background: var(--sunk); border: 1px dashed var(--line); border-radius: var(--radius-lg); padding: 20px; }
   .preview-panel img { max-width: 100%; }
-  .error { background: #FDEAEA; border: 1px solid #F3B4B4; color: #8A1F1F; border-radius: 12px; padding: 12px 16px; margin-bottom: 18px; font-size: 14px; }
-  code.pill { background: var(--canvas); border: 1px solid var(--border); border-radius: 8px; padding: 4px 10px; font-size: 13px; }
+  .error { background: rgba(239,68,68,.12); border: 1px solid rgba(239,68,68,.35); color: #FCA5A5; border-radius: 12px; padding: 12px 16px; margin-bottom: 18px; font-size: 14px; }
+  code.pill { background: var(--sunk); border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; font-size: 13px; color: var(--ink-2); font-family: inherit; }
   .kv { display: grid; grid-template-columns: 140px 1fr; gap: 10px 16px; font-size: 15px; }
-  .kv dt { color: var(--muted); }
-  .kv dd { margin: 0; }
-  .qr-wrap { text-align: center; padding: 20px; background: var(--canvas); border-radius: var(--radius); border: 1px solid var(--border); }
+  .kv dt { color: var(--ink-3); }
+  .kv dd { margin: 0; color: var(--ink); }
+  .qr-wrap { text-align: center; padding: 20px; background: var(--sunk); border-radius: var(--radius-lg); border: 1px solid var(--line); }
   .qr-wrap img { image-rendering: pixelated; border-radius: 8px; background: #fff; padding: 12px; }
+  .lock { opacity: .55; }
+  .lock label::after { content: ' 🔒'; }
+  table.data { width: 100%; border-collapse: collapse; font-size: 14px; }
+  table.data th, table.data td { text-align: start; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  table.data th { color: var(--ink-3); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  table.data td { color: var(--ink); }
+  table.data code.mono { font-variant-numeric: tabular-nums; letter-spacing: .04em; }
+  .progress-bar { display: flex; align-items: center; gap: 8px; min-width: 120px; }
+  .progress-bar .track { flex: 1; height: 6px; border-radius: 100px; background: var(--sunk); overflow: hidden; }
+  .progress-bar .fill { height: 100%; background: var(--accent); }
+  .progress-bar span.frac { font-size: 12px; color: var(--ink-3); white-space: nowrap; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 20px; }
+  .kpi { background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 18px 20px; }
+  .kpi .n { font-size: 28px; font-weight: 800; color: var(--ink); }
+  .kpi .label { font-size: 13px; color: var(--ink-3); margin-top: 4px; }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip {
+    display: inline-block; padding: 8px 16px; border-radius: 100px; font-size: 13px; font-weight: 600;
+    border: 1px solid var(--line); color: var(--ink-2); text-decoration: none;
+  }
+  .chip.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+  .chip.locked { background: rgba(242,140,56,.12); color: var(--accent-light); border-color: rgba(242,140,56,.3); }
+  .funnel { display: flex; flex-direction: column; gap: 12px; }
+  .funnel .step { display: grid; grid-template-columns: 180px 1fr 60px; align-items: center; gap: 12px; font-size: 14px; }
+  .funnel .track { height: 22px; border-radius: 8px; background: var(--sunk); overflow: hidden; }
+  .funnel .fill { height: 100%; background: var(--accent); border-radius: 8px; }
+  .weekday-chart { display: flex; align-items: flex-end; gap: 10px; height: 140px; }
+  .weekday-chart .bar-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 6px; }
+  .weekday-chart .bar { width: 100%; background: var(--accent); border-radius: 6px 6px 0 0; min-height: 2px; }
+  .weekday-chart .day-label { font-size: 11px; color: var(--ink-3); }
+  .weekday-chart .day-count { font-size: 11px; color: var(--ink-2); }
+  .no-data { text-align: center; color: var(--ink-3); padding: 28px 12px; font-size: 14px; }
 </style>
 </head>
 <body>
-<header class="top">
-  <a href="/app">LoyaNexa · Merchant</a>
-  <a class="btn" href="/stamp" style="padding:8px 18px;font-size:13px;">Stamp a card</a>
-</header>
+${navBar(active, lang)}
 <main>
 ${bodyHtml}
 </main>
@@ -722,7 +807,8 @@ function cardThumbSrc(card: Card): string {
   return `/preview.png?${qs.toString()}`;
 }
 
-async function handleCardsList(res: http.ServerResponse): Promise<void> {
+async function handleCardsList(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const lang = resolveLang(req);
   const cards = await prisma.card.findMany({ orderBy: { createdAt: 'desc' } });
 
   const body = cards.length
@@ -752,7 +838,7 @@ async function handleCardsList(res: http.ServerResponse): Promise<void> {
          <p><a class="btn" href="/cards/new">Create card</a></p>
        </div>`;
 
-  sendHtml(res, 200, layout('Cards', AUTH_BANNER + body));
+  sendHtml(res, 200, layout('Cards', AUTH_BANNER + body, 'cards', lang));
 }
 
 // ---------------------------------------------------------------------------
@@ -769,7 +855,8 @@ interface NewCardFormValues {
 
 function renderNewCardForm(
   { name = '', rewardText = '', goal = 8, bg = '#203757', active = '#F96400', inactive = '#8794A5' }: NewCardFormValues = {},
-  error?: string
+  error?: string,
+  lang: Lang = 'en'
 ): string {
   const goalNum = clampInt(goal, MIN_GOAL, MAX_GOAL, 8);
   const previewQs = new URLSearchParams({
@@ -850,24 +937,25 @@ function renderNewCardForm(
       })();
     </script>
   `;
-  return layout('Create card', AUTH_BANNER + body);
+  return layout('Create card', AUTH_BANNER + body, 'cards', lang);
 }
 
-async function handleNewCardForm(res: http.ServerResponse): Promise<void> {
-  sendHtml(res, 200, renderNewCardForm());
+async function handleNewCardForm(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  sendHtml(res, 200, renderNewCardForm({}, undefined, resolveLang(req)));
 }
 
 // ---------------------------------------------------------------------------
 // Route: POST /cards — validate, persist, redirect
 // ---------------------------------------------------------------------------
 async function handleCreateCard(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const lang = resolveLang(req);
   let fields: querystring.ParsedUrlQuery;
   try {
     fields = await readUrlencodedBody(req);
   } catch (err) {
     const status = isHttpError(err) ? err.statusCode : 400;
     const message = err instanceof Error ? err.message : String(err);
-    sendHtml(res, status, layout('Error', `<div class="panel"><h1>${status}</h1><p>${escapeHtml(message)}</p></div>`));
+    sendHtml(res, status, layout('Error', `<div class="panel"><h1>${status}</h1><p>${escapeHtml(message)}</p></div>`, 'cards', lang));
     return;
   }
 
@@ -896,7 +984,11 @@ async function handleCreateCard(req: http.IncomingMessage, res: http.ServerRespo
     sendHtml(
       res,
       400,
-      renderNewCardForm({ name, rewardText, goal: Number.isFinite(goalNum) ? goalNum : 8, bg: bg || '#203757', active: active || '#F96400', inactive: inactive || '#8794A5' }, errors.join(' '))
+      renderNewCardForm(
+        { name, rewardText, goal: Number.isFinite(goalNum) ? goalNum : 8, bg: bg || '#203757', active: active || '#F96400', inactive: inactive || '#8794A5' },
+        errors.join(' '),
+        lang
+      )
     );
     return;
   }
@@ -956,12 +1048,32 @@ async function handleCreateCard(req: http.IncomingMessage, res: http.ServerRespo
 // ---------------------------------------------------------------------------
 // Route: GET /cards/:id — card detail with enrol URL + QR
 // ---------------------------------------------------------------------------
-async function handleCardDetail(res: http.ServerResponse, id: string): Promise<void> {
+/** The fixed, human list shown in both the activation modal and the edit banner — BUILD.md §8.7's own order: "stamps required, starter stamps, how stamps are earned, reward details, expiry type." `lockFieldHowEarned` has no database column of its own (see cardEdit.ts's ECONOMIC_FIELDS comment), so it is listed here alongside the fields that are actually enforced rather than derived from them. */
+function lockedFieldChips(lang: Lang): string {
+  const labels = [
+    t(lang, 'lockFieldStampsGoal'),
+    t(lang, 'lockFieldStarterStamps'),
+    t(lang, 'lockFieldHowEarned'),
+    t(lang, 'lockFieldRewardText'),
+    t(lang, 'lockFieldExpiryType'),
+  ];
+  return labels.map((label) => `<span class="chip locked">${escapeHtml(label)}</span>`).join(' ');
+}
+
+async function handleCardDetail(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
+  const lang = resolveLang(req);
   const card = await prisma.card.findUnique({ where: { id } });
   if (!card) {
     sendNotFound(res, `No card with id "${id}".`);
     return;
   }
+
+  const [passCount, sums] = await Promise.all([
+    passCountForCard(card.id),
+    prisma.pass.aggregate({ where: { cardId: card.id }, _sum: { totalStamps: true, rewards: true } }),
+  ]);
+  const totalStamps = sums._sum.totalStamps ?? 0;
+  const totalRewards = sums._sum.rewards ?? 0;
 
   const enrolUrl = `${PUBLIC_URL}/${card.linkCode}`;
   const stripQs = new URLSearchParams({
@@ -974,13 +1086,38 @@ async function handleCardDetail(res: http.ServerResponse, id: string): Promise<v
   });
   const qrQs = new URLSearchParams({ data: enrolUrl });
 
+  const lockBanner =
+    passCount > 0
+      ? `<div class="banner">
+          <b>${escapeHtml(t(lang, 'lockBannerTitle'))}</b> — ${escapeHtml(t(lang, 'lockBannerReason'))}<br>
+          <span>${escapeHtml(t(lang, 'lockCustomersRegistered', { count: String(passCount) }))}</span>
+        </div>`
+      : '';
+
+  const statusPill = card.active
+    ? `<span class="chip active">Active</span>`
+    : `<span class="chip">Draft</span>`;
+  const activateCta = !card.active
+    ? `<a class="btn" href="/cards/${card.id}/activate">${escapeHtml(t(lang, 'activateTitle'))}</a>`
+    : '';
+
   const body = `
     <div class="row" style="margin-bottom:18px;">
-      <h1>${escapeHtml(card.name)}</h1>
       <div>
-        <a class="btn" href="/stamp">Stamp a card</a>
+        <h1>${escapeHtml(card.name)} ${statusPill}</h1>
+      </div>
+      <div>
+        ${activateCta}
+        <a class="btn secondary" href="/cards/${card.id}/edit">${escapeHtml(t(lang, 'editTitle'))}</a>
+        <a class="btn secondary" href="/cards/${card.id}/print">${escapeHtml(t(lang, 'activatePrintSheetLink'))}</a>
         <a class="btn secondary" href="/app">All cards</a>
       </div>
+    </div>
+    ${lockBanner}
+    <div class="kpis">
+      <div class="kpi"><div class="n">${passCount}</div><div class="label">Customers</div></div>
+      <div class="kpi"><div class="n">${totalStamps}</div><div class="label">Stamps</div></div>
+      <div class="kpi"><div class="n">${totalRewards}</div><div class="label">Rewards</div></div>
     </div>
     <div class="panel">
       <div class="preview-panel" style="margin-bottom:20px;">
@@ -1005,7 +1142,751 @@ async function handleCardDetail(res: http.ServerResponse, id: string): Promise<v
       }</p>
     </div>
   `;
-  sendHtml(res, 200, layout(card.name, AUTH_BANNER + body));
+  sendHtml(res, 200, layout(card.name, AUTH_BANNER + body, 'cards', lang));
+}
+
+// ---------------------------------------------------------------------------
+// Route: GET /cards/:id/print — BUILD.md §8.8's print sheet. A print-ready
+// A4 poster: reward as the headline, the join QR at least 40mm square when
+// printed, the short code beneath it, four numbered "how it works" steps.
+// The on-screen chrome (nav, back link) stays in the dashboard's dark
+// theme; the printable sheet itself switches to dark-ink-on-white paper
+// under @media print — printing the dark UI verbatim would waste a
+// cartridge of ink on a background nobody wants on a counter poster.
+// ---------------------------------------------------------------------------
+async function handleCardPrint(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
+  const lang = resolveLang(req);
+  const card = await prisma.card.findUnique({ where: { id } });
+  if (!card) {
+    sendNotFound(res, `No card with id "${id}".`);
+    return;
+  }
+
+  const enrolUrl = `${PUBLIC_URL}/${card.linkCode}`;
+  // moduleSize 10 (vs. the site-wide default of 6) — a print sheet is
+  // rendered once and viewed at a much larger physical size than a screen
+  // preview; a bigger module keeps the code crisp once CSS stretches it to
+  // the 45mm print size below.
+  const qrQs = new URLSearchParams({ data: enrolUrl, size: '10' });
+
+  const steps = [
+    t(lang, 'printStep1'),
+    t(lang, 'printStep2'),
+    t(lang, 'printStep3'),
+    t(lang, 'printStep4', { goal: arabicDigits(card.stampsGoal, lang) }),
+  ];
+
+  const html = `<!doctype html>
+<html lang="${lang}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(card.name)} · ${escapeHtml(t(lang, 'printButton'))} · LoyaNexa</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Alexandria:wght@400;600;700;800&display=swap">
+<style>
+  :root { --canvas: #0F172A; --paper: #1C2A42; --sunk: #162338; --accent: #F28C38; --ink: #FFFFFF; --ink-2: #CBD5E1; --line: rgba(255,255,255,.12); }
+  html[lang="ar"] * { letter-spacing: 0 !important; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--canvas); color: var(--ink); font-family: 'Alexandria', system-ui, sans-serif; }
+  .toolbar { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--sunk); }
+  .toolbar a { color: var(--ink-2); text-decoration: none; font-weight: 600; font-size: 14px; }
+  .toolbar button {
+    background: var(--accent); color: #0F172A; border: none; border-radius: 100px; padding: 10px 20px;
+    font-weight: 700; font-size: 14px; cursor: pointer; font-family: inherit;
+  }
+  .sheet-wrap { display: flex; justify-content: center; padding: 32px 16px 56px; }
+  /* On screen: an A4-proportioned dark-on-white card so the merchant can preview it before printing. */
+  .sheet {
+    width: 210mm; max-width: 100%; min-height: 297mm; background: #fff; color: #111827;
+    border-radius: 8px; padding: 24mm 18mm; text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,.4);
+    display: flex; flex-direction: column; align-items: center;
+  }
+  .sheet .card-name { font-size: 16px; font-weight: 700; color: #6B7280; letter-spacing: .04em; text-transform: uppercase; margin-bottom: 10px; }
+  .sheet h1 { font-size: 38px; line-height: 1.2; margin: 0 0 28px; color: #111827; max-width: 90%; }
+  .sheet .qr-box { padding: 16px; border: 2px solid #111827; border-radius: 16px; display: inline-block; }
+  .sheet .qr-box img { display: block; width: 45mm; height: 45mm; image-rendering: pixelated; }
+  .sheet .short-code { margin-top: 14px; font-size: 15px; letter-spacing: .08em; color: #374151; }
+  .sheet .short-code code { font-weight: 700; color: #111827; }
+  .sheet .scan-label { margin-top: 22px; font-size: 15px; color: #4B5563; }
+  .sheet .steps { margin-top: 40px; width: 100%; max-width: 480px; text-align: start; display: flex; flex-direction: column; gap: 16px; }
+  .sheet .step { display: flex; gap: 14px; align-items: flex-start; }
+  .sheet .step .num {
+    flex: none; width: 28px; height: 28px; border-radius: 50%; background: #111827; color: #fff;
+    display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700;
+  }
+  .sheet .step p { margin: 0; font-size: 15px; line-height: 1.4; color: #1F2937; padding-top: 3px; }
+  .sheet .powered { margin-top: auto; padding-top: 40px; font-size: 12px; color: #9CA3AF; }
+  @media print {
+    @page { size: A4; margin: 0; }
+    .toolbar { display: none; }
+    .sheet-wrap { padding: 0; }
+    body { background: #fff; }
+    .sheet { box-shadow: none; border-radius: 0; width: 210mm; height: 297mm; page-break-after: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="toolbar">
+  <a href="/cards/${card.id}">&larr; ${escapeHtml(t(lang, 'printBackToCard'))}</a>
+  <button type="button" onclick="window.print()">${escapeHtml(t(lang, 'printButton'))}</button>
+</div>
+<div class="sheet-wrap">
+  <div class="sheet">
+    <div class="card-name">${escapeHtml(card.name)}</div>
+    <h1>${escapeHtml(card.rewardText)}</h1>
+    <div class="qr-box">
+      <img src="/qr.png?${qrQs.toString()}" alt="QR code for ${escapeHtml(enrolUrl)}" width="450" height="450">
+    </div>
+    <div class="short-code">${escapeHtml(t(lang, 'printShortCodeLabel'))}: <code>${escapeHtml(card.shortCode)}</code></div>
+    <div class="scan-label">${escapeHtml(t(lang, 'printScanToJoin'))}</div>
+    <div class="steps">
+      ${steps
+        .map((step, i) => `<div class="step"><span class="num">${i + 1}</span><p>${escapeHtml(step)}</p></div>`)
+        .join('\n      ')}
+    </div>
+    <div class="powered">Powered by LoyaNexa</div>
+  </div>
+</div>
+</body>
+</html>`;
+  sendHtml(res, 200, html);
+}
+
+// ---------------------------------------------------------------------------
+// Card activation and the lock rule — BUILD.md §8.7. GET renders the
+// confirmation step listing exactly what is about to freeze; POST performs
+// it. Once activated (and, independently, once any Pass exists) the write
+// path below (handleUpdateCard / cardEdit.ts's updateCard) is what actually
+// enforces the freeze — this confirmation step is a courtesy, not the
+// enforcement (BUILD.md §8.7: "enforce server-side, not just in the UI").
+// ---------------------------------------------------------------------------
+async function handleActivateConfirm(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
+  const lang = resolveLang(req);
+  const card = await prisma.card.findUnique({ where: { id } });
+  if (!card) {
+    sendNotFound(res, `No card with id "${id}".`);
+    return;
+  }
+
+  if (card.active) {
+    const body = `<div class="panel"><p>${escapeHtml(t(lang, 'activateAlreadyActive'))}</p><p><a class="btn" href="/cards/${card.id}">Back to card</a></p></div>`;
+    sendHtml(res, 200, layout(card.name, body, 'cards', lang));
+    return;
+  }
+
+  const body = `
+    <h1>${escapeHtml(t(lang, 'activateTitle'))}</h1>
+    <div class="panel">
+      <p><b>${escapeHtml(t(lang, 'activateWarning'))}</b></p>
+      <p class="chips">${lockedFieldChips(lang)}</p>
+      <p class="muted">${escapeHtml(t(lang, 'activateReason'))}</p>
+      <p style="color:var(--green);">${escapeHtml(t(lang, 'activateAestheticNote'))}</p>
+      <form method="POST" action="/cards/${card.id}/activate">
+        <button class="btn" type="submit">${escapeHtml(t(lang, 'activateConfirmButton'))}</button>
+        <a class="btn secondary" href="/cards/${card.id}">${escapeHtml(t(lang, 'activateCancelButton'))}</a>
+      </form>
+    </div>
+  `;
+  sendHtml(res, 200, layout(t(lang, 'activateTitle'), body, 'cards', lang));
+}
+
+async function handleActivateCard(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
+  const lang = resolveLang(req);
+  const result = await activateCard(id);
+  if (!result.ok) {
+    sendNotFound(res, `No card with id "${id}".`);
+    return;
+  }
+
+  const card = result.card;
+  const enrolUrl = `${PUBLIC_URL}/${card.linkCode}`;
+  const body = `
+    <div class="panel empty">
+      <h1>${escapeHtml(t(lang, 'activateSuccessTitle'))}</h1>
+      <p class="muted"><code class="pill">${escapeHtml(enrolUrl)}</code></p>
+      <p>
+        <a class="btn" href="/cards/${card.id}/print">${escapeHtml(t(lang, 'activatePrintSheetLink'))}</a>
+        <a class="btn secondary" href="/app">${escapeHtml(t(lang, 'activateGoToCards'))}</a>
+      </p>
+    </div>
+  `;
+  sendHtml(res, 200, layout(card.name, body, 'cards', lang));
+}
+
+// ---------------------------------------------------------------------------
+// Route: GET/POST /cards/:id/edit — BUILD.md §8.9. Renders economic fields
+// as disabled inputs once any Pass exists (so a browser never even submits
+// a locked value), plus the amber banner. The POST handler is a thin HTTP
+// wrapper around cardEdit.ts's updateCard() — the same function
+// apps/demo/test/cardEdit.test.ts exercises directly — so the enforcement
+// a merchant hits through this form and the enforcement the test proves are
+// the exact same code path, not two implementations that could drift apart.
+// ---------------------------------------------------------------------------
+interface EditCardFormValues {
+  name: string;
+  rewardText: string;
+  stampsGoal: number;
+  starterStamps: number;
+  bgColor: string;
+  stampActive: string;
+  stampInactive: string;
+  labelStamps: string;
+  labelRewards: string;
+}
+
+function renderEditCardForm(
+  card: Card,
+  passCount: number,
+  lang: Lang,
+  values: EditCardFormValues,
+  error?: string
+): string {
+  const locked = passCount > 0;
+  const lockBanner = locked
+    ? `<div class="banner">
+        <b>${escapeHtml(t(lang, 'lockBannerTitle'))}</b><br>
+        ${escapeHtml(t(lang, 'lockBannerReason'))}<br>
+        <p class="chips" style="margin-top:8px;">${lockedFieldChips(lang)}</p>
+        <p style="margin-top:8px;">${escapeHtml(t(lang, 'lockCustomersRegistered', { count: String(passCount) }))}</p>
+      </div>`
+    : '';
+  const dis = locked ? 'disabled' : '';
+  const lockedClass = locked ? ' class="lock"' : '';
+
+  const body = `
+    <h1>${escapeHtml(t(lang, 'editTitle'))} — ${escapeHtml(card.name)}</h1>
+    ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
+    ${lockBanner}
+    <div class="panel">
+      <form method="POST" action="/cards/${card.id}/edit">
+        <h2>Design (always editable)</h2>
+        <div class="field">
+          <label for="name">Card name</label>
+          <input type="text" id="name" name="name" required maxlength="80" value="${escapeHtml(values.name)}">
+        </div>
+        <div class="field colors">
+          <div class="field">
+            <label for="bgColor">Card background</label>
+            <input type="color" id="bgColor" name="bgColor" value="${escapeHtml(values.bgColor)}">
+          </div>
+          <div class="field">
+            <label for="stampActive">Active stamp</label>
+            <input type="color" id="stampActive" name="stampActive" value="${escapeHtml(values.stampActive)}">
+          </div>
+          <div class="field">
+            <label for="stampInactive">Inactive stamp</label>
+            <input type="color" id="stampInactive" name="stampInactive" value="${escapeHtml(values.stampInactive)}">
+          </div>
+        </div>
+        <div class="field">
+          <label for="labelStamps">Custom stamps label (optional, max 16 chars)</label>
+          <input type="text" id="labelStamps" name="labelStamps" maxlength="16" value="${escapeHtml(values.labelStamps)}">
+        </div>
+        <div class="field">
+          <label for="labelRewards">Custom rewards label (optional, max 16 chars)</label>
+          <input type="text" id="labelRewards" name="labelRewards" maxlength="16" value="${escapeHtml(values.labelRewards)}">
+        </div>
+
+        <h2>Economics${locked ? ' — locked' : ''}</h2>
+        <div class="field"${lockedClass}>
+          <label for="rewardText">Reward text</label>
+          <input type="text" id="rewardText" name="rewardText" required maxlength="120" value="${escapeHtml(values.rewardText)}" ${dis}>
+        </div>
+        <div class="field"${lockedClass}>
+          <label for="stampsGoal">Stamps goal</label>
+          <input type="number" id="stampsGoal" name="stampsGoal" min="${MIN_GOAL}" max="${MAX_GOAL}" value="${values.stampsGoal}" ${dis}>
+        </div>
+        <div class="field"${lockedClass}>
+          <label for="starterStamps">Starter stamps</label>
+          <input type="number" id="starterStamps" name="starterStamps" min="0" max="${MAX_GOAL}" value="${values.starterStamps}" ${dis}>
+        </div>
+
+        <button class="btn" type="submit">${escapeHtml(t(lang, 'editSaveButton'))}</button>
+        <a class="btn secondary" href="/cards/${card.id}">${escapeHtml(t(lang, 'editCancelButton'))}</a>
+      </form>
+    </div>
+  `;
+  return layout(t(lang, 'editTitle'), body, 'cards', lang);
+}
+
+async function handleEditCardForm(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
+  const lang = resolveLang(req);
+  const card = await prisma.card.findUnique({ where: { id } });
+  if (!card) {
+    sendNotFound(res, `No card with id "${id}".`);
+    return;
+  }
+  const passCount = await passCountForCard(card.id);
+  sendHtml(
+    res,
+    200,
+    renderEditCardForm(card, passCount, lang, {
+      name: card.name,
+      rewardText: card.rewardText,
+      stampsGoal: card.stampsGoal,
+      starterStamps: card.starterStamps,
+      bgColor: card.bgColor,
+      stampActive: card.stampActive,
+      stampInactive: card.stampInactive,
+      labelStamps: card.labelStamps,
+      labelRewards: card.labelRewards,
+    })
+  );
+}
+
+async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
+  const lang = resolveLang(req);
+  let fields: querystring.ParsedUrlQuery;
+  try {
+    fields = await readUrlencodedBody(req);
+  } catch (err) {
+    const status = isHttpError(err) ? err.statusCode : 400;
+    const message = err instanceof Error ? err.message : String(err);
+    sendHtml(res, status, layout('Error', `<div class="panel"><h1>${status}</h1><p>${escapeHtml(message)}</p></div>`, 'cards', lang));
+    return;
+  }
+
+  const card = await prisma.card.findUnique({ where: { id } });
+  if (!card) {
+    sendNotFound(res, `No card with id "${id}".`);
+    return;
+  }
+  const passCount = await passCountForCard(id);
+  const locked = passCount > 0;
+
+  const name = String(fields.name ?? '').trim();
+  const bgColor = validHex(fields.bgColor, card.bgColor);
+  const stampActive = validHex(fields.stampActive, card.stampActive);
+  const stampInactive = validHex(fields.stampInactive, card.stampInactive);
+  const labelStamps = String(fields.labelStamps ?? '').trim().slice(0, 16);
+  const labelRewards = String(fields.labelRewards ?? '').trim().slice(0, 16);
+
+  const patch: CardEditInput = {
+    name: name || card.name,
+    bgColor,
+    stampActive,
+    stampInactive,
+    labelStamps,
+    labelRewards,
+  };
+
+  // Economic fields: a locked card's form renders these inputs `disabled`,
+  // so a normal browser submission never includes them at all — but the
+  // server never trusts that alone (BUILD.md §8.7). When the card is not
+  // yet locked, they are read from the submitted form like anything else.
+  if (!locked) {
+    const rewardText = String(fields.rewardText ?? '').trim();
+    const stampsGoal = clampInt(fields.stampsGoal, MIN_GOAL, MAX_GOAL, card.stampsGoal);
+    const starterStamps = clampInt(fields.starterStamps, 0, MAX_GOAL, card.starterStamps);
+    patch.rewardText = rewardText || card.rewardText;
+    patch.stampsGoal = stampsGoal;
+    patch.starterStamps = starterStamps;
+  } else if ('stampsGoal' in fields || 'rewardText' in fields || 'starterStamps' in fields) {
+    // Belt-and-braces: even if a client sends these fields anyway (a
+    // tampered request, not the rendered form), feed them through so
+    // updateCard() sees the attempt and rejects it with 409 rather than
+    // silently ignoring it.
+    const rewardText = String(fields.rewardText ?? '').trim();
+    if (rewardText) patch.rewardText = rewardText;
+    if ('stampsGoal' in fields) patch.stampsGoal = clampInt(fields.stampsGoal, MIN_GOAL, MAX_GOAL, card.stampsGoal);
+    if ('starterStamps' in fields) patch.starterStamps = clampInt(fields.starterStamps, 0, MAX_GOAL, card.starterStamps);
+  }
+
+  const result = await updateCard(id, patch);
+  if (!result.ok) {
+    if (result.reason === 'not_found') {
+      sendNotFound(res, `No card with id "${id}".`);
+      return;
+    }
+    // BUILD.md §8.7: "enforce server-side, not just in the UI" — HTTP 409,
+    // translated (BUILD.md §13: server error messages are translated too).
+    sendHtml(
+      res,
+      409,
+      renderEditCardForm(
+        card,
+        passCount,
+        lang,
+        {
+          name,
+          rewardText: card.rewardText,
+          stampsGoal: card.stampsGoal,
+          starterStamps: card.starterStamps,
+          bgColor,
+          stampActive,
+          stampInactive,
+          labelStamps,
+          labelRewards,
+        },
+        t(lang, 'economicFieldLocked')
+      )
+    );
+    return;
+  }
+
+  res.writeHead(303, { Location: `/cards/${id}` });
+  res.end();
+}
+
+// ---------------------------------------------------------------------------
+// Route: GET /customers — BUILD.md §8.11. Search by card number, name or
+// phone; filter by card; footer "showing N of N customers"; Export CSV.
+// Single-merchant demo (no auth, see getOrCreateMerchant()'s own comment),
+// so every query below is still explicitly scoped by merchantId — never
+// "every Pass row in the table" — the same discipline BUILD.md §17 asks
+// for once real auth lands.
+// ---------------------------------------------------------------------------
+interface CustomerFilters {
+  q: string;
+  cardId: string; // '' = all cards
+}
+
+function parseCustomerFilters(url: URL): CustomerFilters {
+  return {
+    q: (url.searchParams.get('q') ?? '').trim(),
+    cardId: (url.searchParams.get('card') ?? '').trim(),
+  };
+}
+
+async function fetchCustomerRows(merchantId: string, filters: CustomerFilters) {
+  const where: Prisma.PassWhereInput = { merchantId };
+  if (filters.cardId) where.cardId = filters.cardId;
+  if (filters.q) {
+    where.OR = [
+      { shortCode: { contains: filters.q, mode: 'insensitive' } },
+      { custName: { contains: filters.q, mode: 'insensitive' } },
+      { custPhone: { contains: filters.q, mode: 'insensitive' } },
+    ];
+  }
+  return prisma.pass.findMany({ where, include: { card: true }, orderBy: { createdAt: 'desc' } });
+}
+
+function formatLastVisit(date: Date | null, lang: Lang): string {
+  if (!date) return t(lang, 'customersNeverVisited');
+  return arabicDigits(date.toISOString().slice(0, 10), lang);
+}
+
+async function handleCustomersList(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
+  const lang = resolveLang(req);
+  const merchant = await getOrCreateMerchant();
+  const filters = parseCustomerFilters(url);
+
+  const [cards, totalCount, rows] = await Promise.all([
+    prisma.card.findMany({ where: { merchantId: merchant.id }, orderBy: { createdAt: 'asc' } }),
+    prisma.pass.count({ where: { merchantId: merchant.id } }),
+    fetchCustomerRows(merchant.id, filters),
+  ]);
+
+  const filtersActive = Boolean(filters.q || filters.cardId);
+  const exportQs = new URLSearchParams();
+  if (filters.q) exportQs.set('q', filters.q);
+  if (filters.cardId) exportQs.set('card', filters.cardId);
+  const exportHref = `/customers/export.csv${exportQs.toString() ? `?${exportQs.toString()}` : ''}`;
+
+  const tableOrEmpty =
+    totalCount === 0
+      ? `<div class="panel empty">
+          <h1>${escapeHtml(t(lang, 'customersEmptyTitle'))}</h1>
+          <p class="muted">${escapeHtml(t(lang, 'customersEmptyBody'))}</p>
+        </div>`
+      : `<div class="panel" style="overflow-x:auto;">
+          ${
+            rows.length === 0
+              ? `<p class="no-data">${escapeHtml(t(lang, 'customersNoMatches'))}</p>`
+              : `<table class="data">
+                  <thead><tr>
+                    <th>${escapeHtml(t(lang, 'customersColCardNumber'))}</th>
+                    <th>${escapeHtml(t(lang, 'customersColCustomer'))}</th>
+                    <th>${escapeHtml(t(lang, 'customersColCard'))}</th>
+                    <th>${escapeHtml(t(lang, 'customersColProgress'))}</th>
+                    <th>${escapeHtml(t(lang, 'customersColVisits'))}</th>
+                    <th>${escapeHtml(t(lang, 'customersColRewards'))}</th>
+                    <th>${escapeHtml(t(lang, 'customersColLastVisit'))}</th>
+                  </tr></thead>
+                  <tbody>
+                    ${rows
+                      .map((p) => {
+                        const goal = Math.max(1, p.card.stampsGoal);
+                        const pct = Math.max(0, Math.min(100, Math.round((p.stamps / goal) * 100)));
+                        return `<tr>
+                          <td><code class="mono">${escapeHtml(p.shortCode)}</code></td>
+                          <td>${p.custName ? escapeHtml(p.custName) : escapeHtml(t(lang, 'customersUnnamed'))}</td>
+                          <td>${escapeHtml(p.card.name)}</td>
+                          <td>
+                            <div class="progress-bar">
+                              <div class="track"><div class="fill" style="width:${pct}%"></div></div>
+                              <span class="frac">${arabicDigits(p.stamps, lang)}/${arabicDigits(p.card.stampsGoal, lang)}</span>
+                            </div>
+                          </td>
+                          <td>${arabicDigits(p.totalStamps, lang)}</td>
+                          <td>${arabicDigits(p.rewards, lang)}</td>
+                          <td>${escapeHtml(formatLastVisit(p.lastStampAt, lang))}</td>
+                        </tr>`;
+                      })
+                      .join('\n')}
+                  </tbody>
+                </table>`
+          }
+        </div>`;
+
+  const body = `
+    <div class="row" style="margin-bottom:18px;">
+      <h1>${escapeHtml(t(lang, 'customersTitle'))}</h1>
+      <a class="btn secondary" href="${exportHref}">${escapeHtml(t(lang, 'customersExportButton'))}</a>
+    </div>
+    <div class="panel">
+      <form method="GET" action="/customers" class="row" style="align-items:flex-end;gap:12px;">
+        <div class="field" style="flex:2 1 260px;margin-bottom:0;">
+          <label for="q">${escapeHtml(t(lang, 'customersSearchPlaceholder'))}</label>
+          <input type="text" id="q" name="q" value="${escapeHtml(filters.q)}" placeholder="${escapeHtml(t(lang, 'customersSearchPlaceholder'))}">
+        </div>
+        <div class="field" style="flex:1 1 200px;margin-bottom:0;">
+          <label for="card">${escapeHtml(t(lang, 'customersColCard'))}</label>
+          <select id="card" name="card">
+            <option value="">${escapeHtml(t(lang, 'customersFilterAllCards'))}</option>
+            ${cards
+              .map(
+                (c) =>
+                  `<option value="${c.id}"${filters.cardId === c.id ? ' selected' : ''}>${escapeHtml(c.name)}</option>`
+              )
+              .join('')}
+          </select>
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <button class="btn" type="submit">Search</button>
+          ${filtersActive ? `<a class="btn secondary" href="/customers">Clear</a>` : ''}
+        </div>
+      </form>
+    </div>
+    ${tableOrEmpty}
+    <p class="muted">${escapeHtml(t(lang, 'customersFooter', { shown: String(rows.length), total: String(totalCount) }))}</p>
+  `;
+  sendHtml(res, 200, layout(t(lang, 'customersTitle'), body, 'customers', lang));
+}
+
+/** Wraps `value` in double quotes (doubling any embedded quote) whenever it contains a comma, quote or line break — the minimal RFC 4180 quoting a CSV field needs. A name like `O'Brien, Jr` or one containing a literal `"` must round-trip through this unharmed, not corrupt the file. */
+function csvField(value: string): string {
+  if (/[",\r\n]/.test(value)) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
+function csvRow(values: string[]): string {
+  return values.map(csvField).join(',');
+}
+
+async function handleCustomersExport(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
+  const merchant = await getOrCreateMerchant();
+  const filters = parseCustomerFilters(url);
+  const rows = await fetchCustomerRows(merchant.id, filters);
+
+  const lines = [
+    csvRow(['Card number', 'Customer', 'Phone', 'Card', 'Stamps', 'Goal', 'Visits', 'Rewards', 'Last visit']),
+    ...rows.map((p) =>
+      csvRow([
+        p.shortCode,
+        p.custName,
+        p.custPhone,
+        p.card.name,
+        String(p.stamps),
+        String(p.card.stampsGoal),
+        String(p.totalStamps),
+        String(p.rewards),
+        p.lastStampAt ? p.lastStampAt.toISOString() : '',
+      ])
+    ),
+  ];
+  const csv = lines.join('\r\n') + '\r\n';
+  const buffer = Buffer.from(csv, 'utf8');
+  res.writeHead(200, {
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Disposition': 'attachment; filename="customers.csv"',
+    'Content-Length': buffer.length,
+    'Cache-Control': 'no-store',
+  });
+  res.end(buffer);
+}
+
+// ---------------------------------------------------------------------------
+// Route: GET /reports — BUILD.md §8.14. Every figure below comes from a
+// real Prisma query against Pass/StampEvent — there is no placeholder path;
+// an empty database renders "no data" (BUILD.md §8.14's own words) rather
+// than invented numbers.
+// ---------------------------------------------------------------------------
+const REPORT_RANGES = [30, 60, 90] as const;
+type ReportRange = (typeof REPORT_RANGES)[number];
+
+function isReportRange(n: number): n is ReportRange {
+  return (REPORT_RANGES as readonly number[]).includes(n);
+}
+
+function parseReportRange(url: URL): ReportRange {
+  const raw = Number.parseInt(url.searchParams.get('range') ?? '30', 10);
+  return isReportRange(raw) ? raw : 30;
+}
+
+const WEEKDAY_KEYS = [
+  'reportsDaySun',
+  'reportsDayMon',
+  'reportsDayTue',
+  'reportsDayWed',
+  'reportsDayThu',
+  'reportsDayFri',
+  'reportsDaySat',
+] as const;
+
+async function handleReports(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
+  const lang = resolveLang(req);
+  const merchant = await getOrCreateMerchant();
+  const range = parseReportRange(url);
+
+  const now = new Date();
+  const rangeCutoff = new Date(now.getTime() - range * 24 * 60 * 60 * 1000);
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  // "This week" — a rolling 7-day window ending now, not a calendar week —
+  // there is no merchant-configurable week-start yet, and a rolling window
+  // needs none.
+  const weekCutoff = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+  const [totalCustomers, stampsToday, rewardsThisWeek, stampsInRange, registeredInRange, stampEventsInRange, topPasses] =
+    await Promise.all([
+      prisma.pass.count({ where: { merchantId: merchant.id } }),
+      prisma.stampEvent.count({ where: { merchantId: merchant.id, kind: 'STAMP', at: { gte: todayStart } } }),
+      prisma.stampEvent.count({ where: { merchantId: merchant.id, kind: 'REWARD', at: { gte: weekCutoff } } }),
+      prisma.stampEvent.count({ where: { merchantId: merchant.id, kind: 'STAMP', at: { gte: rangeCutoff } } }),
+      prisma.pass.findMany({
+        where: { merchantId: merchant.id, createdAt: { gte: rangeCutoff } },
+        include: { card: true },
+      }),
+      prisma.stampEvent.findMany({
+        where: { merchantId: merchant.id, kind: 'STAMP', at: { gte: rangeCutoff } },
+        select: { at: true },
+      }),
+      prisma.pass.findMany({
+        where: { merchantId: merchant.id },
+        orderBy: { totalStamps: 'desc' },
+        take: 5,
+        include: { card: true },
+      }),
+    ]);
+
+  // Funnel — scoped to the passes registered within the selected range, the
+  // same window the chips control everywhere else on this page. "Reached
+  // 50% of the goal" reads lifetime totalStamps (stamps collected to date,
+  // including past rewards) against that pass's own card.stampsGoal — the
+  // closest available proxy to "ever got halfway there" without a stamp
+  // history table.
+  const registered = registeredInRange.length;
+  const earnedStamp = registeredInRange.filter((p) => p.totalStamps >= 1).length;
+  const halfway = registeredInRange.filter((p) => p.totalStamps >= p.card.stampsGoal / 2).length;
+  const wonReward = registeredInRange.filter((p) => p.rewards >= 1).length;
+
+  const funnelSteps: Array<{ labelKey: 'reportsFunnelRegistered' | 'reportsFunnelEarnedStamp' | 'reportsFunnelHalfway' | 'reportsFunnelReward'; count: number }> = [
+    { labelKey: 'reportsFunnelRegistered', count: registered },
+    { labelKey: 'reportsFunnelEarnedStamp', count: earnedStamp },
+    { labelKey: 'reportsFunnelHalfway', count: halfway },
+    { labelKey: 'reportsFunnelReward', count: wonReward },
+  ];
+  const funnelBase = Math.max(1, registered);
+  const funnelHtml =
+    registered === 0
+      ? `<p class="no-data">${escapeHtml(t(lang, 'reportsNoData'))}</p>`
+      : `<div class="funnel">
+          ${funnelSteps
+            .map((step) => {
+              const pct = Math.round((step.count / funnelBase) * 100);
+              return `<div class="step">
+                <span class="muted">${escapeHtml(t(lang, step.labelKey))}</span>
+                <div class="track"><div class="fill" style="width:${pct}%"></div></div>
+                <span>${arabicDigits(step.count, lang)}</span>
+              </div>`;
+            })
+            .join('\n')}
+        </div>`;
+
+  // Stamps by weekday — Sunday first, matching Date#getDay()'s own 0-6.
+  const weekdayCounts = [0, 0, 0, 0, 0, 0, 0];
+  for (const ev of stampEventsInRange) {
+    const day = ev.at.getDay();
+    weekdayCounts[day] = (weekdayCounts[day] ?? 0) + 1;
+  }
+  const maxWeekday = Math.max(1, ...weekdayCounts);
+  const weekdayHtml =
+    stampEventsInRange.length === 0
+      ? `<p class="no-data">${escapeHtml(t(lang, 'reportsNoData'))}</p>`
+      : `<div class="weekday-chart">
+          ${weekdayCounts
+            .map((count, i) => {
+              const height = Math.max(2, Math.round((count / maxWeekday) * 100));
+              const dayKey = WEEKDAY_KEYS[i]!;
+              return `<div class="bar-wrap">
+                <span class="day-count">${arabicDigits(count, lang)}</span>
+                <div class="bar" style="height:${height}%"></div>
+                <span class="day-label">${escapeHtml(t(lang, dayKey))}</span>
+              </div>`;
+            })
+            .join('\n')}
+        </div>`;
+
+  const topCustomersHtml =
+    topPasses.length === 0 || topPasses.every((p) => p.totalStamps === 0)
+      ? `<p class="no-data">${escapeHtml(t(lang, 'reportsNoData'))}</p>`
+      : `<table class="data">
+          <thead><tr>
+            <th>${escapeHtml(t(lang, 'customersColCustomer'))}</th>
+            <th>${escapeHtml(t(lang, 'customersColCard'))}</th>
+            <th>${escapeHtml(t(lang, 'customersColVisits'))}</th>
+            <th>${escapeHtml(t(lang, 'customersColRewards'))}</th>
+            <th>${escapeHtml(t(lang, 'customersColLastVisit'))}</th>
+          </tr></thead>
+          <tbody>
+            ${topPasses
+              .map(
+                (p) => `<tr>
+                  <td>${p.custName ? escapeHtml(p.custName) : `<code class="mono">${escapeHtml(p.shortCode)}</code>`}</td>
+                  <td>${escapeHtml(p.card.name)}</td>
+                  <td>${arabicDigits(p.totalStamps, lang)}</td>
+                  <td>${arabicDigits(p.rewards, lang)}</td>
+                  <td>${escapeHtml(formatLastVisit(p.lastStampAt, lang))}</td>
+                </tr>`
+              )
+              .join('\n')}
+          </tbody>
+        </table>`;
+
+  const chips = REPORT_RANGES.map(
+    (r) =>
+      `<a class="chip${r === range ? ' active' : ''}" href="/reports?range=${r}">${escapeHtml(t(lang, r === 30 ? 'reportsRange30' : r === 60 ? 'reportsRange60' : 'reportsRange90'))}</a>`
+  ).join(' ');
+
+  const body = `
+    <div class="row" style="margin-bottom:18px;">
+      <h1>${escapeHtml(t(lang, 'reportsTitle'))}</h1>
+      <div class="chips">${chips}</div>
+    </div>
+    <div class="kpis">
+      <div class="kpi"><div class="n">${arabicDigits(totalCustomers, lang)}</div><div class="label">${escapeHtml(t(lang, 'reportsKpiCustomers'))}</div></div>
+      <div class="kpi"><div class="n">${arabicDigits(stampsToday, lang)}</div><div class="label">${escapeHtml(t(lang, 'reportsKpiStampsToday'))}</div></div>
+      <div class="kpi"><div class="n">${arabicDigits(rewardsThisWeek, lang)}</div><div class="label">${escapeHtml(t(lang, 'reportsKpiRewardsWeek'))}</div></div>
+      <div class="kpi"><div class="n">${arabicDigits(stampsInRange, lang)}</div><div class="label">${escapeHtml(t(lang, 'reportsKpiStampsRange'))}</div></div>
+    </div>
+    <div class="panel">
+      <h2>${escapeHtml(t(lang, 'reportsFunnelTitle'))}</h2>
+      ${funnelHtml}
+    </div>
+    <div class="panel">
+      <h2>${escapeHtml(t(lang, 'reportsWeekdayTitle'))}</h2>
+      ${weekdayHtml}
+    </div>
+    <div class="panel" style="overflow-x:auto;">
+      <h2>${escapeHtml(t(lang, 'reportsTopCustomersTitle'))}</h2>
+      ${topCustomersHtml}
+    </div>
+  `;
+  sendHtml(res, 200, layout(t(lang, 'reportsTitle'), body, 'reports', lang));
 }
 
 // ---------------------------------------------------------------------------
@@ -1426,9 +2307,13 @@ function handleQrPng(res: http.ServerResponse, query: URLSearchParams): void {
     sendHtml(res, 400, layout('Error', '<div class="panel"><h1>400</h1><p>Missing "data" query parameter.</p></div>'));
     return;
   }
+  // Optional `size` (module size in px, default 6 — same default renderQrPng
+  // itself uses). The print sheet (GET /cards/:id/print) asks for a larger
+  // module so the code stays crisp once CSS stretches it to 45mm on paper.
+  const moduleSize = clampInt(query.get('size'), 1, 20, 6);
   let png: Buffer;
   try {
-    png = renderQrPng(data.trim());
+    png = renderQrPng(data.trim(), moduleSize);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     sendHtml(res, 400, layout('Error', `<div class="panel"><h1>400</h1><p>${escapeHtml(message)}</p></div>`));
@@ -1453,9 +2338,9 @@ function handleQrPng(res: http.ServerResponse, query: URLSearchParams): void {
 // per BUILD.md §3 (2026-08-03 revision):
 // canvas #0F172A, paper #1C2A42, accent #F28C38, Alexandria typeface.
 // ---------------------------------------------------------------------------
-function renderStampScreen(): string {
+function renderStampScreen(lang: Lang = 'en'): string {
   return `<!doctype html>
-<html lang="en">
+<html lang="${lang}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1487,11 +2372,17 @@ function renderStampScreen(): string {
     font-family: 'Alexandria', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   }
   header.top {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 18px 20px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 28px;
+    padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--sunk);
   }
-  header.top a.back { color: var(--ink-2); text-decoration: none; font-weight: 600; font-size: 15px; }
-  header.top span.brand { font-weight: 700; }
+  header.top a.brand { color: var(--ink); text-decoration: none; font-weight: 800; font-size: 17px; }
+  header.top nav.nav { display: flex; gap: 4px; flex-wrap: wrap; margin-inline-start: auto; }
+  header.top nav.nav a {
+    color: var(--ink-2); text-decoration: none; font-weight: 600; font-size: 14px;
+    padding: 8px 14px; border-radius: 100px;
+  }
+  header.top nav.nav a:hover { color: var(--ink); background: var(--raise); }
+  header.top nav.nav a.active { color: var(--on-accent); background: var(--accent); }
   main { max-width: 480px; margin: 0 auto; padding: 20px 20px 56px; }
   h1 { font-size: 22px; margin: 4px 0 6px; }
   p.sub { color: var(--ink-3); font-size: 14px; margin: 0 0 18px; line-height: 1.5; }
@@ -1528,10 +2419,7 @@ function renderStampScreen(): string {
 </style>
 </head>
 <body>
-<header class="top">
-  <a class="back" href="/app">&larr; All cards</a>
-  <span class="brand">LoyaNexa · Stamp</span>
-</header>
+${navBar('stamp', lang)}
 <main>
   <h1>Stamp a card</h1>
   <p class="sub">Scan the QR inside the customer's wallet pass, or type their code below.</p>
@@ -1758,8 +2646,8 @@ function renderStampScreen(): string {
 </html>`;
 }
 
-function handleStampScreen(res: http.ServerResponse): void {
-  sendHtml(res, 200, renderStampScreen());
+function handleStampScreen(req: http.IncomingMessage, res: http.ServerResponse): void {
+  sendHtml(res, 200, renderStampScreen(resolveLang(req)));
 }
 
 // ---------------------------------------------------------------------------
@@ -2101,11 +2989,11 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'GET' && pathname === '/app') {
-      await handleCardsList(res);
+      await handleCardsList(req, res);
       return;
     }
     if (req.method === 'GET' && pathname === '/cards/new') {
-      await handleNewCardForm(res);
+      await handleNewCardForm(req, res);
       return;
     }
     if (req.method === 'POST' && pathname === '/cards') {
@@ -2120,17 +3008,64 @@ const server = http.createServer(async (req, res) => {
       handleQrPng(res, url.searchParams);
       return;
     }
+    // GET /customers and its CSV export (BUILD.md §8.11), and GET /reports
+    // (BUILD.md §8.14) — literal single-segment paths, registered here
+    // above the /:code catch-all for the same reason /app and /stamp are.
+    if (req.method === 'GET' && pathname === '/customers/export.csv') {
+      await handleCustomersExport(req, res, url);
+      return;
+    }
+    if (req.method === 'GET' && pathname === '/customers') {
+      await handleCustomersList(req, res, url);
+      return;
+    }
+    if (req.method === 'GET' && pathname === '/reports') {
+      await handleReports(req, res, url);
+      return;
+    }
+    // /cards/:id/print, /cards/:id/activate, /cards/:id/edit — two-segment
+    // paths under /cards/, so the single-segment `/^\/cards\/([^/]+)$/`
+    // match just below (anchored with `$`) can never shadow them, and vice
+    // versa; order between the two groups does not matter, only that both
+    // are above the `GET /:code` catch-all at the bottom of this router.
+    const cardPrintMatch = pathname.match(/^\/cards\/([^/]+)\/print$/);
+    if (req.method === 'GET' && cardPrintMatch) {
+      await handleCardPrint(req, res, cardPrintMatch[1]!);
+      return;
+    }
+    const cardActivateMatch = pathname.match(/^\/cards\/([^/]+)\/activate$/);
+    if (cardActivateMatch) {
+      if (req.method === 'GET') {
+        await handleActivateConfirm(req, res, cardActivateMatch[1]!);
+        return;
+      }
+      if (req.method === 'POST') {
+        await handleActivateCard(req, res, cardActivateMatch[1]!);
+        return;
+      }
+    }
+    const cardEditMatch = pathname.match(/^\/cards\/([^/]+)\/edit$/);
+    if (cardEditMatch) {
+      if (req.method === 'GET') {
+        await handleEditCardForm(req, res, cardEditMatch[1]!);
+        return;
+      }
+      if (req.method === 'POST') {
+        await handleUpdateCard(req, res, cardEditMatch[1]!);
+        return;
+      }
+    }
     const cardMatch = pathname.match(/^\/cards\/([^/]+)$/);
     const cardId = cardMatch?.[1];
     if (req.method === 'GET' && cardId !== undefined) {
-      await handleCardDetail(res, cardId);
+      await handleCardDetail(req, res, cardId);
       return;
     }
     // /stamp and /api/stamp are literal paths and must be registered here —
     // above the `GET /:code` catch-all below — or the catch-all would
     // swallow them (BUILD.md §12 / §18 item 10).
     if (req.method === 'GET' && pathname === '/stamp') {
-      handleStampScreen(res);
+      handleStampScreen(req, res);
       return;
     }
     if (req.method === 'POST' && pathname === '/api/stamp') {
