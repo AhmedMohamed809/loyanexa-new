@@ -2662,14 +2662,14 @@ async function handleUploadCardImage(req: http.IncomingMessage, res: http.Server
     return;
   }
 
-  const contentLengthHeader = req.headers['content-length'];
-  const contentLength = contentLengthHeader ? Number.parseInt(String(contentLengthHeader), 10) : undefined;
-  if (contentLength !== undefined && contentLength > MAX_UPLOAD_REQUEST_BYTES) {
-    sendJson(res, 413, { ok: false, error: `request body too large (over ${MAX_UPLOAD_REQUEST_BYTES} bytes)` });
-    req.destroy();
-    return;
-  }
-
+  // No Content-Length precheck here on purpose — see readMultipart's/
+  // readBodyCapped's own doc comments in multipart.ts. A precheck that
+  // responds and closes before the body has actually finished arriving
+  // reliably breaks a real fetch()-based client's own write with
+  // ECONNRESET (reproduced against the exact API this page's upload JS
+  // uses); readMultipart already drains the body (discarding, never
+  // buffering, past MAX_UPLOAD_REQUEST_BYTES) and only rejects once the
+  // request has fully ended, which is what makes it safe to respond here.
   let parsed: Awaited<ReturnType<typeof readMultipart>>;
   try {
     parsed = await readMultipart(req, req.headers['content-type'], MAX_UPLOAD_REQUEST_BYTES);

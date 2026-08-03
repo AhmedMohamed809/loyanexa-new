@@ -45,26 +45,47 @@ export function extractBoundary(contentType: string | undefined): string | undef
 }
 
 /**
- * Reads `req`'s body into a single Buffer, rejecting once more than
- * `maxBytes` has arrived — the request is destroyed immediately rather than
- * left to keep streaming into memory (this is a public, unauthenticated
- * endpoint; an unbounded body read is the denial-of-service surface BUILD.md
- * §18 warns about generally and this upload path specifically invites).
+ * Reads `req`'s body into a single Buffer, capped at `maxBytes` — once that
+ * many bytes have arrived, further chunks are discarded rather than
+ * buffered (memory stays bounded regardless of how large the client's
+ * declared or actual body is; this is a public, unauthenticated endpoint,
+ * and an unbounded body read is exactly the denial-of-service surface
+ * BUILD.md §18 warns about). The promise only settles once the request has
+ * actually finished (`'end'`) — it does *not* reject the instant the cap is
+ * crossed.
+ *
+ * That "wait for end" part is deliberate, not an oversight: `req` and the
+ * caller's `res` share one TCP socket. Rejecting (and the caller then
+ * responding + closing) while the client is still mid-write of a large
+ * body reliably breaks the client's own write with `ECONNRESET` — verified
+ * against Node's own `fetch()`/`FormData` (the exact API the card
+ * designer's upload JS uses), both with an immediate `req.destroy()` and
+ * with `Connection: close` and no destroy at all. Draining to the real end
+ * of the body first (discarding, so it costs nothing but a little time —
+ * never memory) means the client has always finished its own write before
+ * the caller ever writes a response, so there is no socket left to race.
+ * The tradeoff — a slow/never-ending body delays the error response rather
+ * than cutting it off instantly — is the same one every other route in
+ * this app already accepts (none of them impose a request timeout either);
+ * it is not a new gap introduced here.
  */
 export function readBodyCapped(req: http.IncomingMessage, maxBytes: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     let size = 0;
+    let overLimit = false;
     const chunks: Buffer[] = [];
     req.on('data', (chunk: Buffer) => {
       size += chunk.length;
       if (size > maxBytes) {
-        reject(httpError(413, `request body too large (over ${maxBytes} bytes)`));
-        req.destroy();
-        return;
+        overLimit = true;
+        return; // keep draining — nothing further is buffered.
       }
       chunks.push(chunk);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('end', () => {
+      if (overLimit) reject(httpError(413, `request body too large (over ${maxBytes} bytes)`));
+      else resolve(Buffer.concat(chunks));
+    });
     req.on('error', reject);
   });
 }
@@ -130,14 +151,22 @@ export function parseMultipartBuffer(buf: Buffer, boundary: string): ParsedMulti
   return { files, fields };
 }
 
-/** Reads and parses a multipart/form-data request body, capped at `maxBytes` total. */
+/**
+ * Reads and parses a multipart/form-data request body, capped at
+ * `maxBytes` total. The body is drained via `readBodyCapped` *before* the
+ * boundary is even checked, deliberately — every error path here (missing
+ * boundary, over the cap, malformed body) must be reachable only after the
+ * request has fully finished arriving, or a caller that responds and closes
+ * on the resulting rejection reintroduces the write-race `readBodyCapped`'s
+ * own doc comment describes.
+ */
 export async function readMultipart(
   req: http.IncomingMessage,
   contentType: string | undefined,
   maxBytes: number
 ): Promise<ParsedMultipart> {
+  const buf = await readBodyCapped(req, maxBytes);
   const boundary = extractBoundary(contentType);
   if (!boundary) throw httpError(400, 'expected multipart/form-data with a boundary');
-  const buf = await readBodyCapped(req, maxBytes);
   return parseMultipartBuffer(buf, boundary);
 }

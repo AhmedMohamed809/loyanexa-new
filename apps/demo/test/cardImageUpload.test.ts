@@ -161,7 +161,10 @@ test('GET /img/:hash 404s for a well-formed but unknown hash', async () => {
   assert.equal(res.status, 404);
 });
 
-test('an upload over 2 MB is rejected with 413 and a clear message', async () => {
+test('an upload over 2 MB (but under the request-level cap) is rejected with 413 and a clear message', async () => {
+  // Sized so the raw file part alone trips the post-parse "file.data.length
+  // > MAX_UPLOAD_BYTES" check in server.ts, i.e. the whole multipart body
+  // is read successfully first — the easy case, no draining/closing race.
   const { merchantId, card } = await makeCard();
   try {
     const oversized = Buffer.alloc(2 * 1024 * 1024 + 1024, 7);
@@ -173,6 +176,35 @@ test('an upload over 2 MB is rejected with 413 and a clear message', async () =>
     const json = (await res.json()) as { ok: boolean; error: string };
     assert.equal(json.ok, false);
     assert.match(json.error, /2 MB|byte/i);
+  } finally {
+    await cleanupMerchant(merchantId);
+  }
+});
+
+test('an upload whose *declared* size exceeds the request-level cap gets a real 413 JSON response over fetch(), not a connection reset', async () => {
+  // This is the case that actually exercises sendJsonAndClose: the request
+  // body is well over MAX_UPLOAD_REQUEST_BYTES, so the Content-Length
+  // precheck in handleUploadCardImage rejects before ever fully reading the
+  // body. Using the platform fetch() + FormData (the same API the card
+  // designer's own upload JS uses) is deliberate — a naive `req.destroy()`
+  // synchronous with the response write reproduced as a bare `fetch failed`
+  // / ECONNRESET here rather than a readable 413, because destroying the
+  // shared socket raced the client's read of the response.
+  const { merchantId, card } = await makeCard();
+  try {
+    const huge = Buffer.alloc(5 * 1024 * 1024, 9); // 5 MB, well past MAX_UPLOAD_REQUEST_BYTES (~2.06 MB)
+    const body = new FormData();
+    body.append('cover', new Blob([huge], { type: 'image/png' }), 'huge.png');
+
+    const res = await fetch(`${server.baseUrl}/cards/${card.id}/image`, { method: 'POST', body });
+    assert.equal(res.status, 413, 'expected a real 413 response, not a thrown/rejected fetch()');
+    const json = (await res.json()) as { ok: boolean; error: string };
+    assert.equal(json.ok, false);
+    assert.match(json.error, /large/i);
+
+    // The card must be completely untouched by a rejected upload.
+    const after = await prisma.card.findUniqueOrThrow({ where: { id: card.id } });
+    assert.equal(after.coverHash, null);
   } finally {
     await cleanupMerchant(merchantId);
   }
