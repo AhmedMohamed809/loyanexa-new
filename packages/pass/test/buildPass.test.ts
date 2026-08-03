@@ -164,6 +164,55 @@ test('a built pass has all eight members at the archive root, matching manifest 
   }
 });
 
+test('a logo.png/logo@2x.png supplied in PassImages ends up in the archive, the manifest, and nowhere else when omitted', () => {
+  const { certPath, keyPath, dir: certDir } = makeSelfSignedCert();
+  const outDir = mkdtempSync(path.join(tmpdir(), 'loyanexa-pass-test-logo-'));
+  try {
+    const credentials: PassCredentials = {
+      teamId: 'TESTTEAM1234',
+      passTypeId: 'pass.test.loyanexa',
+      certPath,
+      keyPath,
+      wwdrPath: certPath,
+    };
+    const content: PassContent = {
+      serialNumber: 'LOGOSERIAL0001',
+      organizationName: 'Test Cafe',
+      description: 'LoyaNexa loyalty card',
+      backgroundColor: '#203757',
+      foregroundColor: '#FFFFFF',
+      barcodeMessage: 'LOGOSERIAL0001',
+    };
+    const logoBytes = Buffer.from('loyanexa-test-logo');
+    const images: PassImages = { ...tinyImages(), 'logo.png': logoBytes, 'logo@2x.png': logoBytes };
+
+    const archive = buildPass(credentials, content, images);
+    const archivePath = path.join(outDir, 'test.pkpass');
+    writeFileSync(archivePath, archive);
+
+    const names = execFileSync('unzip', ['-Z1', archivePath], { encoding: 'utf8' }).trim().split('\n');
+    assert.ok(names.includes('logo.png'));
+    assert.ok(names.includes('logo@2x.png'));
+    assert.equal(names.length, PASS_MEMBERS.length + 2);
+
+    execFileSync('unzip', ['-q', archivePath, '-d', outDir]);
+    const manifest = JSON.parse(readFileSync(path.join(outDir, 'manifest.json'), 'utf8')) as Record<string, string>;
+    assert.equal(Object.keys(manifest).length, 8, 'manifest covers pass.json + 5 images + 2 logo files');
+    assert.equal(manifest['logo.png'], createHash('sha1').update(logoBytes).digest('hex'));
+
+    // Without a logo supplied at all, the archive still has exactly the
+    // documented eight members — no empty/placeholder logo entries.
+    const withoutLogo = buildPass(credentials, { ...content, serialNumber: 'NOLOGO0001' }, tinyImages());
+    const withoutLogoPath = path.join(outDir, 'nologo.pkpass');
+    writeFileSync(withoutLogoPath, withoutLogo);
+    const namesWithoutLogo = execFileSync('unzip', ['-Z1', withoutLogoPath], { encoding: 'utf8' }).trim().split('\n');
+    assert.deepEqual([...namesWithoutLogo].sort(), [...PASS_MEMBERS].sort());
+  } finally {
+    rmSync(certDir, { recursive: true, force: true });
+    rmSync(outDir, { recursive: true, force: true });
+  }
+});
+
 test('buildPassJson omits webServiceURL/authenticationToken and defaults labelColor to foregroundColor', () => {
   const credentials: PassCredentials = {
     teamId: 'TESTTEAM1234',
