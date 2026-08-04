@@ -232,6 +232,43 @@ test('every merchant page renders the bottom tab bar, and the top nav carries a 
   }
 });
 
+test('EVERY merchant page shares one chrome — including /stamp, which renders its own shell', async () => {
+  // /stamp does not go through layout(): it needs camera CSS no other page
+  // wants, and a staff session gets a different header. That standalone shell
+  // had drifted from layout()'s copy in three visible ways — its :root never
+  // declared --sunk so the top bar rendered flat against the canvas, it never
+  // declared .btn at all so its sign-out came out as a raw browser button,
+  // and it never got the bottom tab bar. Both shells now emit CHROME_CSS.
+  //
+  // This walks every merchant page rather than spot-checking one, because the
+  // failure was a page being *left out*, which a single-page test cannot see.
+  for (const path of [
+    '/app',
+    '/customers',
+    '/reports',
+    '/stamp',
+    '/notifications',
+    '/settings',
+    '/cards/new',
+    '/cards/new/templates',
+  ]) {
+    const res = await fetch(`${server.baseUrl}${path}`, { headers: { Cookie: ownerA.cookie } });
+    assert.equal(res.status, 200, `${path} should render`);
+    const html = await res.text();
+
+    assert.match(html, /class="tabbar"/, `${path} is missing the bottom tab bar`);
+    assert.match(html, /--sunk: #162338/, `${path} is missing the --sunk token its header background uses`);
+    assert.match(html, /\.btn \{/, `${path} renders .btn markup but never defines the rules`);
+    assert.match(html, /\.tabbar \{ display: none; \}/, `${path} must hide the tab bar on desktop`);
+    // One shared block, not two copies fighting each other.
+    assert.equal(
+      (html.match(/:root \{/g) ?? []).length,
+      1,
+      `${path} has more than one :root block — the chrome has been copied again`
+    );
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Card deletion
 // ---------------------------------------------------------------------------
