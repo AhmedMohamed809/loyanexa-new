@@ -130,6 +130,14 @@ import {
   type UploadKind,
 } from './cardImages.ts';
 import { readMultipart } from './multipart.ts';
+import {
+  findTemplate,
+  findTemplateByCode,
+  searchTemplates,
+  groupByCategory,
+  type CardTemplate,
+  type TemplateCategory,
+} from './cardTemplates.ts';
 import type { ImageRef, StripSpec, StampSource, Fit, BuiltinIconId } from '../../packages/image/src/index.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1195,6 +1203,27 @@ function layout(title: string, bodyHtml: string, active?: NavKey, lang: Lang = '
   .preview-panel { text-align: center; background: var(--sunk); border: 1px dashed var(--line); border-radius: var(--radius-lg); padding: 20px; }
   .preview-panel img { max-width: 100%; }
   .error { background: rgba(239,68,68,.12); border: 1px solid rgba(239,68,68,.35); color: #FCA5A5; border-radius: 12px; padding: 12px 16px; margin-bottom: 18px; font-size: 14px; }
+  /* A caution that is not an error: the card-delete consequences, an
+     unrecognised template code. Amber rather than red — the user has not
+     done anything wrong yet. */
+  .warn { background: rgba(247,178,103,.10); border: 1px solid rgba(247,178,103,.32); color: var(--amber); border-radius: 12px; padding: 12px 16px; margin-bottom: 18px; font-size: 14px; line-height: 1.5; }
+  .ok-banner { background: rgba(34,197,94,.10); border: 1px solid rgba(34,197,94,.32); color: #86EFAC; border-radius: 12px; padding: 12px 16px; margin-bottom: 18px; font-size: 14px; }
+
+  /* Template gallery (BUILD.md §8.4). Reuses .cards-grid so a template tile
+     and a real card tile line up on the same grid. */
+  .tpl-search { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+  .tpl-tile {
+    display: block; background: var(--paper); border: 1px solid var(--line);
+    border-radius: var(--radius-lg); overflow: hidden; text-decoration: none; color: inherit;
+  }
+  .tpl-tile:hover { border-color: var(--accent); }
+  .tpl-tile img { display: block; width: 100%; height: auto; background: var(--sunk); }
+  .tpl-tile .meta { padding: 14px 16px; border-top: 1px solid var(--line); }
+  .tpl-tile .meta h3 { margin: 0 0 4px; font-size: 15px; color: var(--ink); }
+  .tpl-tile .meta p { margin: 0 0 4px; font-size: 13px; color: var(--ink-2); }
+  .tpl-tile .tpl-sub { color: var(--ink-3); font-size: 12px; }
+  .tpl-tile .tpl-sub code { font-family: inherit; letter-spacing: .04em; }
+  .tpl-tile .btn.small { margin-top: 10px; }
   code.pill { background: var(--sunk); border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; font-size: 13px; color: var(--ink-2); font-family: inherit; }
   .kv { display: grid; grid-template-columns: 140px 1fr; gap: 10px 16px; font-size: 15px; }
   .kv dt { color: var(--ink-3); }
@@ -1896,7 +1925,10 @@ async function handleCardsList(req: http.IncomingMessage, res: http.ServerRespon
            <h1>${escapeHtml(t(lang, 'cardsListTitle'))}</h1>
            <p class="muted">${escapeHtml(t(lang, cards.length === 1 ? 'cardsListCountOne' : 'cardsListCountMany', { count: arabicDigits(cards.length, lang) }))}</p>
          </div>
-         <a class="btn" href="/cards/new">${escapeHtml(t(lang, 'createCardButton'))}</a>
+         <div>
+           <a class="btn" href="/cards/new/templates">${escapeHtml(t(lang, 'templatesBrowseButton'))}</a>
+           <a class="btn secondary" href="/cards/new">${escapeHtml(t(lang, 'createCardButton'))}</a>
+         </div>
        </div>
        <div class="cards-grid">
          ${cards
@@ -1914,7 +1946,10 @@ async function handleCardsList(req: http.IncomingMessage, res: http.ServerRespon
     : `<div class="panel empty">
          <h1>${escapeHtml(t(lang, 'cardsEmptyTitle'))}</h1>
          <p class="muted">${escapeHtml(t(lang, 'cardsEmptyBody'))}</p>
-         <p><a class="btn" href="/cards/new">${escapeHtml(t(lang, 'createCardButton'))}</a></p>
+         <p>
+           <a class="btn" href="/cards/new/templates">${escapeHtml(t(lang, 'templatesBrowseButton'))}</a>
+           <a class="btn secondary" href="/cards/new">${escapeHtml(t(lang, 'templatesScratchButton'))}</a>
+         </p>
        </div>`;
 
   sendHtml(res, 200, layout(t(lang, 'cardsListTitle'), body, 'cards', lang));
@@ -1977,10 +2012,12 @@ interface NewCardFormValues {
   inactive?: string;
   /** The card's own language (Card.lang, BUILD.md §8.5 step 3) — 'ar' | 'en', defaulting to 'ar' (Card.lang's own schema default) when unset. Renamed to `cardLang` on destructure below so it never shadows this function's own `lang` parameter, which is the merchant's *dashboard* language and picks the surrounding chrome, never which tile starts checked. */
   lang?: string;
+  /** Set when the form was opened from the gallery (BUILD.md §8.4), so the stamp icon travels with the colours instead of being lost between picking a template and creating the card. */
+  template?: CardTemplate;
 }
 
 function renderNewCardForm(
-  { name = '', rewardText = '', goal = 8, bg = '#203757', active = '#F96400', inactive = '#8794A5', lang: cardLang = 'ar' }: NewCardFormValues = {},
+  { name = '', rewardText = '', goal = 8, bg = '#203757', active = '#F96400', inactive = '#8794A5', lang: cardLang = 'ar', template }: NewCardFormValues = {},
   error?: string,
   lang: Lang = 'en'
 ): string {
@@ -1992,19 +2029,34 @@ function renderNewCardForm(
     active,
     inactive,
   });
+  if (template) {
+    previewQs.set('stampSource', 'builtin');
+    previewQs.set('builtinIcon', template.builtinIcon);
+  }
 
   const body = `
     <h1>${escapeHtml(t(lang, 'newCardTitle'))}</h1>
     ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
+    ${template ? `<div class="ok-banner">${escapeHtml(t(lang, 'templatesAppliedBanner'))}</div>` : ''}
     <div class="panel">
       <form method="POST" action="/cards">
+        ${
+          template
+            ? `<input type="hidden" name="stampSource" value="builtin">
+        <input type="hidden" name="builtinIcon" value="${escapeHtml(template.builtinIcon)}">`
+            : ''
+        }
         <div class="field">
           <label for="name">${escapeHtml(t(lang, 'newCardNameLabel'))}</label>
           <input type="text" id="name" name="name" required maxlength="80" value="${escapeHtml(name)}" placeholder="${escapeHtml(t(lang, 'newCardNamePlaceholder'))}">
         </div>
         <div class="field">
           <label for="rewardText">${escapeHtml(t(lang, 'newCardRewardLabel'))}</label>
-          <input type="text" id="rewardText" name="rewardText" required maxlength="120" value="${escapeHtml(rewardText)}" placeholder="${escapeHtml(t(lang, 'newCardRewardPlaceholder'))}">
+          <input type="text" id="rewardText" name="rewardText" required maxlength="120" value="${escapeHtml(rewardText)}" placeholder="${escapeHtml(t(lang, 'newCardRewardPlaceholder'))}"${
+            template
+              ? ` data-seed-ar="${escapeHtml(template.rewardAr)}" data-seed-en="${escapeHtml(template.rewardEn)}"`
+              : ''
+          }>
         </div>
         <div class="field">
           <label for="goal">${escapeHtml(t(lang, 'newCardGoalLabel'))} <span id="goalVal">${goalNum}</span></label>
@@ -2054,9 +2106,35 @@ ${LANG_TOGGLE_SCRIPT}
             active: activeInput.value,
             inactive: inactiveInput.value
           });
+          // Keep the template's stamp icon in the live preview. Without
+          // this, dragging the goal slider after picking a template would
+          // silently drop the icon back to a plain circle, and the created
+          // card would then not match what was previewed.
+          var iconField = document.querySelector('input[name="builtinIcon"]');
+          if (iconField && iconField.value) {
+            qs.set('stampSource', 'builtin');
+            qs.set('builtinIcon', iconField.value);
+          }
           // Point the <img> at the render endpoint — the preview is the same
           // renderer used everywhere else, never a re-implementation here.
           preview.src = '/preview.png?' + qs.toString();
+        }
+
+        // A template seeds its reward text in the card's default language
+        // (Arabic). If the merchant then switches the card to English, the
+        // seed should follow — but only while it is still untouched. Once
+        // they have typed their own wording it is theirs, and no toggle may
+        // overwrite it.
+        var rewardInput = document.getElementById('rewardText');
+        if (rewardInput && rewardInput.dataset.seedAr) {
+          document.querySelectorAll('input[name="lang"]').forEach(function (radio) {
+            radio.addEventListener('change', function () {
+              var seeds = [rewardInput.dataset.seedAr, rewardInput.dataset.seedEn];
+              if (seeds.indexOf(rewardInput.value.trim()) === -1) return;
+              rewardInput.value =
+                radio.value === 'en' ? rewardInput.dataset.seedEn : rewardInput.dataset.seedAr;
+            });
+          });
         }
 
         goalInput.addEventListener('input', refresh);
@@ -2069,8 +2147,142 @@ ${LANG_TOGGLE_SCRIPT}
   return layout(t(lang, 'newCardTitle'), body, 'cards', lang);
 }
 
-async function handleNewCardForm(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-  sendHtml(res, 200, renderNewCardForm({}, undefined, resolveLang(req)));
+async function handleNewCardForm(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
+  const lang = resolveLang(req);
+  // ?template=<id> arrives from the gallery. An unknown id is ignored rather
+  // than erroring: a stale bookmark should open an ordinary blank form, not
+  // an error page.
+  const tpl = findTemplate(url.searchParams.get('template') ?? '');
+  if (!tpl) {
+    sendHtml(res, 200, renderNewCardForm({}, undefined, lang));
+    return;
+  }
+  sendHtml(
+    res,
+    200,
+    renderNewCardForm(
+      {
+        rewardText: tpl.rewardAr, // the form opens on Card.lang's own default, 'ar'
+        goal: tpl.stampsGoal,
+        bg: tpl.bgColor,
+        active: tpl.stampActive,
+        inactive: tpl.stampInactive,
+        lang: 'ar',
+        template: tpl,
+      },
+      undefined,
+      lang
+    )
+  );
+}
+
+/**
+ * `GET /cards/new/templates` — BUILD.md §8.4's template gallery: search,
+ * import by code, grouped by category, each rendering as a real card
+ * preview.
+ *
+ * "A real card preview" is meant literally — each tile points its `<img>` at
+ * `/preview.png` with the template's own parameters, so what the merchant
+ * browses is produced by the same renderer that will draw the finished pass.
+ * A hand-drawn mock-up here would be a second implementation of the strip,
+ * free to drift from the real one.
+ */
+function handleTemplateGallery(req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
+  const lang = resolveLang(req);
+  const query = (url.searchParams.get('q') ?? '').slice(0, 60);
+  const code = (url.searchParams.get('code') ?? '').slice(0, 20);
+
+  // Import by code wins over the search box: it is an explicit request for
+  // one specific template, so on a hit go straight to the prefilled form.
+  if (code) {
+    const byCode = findTemplateByCode(code);
+    if (byCode) {
+      res.writeHead(303, { Location: `/cards/new?template=${encodeURIComponent(byCode.id)}` });
+      res.end();
+      return;
+    }
+  }
+  const codeError = code && !findTemplateByCode(code) ? t(lang, 'templatesCodeInvalid') : '';
+
+  const catLabel: Record<TemplateCategory, string> = {
+    food: t(lang, 'templatesCatFood'),
+    beauty: t(lang, 'templatesCatBeauty'),
+    fitness: t(lang, 'templatesCatFitness'),
+    services: t(lang, 'templatesCatServices'),
+  };
+
+  const matches = searchTemplates(query);
+  const groups = groupByCategory(matches);
+
+  const tile = (tpl: CardTemplate): string => {
+    const qs = new URLSearchParams({
+      goal: String(tpl.stampsGoal),
+      filled: String(defaultFilled(tpl.stampsGoal)),
+      bg: tpl.bgColor,
+      active: tpl.stampActive,
+      inactive: tpl.stampInactive,
+      stampSource: 'builtin',
+      builtinIcon: tpl.builtinIcon,
+    });
+    const label = lang === 'ar' ? tpl.labelAr : tpl.labelEn;
+    const reward = lang === 'ar' ? tpl.rewardAr : tpl.rewardEn;
+    return `<a class="tpl-tile" href="/cards/new?template=${encodeURIComponent(tpl.id)}">
+          <img src="/preview.png?${qs.toString()}" alt="" width="375" height="144" loading="lazy">
+          <div class="meta">
+            <h3>${escapeHtml(label)}</h3>
+            <p>${escapeHtml(reward)}</p>
+            <p class="tpl-sub">${escapeHtml(t(lang, 'templatesGoalSummary', { goal: arabicDigits(tpl.stampsGoal, lang) }))} · <code>${escapeHtml(tpl.code)}</code></p>
+            <span class="btn small">${escapeHtml(t(lang, 'templatesUseButton'))}</span>
+          </div>
+        </a>`;
+  };
+
+  const body = `
+    <div class="row" style="margin-bottom:6px;">
+      <h1 style="margin:0;">${escapeHtml(t(lang, 'templatesTitle'))}</h1>
+      <a class="btn secondary" href="/cards/new">${escapeHtml(t(lang, 'templatesScratchButton'))}</a>
+    </div>
+    <p class="muted" style="margin-top:0;">${escapeHtml(t(lang, 'templatesSubtitle'))}</p>
+
+    <div class="panel">
+      <form method="GET" action="/cards/new/templates" class="tpl-search">
+        <div class="field" style="flex:1;min-width:200px;margin-bottom:0;">
+          <label for="q">${escapeHtml(t(lang, 'templatesSearchLabel'))}</label>
+          <input type="search" id="q" name="q" value="${escapeHtml(query)}"
+            placeholder="${escapeHtml(t(lang, 'templatesSearchPlaceholder'))}"
+            autocapitalize="none" autocorrect="off" spellcheck="false">
+        </div>
+        <button class="btn secondary" type="submit">${escapeHtml(t(lang, 'templatesSearchButton'))}</button>
+      </form>
+      <form method="GET" action="/cards/new/templates" class="tpl-search" style="margin-top:14px;">
+        <div class="field" style="flex:1;min-width:200px;margin-bottom:0;">
+          <label for="code">${escapeHtml(t(lang, 'templatesCodeLabel'))}</label>
+          <input type="text" id="code" name="code" value=""
+            placeholder="${escapeHtml(t(lang, 'templatesCodePlaceholder'))}"
+            dir="ltr" autocapitalize="characters" autocorrect="off" spellcheck="false">
+        </div>
+        <button class="btn secondary" type="submit">${escapeHtml(t(lang, 'templatesCodeButton'))}</button>
+      </form>
+      ${codeError ? `<p class="warn" style="margin-bottom:0;">${escapeHtml(codeError)}</p>` : ''}
+    </div>
+
+    ${
+      groups.length === 0
+        ? `<div class="panel empty">
+             <p>${escapeHtml(t(lang, 'templatesNoMatches'))}</p>
+             <a class="btn secondary" href="/cards/new/templates">${escapeHtml(t(lang, 'templatesClearSearch'))}</a>
+           </div>`
+        : groups
+            .map(
+              (group) => `<h2 style="margin-top:26px;">${escapeHtml(catLabel[group.category])}</h2>
+      <div class="cards-grid">
+        ${group.templates.map(tile).join('\n        ')}
+      </div>`
+            )
+            .join('\n    ')
+    }
+  `;
+  sendHtml(res, 200, layout(t(lang, 'templatesTitle'), body, 'cards', lang));
 }
 
 // ---------------------------------------------------------------------------
@@ -2101,6 +2313,16 @@ async function handleCreateCard(req: http.IncomingMessage, res: http.ServerRespo
   // back to Card.lang's own schema default, matching "the default when
   // nothing is chosen is still ar".
   const cardLang = String(fields.lang ?? '').trim() === 'en' ? 'en' : 'ar';
+
+  // The template's stamp icon, arriving as a hidden field. Whitelisted
+  // through the renderer's own isBuiltinIconId() rather than trusted: a
+  // hidden input is just a POST parameter, and an unrecognised id would
+  // otherwise be stored and handed to the strip renderer on every draw.
+  const rawIcon = String(fields.builtinIcon ?? '').trim();
+  const templateIcon: BuiltinIconId | undefined =
+    String(fields.stampSource ?? '').trim() === 'builtin' && isBuiltinIconId(rawIcon)
+      ? rawIcon
+      : undefined;
 
   const errors: string[] = [];
   if (!name) errors.push(t(lang, 'newCardNameRequired'));
@@ -2159,6 +2381,14 @@ async function handleCreateCard(req: http.IncomingMessage, res: http.ServerRespo
           stampInactive,
           rewardText,
           lang: cardLang,
+          // From a template (BUILD.md §8.4). Validated, never trusted: these
+          // arrive as hidden form fields, so a crafted POST could name any
+          // icon. isBuiltinIconId() is the same whitelist the renderer uses,
+          // and an unknown value falls back to the plain circle rather than
+          // reaching the strip renderer as an unknown glyph id.
+          ...(templateIcon
+            ? { stampSource: 'builtin', builtinIcon: templateIcon }
+            : {}),
         },
       });
       break;
@@ -6099,10 +6329,18 @@ const server = http.createServer(async (req, res) => {
       await handleCardsList(req, res, merchant);
       return;
     }
+    // Registered before /cards/new so the more specific path wins — the
+    // catch-all order rule from docs/CLAUDE.md applies within a prefix too.
+    if (req.method === 'GET' && pathname === '/cards/new/templates') {
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      handleTemplateGallery(req, res, url);
+      return;
+    }
     if (req.method === 'GET' && pathname === '/cards/new') {
       const merchant = await requireMerchant(req, res);
       if (!merchant) return;
-      await handleNewCardForm(req, res);
+      await handleNewCardForm(req, res, url);
       return;
     }
     if (req.method === 'POST' && pathname === '/cards') {
