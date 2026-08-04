@@ -1214,12 +1214,12 @@ function renderSignInForm(opts: { email?: string; next: string; error?: string }
       <input type="hidden" name="next" value="${escapeHtml(next)}">
       <div class="field">
         <label for="email">${escapeHtml(t(lang, 'signInEmailLabel'))}</label>
-        <input type="text" id="email" name="email" required autocomplete="email" value="${escapeHtml(email)}">
+        <input type="email" id="email" name="email" required autocomplete="email" inputmode="email" dir="ltr" autocapitalize="none" autocorrect="off" spellcheck="false" value="${escapeHtml(email)}">
       </div>
       <div class="field">
         <label for="password">${escapeHtml(t(lang, 'signInPasswordLabel'))}</label>
         <div class="hex-row">
-          <input type="password" id="password" name="password" required autocomplete="current-password" style="flex:1;">
+          <input type="password" id="password" name="password" required autocomplete="current-password" dir="ltr" autocapitalize="none" autocorrect="off" spellcheck="false" style="flex:1;">
           <button type="button" class="btn secondary small" id="toggleSignInPassword">${escapeHtml(t(lang, 'signInShowPassword'))}</button>
         </div>
       </div>
@@ -1258,11 +1258,11 @@ function renderSignUpForm(
       </div>
       <div class="field">
         <label for="email">${escapeHtml(t(lang, 'signUpEmailLabel'))}</label>
-        <input type="text" id="email" name="email" required autocomplete="email" value="${escapeHtml(email)}">
+        <input type="email" id="email" name="email" required autocomplete="email" inputmode="email" dir="ltr" autocapitalize="none" autocorrect="off" spellcheck="false" value="${escapeHtml(email)}">
       </div>
       <div class="field">
         <label for="password">${escapeHtml(t(lang, 'signUpPasswordLabel'))}</label>
-        <input type="password" id="password" name="password" required autocomplete="new-password" minlength="${MIN_PASSWORD_LENGTH}">
+        <input type="password" id="password" name="password" required autocomplete="new-password" dir="ltr" autocapitalize="none" autocorrect="off" spellcheck="false" minlength="${MIN_PASSWORD_LENGTH}">
         <p class="field-hint">${escapeHtml(t(lang, 'signUpPasswordHint'))}</p>
       </div>
       <button class="btn" type="submit" style="width:100%;">${escapeHtml(t(lang, 'signUpSubmitButton'))}</button>
