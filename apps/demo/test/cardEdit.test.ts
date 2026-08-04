@@ -220,6 +220,25 @@ test('a mixed patch (cosmetic + economic) is rejected wholesale once a pass exis
   }
 });
 
+test('a mixed patch (lang + economic) is also rejected wholesale — a language change in the same request as a locked field does not sneak through', async () => {
+  const fx = await makeFixture();
+  try {
+    await addPass(fx);
+
+    const result = await updateCard(fx.cardId, fx.merchantId, { lang: 'en', stampsGoal: 99 });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.reason, 'locked');
+    assert.deepEqual(result.lockedFields, ['stampsGoal']);
+
+    const after = await prisma.card.findUniqueOrThrow({ where: { id: fx.cardId } });
+    assert.equal(after.lang, 'ar', 'the lang half of a locked patch must not be applied either — this is a wholesale rejection, not a partial one');
+    assert.equal(after.stampsGoal, 8);
+  } finally {
+    await cleanup(fx);
+  }
+});
+
 test('re-submitting the same economic value a card already has is not an "attempt to change" and is allowed', async () => {
   const fx = await makeFixture();
   try {

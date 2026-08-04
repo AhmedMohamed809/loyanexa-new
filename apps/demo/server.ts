@@ -3100,6 +3100,17 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
   // `.pkpass` cache-key fix above (PKPASS_STORE / pkpassCacheKey) actually
   // visible to a customer promptly instead of only on their device's next
   // unprompted poll.
+  //
+  // pushCardUpdate only wakes Apple devices to re-poll (they then rebuild
+  // from the now-current Card row, language included). It does not, and
+  // never has for any card-designer field (colour/name/logo edits behave
+  // identically), proactively PATCH an already-saved Google Wallet
+  // LoyaltyObject — Google has no per-card "class" field for language, and
+  // ensureLoyaltyClass only re-patches at next issuance. A language-only
+  // edit therefore relocalises Google Wallet's balance string at the
+  // customer's *next stamp* (pushGoogleWalletUpdate, driven by
+  // stamp.ts's StampOutcome.lang), not immediately on save — a pre-existing
+  // limitation shared by every other design edit, not something new here.
   setImmediate(() => {
     pushCardUpdate(id).catch((err) => {
       console.error(`[push] card-edit live-update fan-out threw for card ${id}:`, err);
