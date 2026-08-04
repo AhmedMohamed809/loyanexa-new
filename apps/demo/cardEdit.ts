@@ -47,6 +47,17 @@ export type EconomicField = (typeof ECONOMIC_FIELDS)[number];
  * of them are subject to the lock rule below. */
 export const AESTHETIC_FIELDS = [
   'name',
+  /// The card's own language (BUILD.md §8.5 step 3 / §8.9's "Settings"
+  /// step lists it alongside name/expiry, but expiry is economic and
+  /// language is not — it only picks which dictionary/chrome the pass,
+  /// enrol page and geofence text render in, never how many stamps
+  /// something costs). Presentation, not economics: stays editable
+  /// forever, same as colours and images. A write here still bumps
+  /// Card.updatedAt, which is what invalidates the .pkpass cache
+  /// (pkpassCache.ts) and pushes the new language to already-issued
+  /// passes via server.ts's pushCardUpdate, exactly like any other
+  /// design edit.
+  'lang',
   'bgColor',
   'bgOpacity',
   'fgColor',
@@ -84,6 +95,7 @@ export type AestheticField = (typeof AESTHETIC_FIELDS)[number];
  */
 export interface CardEditInput {
   name?: string;
+  lang?: string;
   bgColor?: string;
   bgOpacity?: number;
   fgColor?: string;

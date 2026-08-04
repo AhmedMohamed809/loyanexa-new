@@ -263,6 +263,16 @@ export const en = {
   newCardBgLabel: 'Card background',
   newCardActiveLabel: 'Active stamp',
   newCardInactiveLabel: 'Inactive stamp',
+  // Card language (BUILD.md §8.5 step 3 / §8.9) — a presentation choice, not
+  // an economic one (cardEdit.ts's AESTHETIC_FIELDS), so it stays editable
+  // forever, alongside colours and images. Shared by both the create form
+  // and the edit designer, same convention as newCardNameLabel. The two
+  // option names themselves ("English"/"العربية") are never run through
+  // t() — a language's own name is not translated, it is written in its
+  // own script (docs/COPY.md's own convention, matched by the pre-existing
+  // <option>English</option>/<option>العربية</option> in public/index.html).
+  newCardLangLabel: 'Card language',
+  newCardLangHint: 'The language your customers see, on the card and the join page. You can change this anytime.',
   cancelButton: 'Cancel',
   newCardNameRequired: 'Card name is required.',
   newCardNameTooLong: 'Card name is too long (max 80 characters).',

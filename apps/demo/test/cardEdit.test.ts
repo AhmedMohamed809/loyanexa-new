@@ -261,6 +261,55 @@ test("editing a card's colours bumps Card.updatedAt — this is what lets the .p
 });
 
 // ---------------------------------------------------------------------------
+// Card language (BUILD.md §8.5 step 3 / §8.9) — a presentation field, not
+// an economic one: 'lang' lives in AESTHETIC_FIELDS, so it must behave
+// exactly like the images/colours cases above — always editable, even once
+// a pass exists — while stampsGoal on the very same card stays locked.
+// ---------------------------------------------------------------------------
+
+test('changing lang on a card that already has passes succeeds (it is a presentation field), while stampsGoal on the very same card still returns 409', async () => {
+  const fx = await makeFixture();
+  try {
+    await addPass(fx);
+
+    const langResult = await updateCard(fx.cardId, fx.merchantId, { lang: 'en' });
+    assert.equal(langResult.ok, true, 'a language edit must succeed on a card that already has passes');
+    if (!langResult.ok) return;
+    assert.equal(langResult.card.lang, 'en');
+
+    const goalResult = await updateCard(fx.cardId, fx.merchantId, { stampsGoal: 15 });
+    assert.equal(goalResult.ok, false, 'stampsGoal must still be locked on the very same card');
+    if (goalResult.ok) return;
+    assert.equal(goalResult.reason, 'locked');
+    assert.deepEqual(goalResult.lockedFields, ['stampsGoal']);
+
+    const after = await prisma.card.findUniqueOrThrow({ where: { id: fx.cardId } });
+    assert.equal(after.lang, 'en', 'the successful language edit must persist');
+    assert.equal(after.stampsGoal, 8, 'the rejected economic edit must leave stampsGoal untouched');
+  } finally {
+    await cleanup(fx);
+  }
+});
+
+test('setting lang bumps Card.updatedAt (invalidates the .pkpass cache key, same as any other design edit) — this is what pushes a language change to already-issued passes', async () => {
+  const fx = await makeFixture();
+  try {
+    const before = await prisma.card.findUniqueOrThrow({ where: { id: fx.cardId } });
+    await new Promise((r) => setTimeout(r, 5));
+
+    const result = await updateCard(fx.cardId, fx.merchantId, { lang: 'en' });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.ok(
+      result.card.updatedAt.getTime() > before.updatedAt.getTime(),
+      'a lang-only edit must still bump Card.updatedAt'
+    );
+  } finally {
+    await cleanup(fx);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Location reminders (BUILD.md §9.4/§9.1) — 'locations' is an
 // AESTHETIC_FIELDS entry: always editable, even once a pass exists, and
 // every write bumps Card.updatedAt exactly like any other design edit —

@@ -259,6 +259,8 @@ export const ar: Record<keyof typeof en, string> = {
   newCardBgLabel: 'لون خلفية البطاقة',
   newCardActiveLabel: 'لون الختم النشط',
   newCardInactiveLabel: 'لون الختم غير النشط',
+  newCardLangLabel: 'لغة البطاقة',
+  newCardLangHint: 'اللغة التي يراها عملاؤك، على البطاقة وصفحة الانضمام. يمكنك تغييرها في أي وقت.',
   cancelButton: 'إلغاء',
   newCardNameRequired: 'اسم البطاقة مطلوب.',
   newCardNameTooLong: 'اسم البطاقة طويل جدًا (الحد الأقصى ٨٠ حرفًا).',

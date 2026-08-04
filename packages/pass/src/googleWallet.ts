@@ -298,14 +298,27 @@ export class GoogleWalletClient {
    * which wallet(s) the customer actually used. `reason: 'not_found'`
    * covers the common case — the object was never created because this
    * pass was only ever added to Apple Wallet — and is not an error.
+   *
+   * `opts.balanceText`, when supplied, replaces the default `"{stamps} /
+   * {goal}"` — customer-facing text (BUILD.md §13), so the same
+   * "app layer resolves language, package layer stays language-agnostic"
+   * split as {@link saveLink}'s own `opts` lets the caller localise it
+   * (Arabic-Indic digits on an Arabic card) without this package taking an
+   * i18n dependency of its own. Omitted, the default matches this method's
+   * pre-existing (unlocalised) behaviour, so existing callers keep working.
    */
-  async updateLoyaltyObject(serial: string, stamps: number, goal: number): Promise<UpdateLoyaltyObjectResult> {
+  async updateLoyaltyObject(
+    serial: string,
+    stamps: number,
+    goal: number,
+    opts: { balanceText?: string } = {}
+  ): Promise<UpdateLoyaltyObjectResult> {
     const accessToken = await this.#getAccessToken();
     const objectId = this.#objectId(serial);
     const res = await fetch(`${WALLET_API_BASE}/loyaltyObject/${objectId}`, {
       method: 'PATCH',
       headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ loyaltyPoints: { balance: { string: `${stamps} / ${goal}` } } }),
+      body: JSON.stringify({ loyaltyPoints: { balance: { string: opts.balanceText ?? `${stamps} / ${goal}` } } }),
     });
     if (res.ok) return { ok: true };
     if (res.status === 404) return { ok: false, reason: 'not_found' };
