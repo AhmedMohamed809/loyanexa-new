@@ -250,15 +250,30 @@ export class GoogleWalletClient {
    * {@link ensureLoyaltyClass} first). Pure and synchronous: signing a JWT
    * with a key already in memory needs no network call, unlike every other
    * method here.
+   *
+   * `accountName`/`loyaltyPoints.balance.string` are both customer-facing
+   * text inside the actual Google Wallet card (BUILD.md §13), so this
+   * package — which deliberately has no i18n dependency of its own, see
+   * `LoyaltyObjectPass`/`LoyaltyObjectCard`'s doc comments — takes them
+   * already localized via `opts`, rather than hardcoding English/Western
+   * digits here. `opts` is optional so existing callers keep compiling;
+   * the defaults below match the pre-existing behaviour except for the
+   * word "Member", which this package's caller (apps/demo/server.ts) no
+   * longer needs since every real caller now supplies `accountNameFallback`
+   * itself (BUILD.md §13/docs/COPY.md — "customer", never "member").
    */
-  saveLink(pass: LoyaltyObjectPass, card: LoyaltyObjectCard): string {
+  saveLink(
+    pass: LoyaltyObjectPass,
+    card: LoyaltyObjectCard,
+    opts: { accountNameFallback?: string; balanceText?: string } = {}
+  ): string {
     const loyaltyObject = {
       id: this.#objectId(pass.serial),
       classId: this.#classId(card.id),
       state: 'ACTIVE',
       accountId: pass.serial,
-      accountName: pass.custName?.trim() || 'Member',
-      loyaltyPoints: { balance: { string: `${pass.stamps} / ${card.stampsGoal}` } },
+      accountName: pass.custName?.trim() || opts.accountNameFallback || 'Customer',
+      loyaltyPoints: { balance: { string: opts.balanceText ?? `${pass.stamps} / ${card.stampsGoal}` } },
       barcode: { type: 'QR_CODE', value: pass.serial },
     };
 

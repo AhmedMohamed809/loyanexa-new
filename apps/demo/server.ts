@@ -1486,7 +1486,7 @@ async function handleCreateCard(req: http.IncomingMessage, res: http.ServerRespo
 
   const goalNum = Number.parseInt(String(goalRaw), 10);
   if (!Number.isInteger(goalNum) || goalNum < MIN_GOAL || goalNum > MAX_GOAL) {
-    errors.push(t(lang, 'newCardGoalRange', { min: String(MIN_GOAL), max: String(MAX_GOAL) }));
+    errors.push(t(lang, 'newCardGoalRange', { min: arabicDigits(MIN_GOAL, lang), max: arabicDigits(MAX_GOAL, lang) }));
   }
   if (!HEX_RE.test(bg)) errors.push(t(lang, 'newCardBgInvalid'));
   if (!HEX_RE.test(active)) errors.push(t(lang, 'newCardActiveInvalid'));
@@ -1598,7 +1598,7 @@ async function handleCardDetail(req: http.IncomingMessage, res: http.ServerRespo
     passCount > 0
       ? `<div class="banner">
           <b>${escapeHtml(t(lang, 'lockBannerTitle'))}</b> — ${escapeHtml(t(lang, 'lockBannerReason'))}<br>
-          <span>${escapeHtml(t(lang, 'lockCustomersRegistered', { count: String(passCount) }))}</span>
+          <span>${escapeHtml(t(lang, 'lockCustomersRegistered', { count: arabicDigits(passCount, lang) }))}</span>
         </div>`
       : '';
 
@@ -1910,7 +1910,7 @@ function renderEditCardForm(
         <b>${escapeHtml(t(lang, 'lockBannerTitle'))}</b><br>
         ${escapeHtml(t(lang, 'lockBannerReason'))}<br>
         <p class="chips" style="margin-top:8px;">${lockedFieldChips(lang)}</p>
-        <p style="margin-top:8px;">${escapeHtml(t(lang, 'lockCustomersRegistered', { count: String(passCount) }))}</p>
+        <p style="margin-top:8px;">${escapeHtml(t(lang, 'lockCustomersRegistered', { count: arabicDigits(passCount, lang) }))}</p>
       </div>`
     : '';
   const dis = locked ? 'disabled' : '';
@@ -2657,7 +2657,7 @@ async function handleCustomersList(req: http.IncomingMessage, res: http.ServerRe
       </form>
     </div>
     ${tableOrEmpty}
-    <p class="muted">${escapeHtml(t(lang, 'customersFooter', { shown: String(rows.length), total: String(totalCount) }))}</p>
+    <p class="muted">${escapeHtml(t(lang, 'customersFooter', { shown: arabicDigits(rows.length, lang), total: arabicDigits(totalCount, lang) }))}</p>
   `;
   sendHtml(res, 200, layout(t(lang, 'customersTitle'), body, 'customers', lang));
 }
@@ -2911,13 +2911,20 @@ function renderEnrolPage(card: Card): string {
   // for why this is deliberately short-lived and in-memory only, not a
   // database column.
   const idempotencyKey = crypto.randomBytes(16).toString('base64url');
+  // BUILD.md §8.16 calls this "the highest-value page" and §13 requires the
+  // whole platform to follow the card's own language — this page used to
+  // hardcode `lang="en"` and every string in it regardless of card.lang, so
+  // an Arabic card's own customers landed on an English enrol page. Same
+  // `=== 'en' ? 'en' : 'ar'` coercion resolveLang()/passContent.ts use.
+  const lang: Lang = card.lang === 'en' ? 'en' : 'ar';
+  const dir = lang === 'ar' ? 'rtl' : 'ltr';
 
   return `<!doctype html>
-<html lang="en">
+<html lang="${lang}" dir="${dir}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(card.name)} · Join the loyalty card</title>
+<title>${escapeHtml(card.name)} · ${escapeHtml(t(lang, 'enrolPageTitleSuffix'))}</title>
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; min-height: 100%; }
@@ -2972,31 +2979,31 @@ function renderEnrolPage(card: Card): string {
 <main>
   ${card.logoUrl ? `<img class="enrol-logo" src="${escapeHtml(card.logoUrl)}" alt="${escapeHtml(card.name)}">` : ''}
   <h1>${escapeHtml(card.rewardText)}</h1>
-  <p class="lede">Show this page at ${escapeHtml(card.name)} every visit to collect a stamp.</p>
-  <p class="lede">Collect ${card.stampsGoal} stamps to get your reward.</p>
+  <p class="lede">${escapeHtml(t(lang, 'enrolShowPage', { name: card.name }))}</p>
+  <p class="lede">${escapeHtml(t(lang, 'printStep4', { goal: arabicDigits(card.stampsGoal, lang) }))}</p>
   <div class="strip">
-    <img src="/preview.png?${stripQs.toString()}" alt="${escapeHtml(card.name)} empty stamp card" width="375" height="144">
+    <img src="/preview.png?${stripQs.toString()}" alt="${escapeHtml(t(lang, 'enrolStripAlt', { name: card.name }))}" width="375" height="144">
   </div>
   <form method="POST" action="/${card.linkCode}/pass">
     <input type="hidden" name="idem" value="${escapeHtml(idempotencyKey)}">
     <div class="field">
-      <label for="name">Name <span class="opt">(optional)</span></label>
-      <input type="text" id="name" name="name" maxlength="80" autocomplete="name" placeholder="Your name">
+      <label for="name">${escapeHtml(t(lang, 'enrolNameLabel'))} <span class="opt">(${escapeHtml(t(lang, 'enrolOptional'))})</span></label>
+      <input type="text" id="name" name="name" maxlength="80" autocomplete="name" placeholder="${escapeHtml(t(lang, 'enrolNamePlaceholder'))}">
     </div>
     <div class="field">
-      <label for="phone">Phone <span class="opt">(optional)</span></label>
-      <input type="tel" id="phone" name="phone" maxlength="30" autocomplete="tel" placeholder="Your phone number">
+      <label for="phone">${escapeHtml(t(lang, 'enrolPhoneLabel'))} <span class="opt">(${escapeHtml(t(lang, 'enrolOptional'))})</span></label>
+      <input type="tel" id="phone" name="phone" maxlength="30" autocomplete="tel" placeholder="${escapeHtml(t(lang, 'enrolPhonePlaceholder'))}">
     </div>
     <label class="consent">
       <input type="checkbox" name="consent" required>
-      <span>I agree to join ${escapeHtml(card.name)}'s loyalty card and receive updates about my rewards.</span>
+      <span>${escapeHtml(t(lang, 'enrolConsent', { name: card.name }))}</span>
     </label>
     <div class="wallet-buttons">
-      <button class="cta apple" type="submit" formaction="/${card.linkCode}/pass">Add to Apple Wallet</button>
-      <button class="cta google" type="submit" formaction="/${card.linkCode}/google-pass">Add to Google Wallet</button>
+      <button class="cta apple" type="submit" formaction="/${card.linkCode}/pass">${escapeHtml(t(lang, 'walletAddApple'))}</button>
+      <button class="cta google" type="submit" formaction="/${card.linkCode}/google-pass">${escapeHtml(t(lang, 'walletAddGoogle'))}</button>
     </div>
   </form>
-  <p class="powered">Powered by LoyaNexa</p>
+  <p class="powered">${escapeHtml(t(lang, 'poweredByLoyaNexa'))}</p>
 </main>
 <script>
   // Platform detection is a hint only — see the block comment above this
@@ -3261,9 +3268,20 @@ async function handleIssueGooglePass(
   let saveLink: string;
   try {
     await client.ensureLoyaltyClass({ id: card.id, name: card.name, bgColor: card.bgColor });
+    // accountName/balance are customer-facing text inside the actual saved
+    // Google Wallet card (BUILD.md §13) — localize to the card's own
+    // language here, same as buildPassContentFor() does for Apple Wallet.
+    // packages/pass deliberately has no i18n dependency of its own, so
+    // these come in pre-localized via saveLink()'s opts (see its doc
+    // comment in packages/pass/src/googleWallet.ts).
+    const enrolLang: Lang = card.lang === 'en' ? 'en' : 'ar';
     saveLink = client.saveLink(
       { serial: pass.serial, stamps: pass.stamps, custName: pass.custName || undefined },
-      { id: card.id, stampsGoal: card.stampsGoal }
+      { id: card.id, stampsGoal: card.stampsGoal },
+      {
+        accountNameFallback: t(enrolLang, 'walletAccountNameFallback'),
+        balanceText: `${arabicDigits(pass.stamps, enrolLang)} / ${arabicDigits(card.stampsGoal, enrolLang)}`,
+      }
     );
   } catch (err) {
     if (created) await deleteOrphanedPass(pass.id);

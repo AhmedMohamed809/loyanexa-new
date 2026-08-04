@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>LoyaNexa — Customer Loyalty Made Smarter</title>
-<meta name="description" content="LoyaNexa is an AI-powered loyalty and rewards platform. Grow repeat customers with programs that are simple, smart and fast." />
+<meta name="description" content="LoyaNexa is an AI-powered loyalty and rewards platform. Grow repeat customers with programmes that are simple, smart and fast." />
 <meta name="theme-color" content="#0D1526" />
 <link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTQiIGZpbGw9IiMyMTM5NUIiLz48ZyBmaWxsPSIjRjk2MzAwIj48Y2lyY2xlIGN4PSIzMiIgY3k9IjI2IiByPSIxMSIgZmlsbD0iI0Y5NjMwMCIvPjxwYXRoIGQ9Ik0yNi42IDMzaDEwLjhMNDMgNDguNUgyMXoiIGZpbGw9IiNGOTYzMDAiLz48cGF0aCBkPSJtMjYuNiAyNi40IDQuMiA0LjIgOC40LTguNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjQuMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+PC9nPjwvc3ZnPg==" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -96,6 +96,11 @@
 /* Alexandria is bilingual, so no per-language family swap is required.
    Arabic still gets a little more leading — its ascenders/descenders run deeper. */
 html[lang="ar"] body{line-height:1.75}
+/* BUILD.md §4, non-negotiable: tracking breaks Arabic letter joining. A few
+   components below carry their own html[lang="ar"] override that zeroes
+   (or softens) their own letter-spacing; this global !important rule is the
+   backstop so no component can miss it — see docs/COPY.md. */
+html[lang="ar"] *{letter-spacing:0!important}
 
 *,*::before,*::after{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%;scroll-behavior:smooth}
@@ -1062,9 +1067,9 @@ en:{
   tagline:'Simple. Smart. Fast.',
   hero_eyebrow:'Loyalty, rebuilt',
   hero_h1:'Customer loyalty made smarter',
-  hero_p:'Grow repeat customers with AI-powered loyalty programs that are simple, smart and fast. Set up in an afternoon, no card printer required.',
+  hero_p:'Grow repeat customers with AI-powered loyalty programmes that are simple, smart and fast. Set up in an afternoon, no card printer required.',
   hero_n1:'7-day free trial', hero_n2:'No card details', hero_n3:'Cancel anytime',
-  card_reward:'Reward', card_reward_v:'Free coffee', card_member:'Member since',
+  card_reward:'Reward', card_reward_v:'Free coffee', card_member:'Customer since',
   chip_a:'Stamp added', chip_a2:'Aisha · 6/8',
   chip_b:'Churn risk down', chip_b2:'−18% this month',
   tri1:'Simple', tri1p:'One screen your staff can use without training.',
@@ -1113,13 +1118,13 @@ en:{
   faq:[
     ['Do my customers need to download an app?','No. They scan a QR code once and the card saves to Apple Wallet or Google Wallet. Staff use the scanner from any phone or tablet browser.'],
     ['Can I move my existing customers over?','Yes. Import a CSV with names, emails and current point balances, and everyone keeps their progress. Import runs in about two minutes.'],
-    ['What happens when the free trial ends?','Nothing breaks. Your cards stay live and you pick a plan when you\u2019re ready. We email you two days before the 7 days are up.'],
+    ['What happens when the free trial ends?','Nothing breaks. Your cards stay live and you pick a plan when you\u2019re ready. We email you 2 days before the 7 days are up.'],
     ['Does it work in Arabic?','The whole platform, including customer cards, emails and receipts, switches to Arabic with full right-to-left layout.'],
     ['Can I run more than one card design?','Both plans include two design slots, so you can run a stamp card and a points card side by side, or test a new reward without disturbing the live one.'],
     ['Can staff give themselves stamps?','Fraud detection flags unusual patterns — same device, repeat scans, out-of-hours activity — and shows you who and when.'],
   ],
   cta_h:'Your regulars are already loyal. Start rewarding them.',
-  cta_p:'Set up your first card in about eleven minutes. Free for 7 days.',
+  cta_p:'Set up your first card in about 11 minutes. Free for 7 days.',
   f_product:'Product', f_company:'Company', f_legal:'Legal',
   f_rights:'© 2026 LoyaNexa Ltd. Made for businesses that remember names.',
   /* app */
@@ -1162,7 +1167,7 @@ en:{
   google:'Continue with Google', magic:'Email me a sign-in link', or:'or',
   no_acct:'No account yet?', create_acct:'Start a free trial',
   quote:'We stopped guessing who our regulars were. Now the dashboard tells us before the morning rush.',
-  quote_by:'Layla Haddad · Rowan Coffee, three branches',
+  quote_by:'Layla Haddad · Rowan Coffee, 3 branches',
   back_site:'Back to site', view_card:'Customer view', logout:'Log out',
   demo_toast:'This is a live prototype — the data is sample data.',
   /* --- btaqa-style architecture --- */
@@ -1270,7 +1275,7 @@ ar:{
   hero_h1:'ولاء العملاء بطريقة أذكى',
   hero_p:'زد عدد العملاء المتكررين ببرامج ولاء مدعومة بالذكاء الاصطناعي: بسيطة وذكية وسريعة. تجهّزها خلال ساعة واحدة بدون أي طابعة بطاقات.',
   hero_n1:'تجربة مجانية ٧ أيام', hero_n2:'بدون بطاقة بنكية', hero_n3:'إلغاء في أي وقت',
-  card_reward:'المكافأة', card_reward_v:'قهوة مجانية', card_member:'عضو منذ',
+  card_reward:'المكافأة', card_reward_v:'قهوة مجانية', card_member:'عميل منذ',
   chip_a:'تمت إضافة ختم', chip_a2:'عائشة · ٦/٨',
   chip_b:'انخفاض خطر الفقدان', chip_b2:'−١٨٪ هذا الشهر',
   tri1:'بسيط', tri1p:'شاشة واحدة يستخدمها موظفوك بدون تدريب.',
@@ -1289,7 +1294,7 @@ ar:{
   f6:'البيانات والإحصاءات', f6p:'اعرف من يعود، وما يستبدله، وكم يعود عليك.',
   why_h:'لماذا بطاقة الولاء', why_p:'ثلاثة أسباب تجعل المتاجر المستقلة تحافظ عليها.',
   w1:'زيادة المبيعات', w1p:'امنح الناس سبباً للعودة هذا الأسبوع، لا الشهر القادم.',
-  w2:'حماس العملاء', w2p:'البطاقة التي تمتلئ لعبة صغيرة يريد زبونك الدائم إكمالها.',
+  w2:'حماس العملاء', w2p:'البطاقة التي تمتلئ لعبة صغيرة يريد عميلك الدائم إكمالها.',
   w3:'زيادة الأرباح', w3p:'العميل العائد لا يكلّفك شيئاً للوصول إليه وينفق أكثر في كل زيارة.',
   caps_h:'مشمول أيضاً',
   ai_eyebrow:'المساعد الذكي', ai_h2:'اسأل بياناتك سؤالاً. واحصل على إجابة لا رسماً بيانياً.',
@@ -1298,19 +1303,19 @@ ar:{
   ai_q1:'من العملاء المرشحون للتوقف عن الزيارة؟', ai_q2:'ما أفضل مكافأة لهذا الشهر؟',
   ai_q3:'اكتب حملة لأيام الثلاثاء الهادئة', ai_q4:'من يستحق ترقية لكبار العملاء؟',
   ai_seed_q:'من العملاء المرشحون للتوقف عن الزيارة؟',
-  ai_seed_a:'<b>٤٧ عميلاً</b> في دائرة الخطر: كانوا يزورون كل ٩ أيام تقريباً ولم يعودوا منذ ٢٦ يوماً. أغلبهم من زبائن الغداء في فرع الشارع الرئيسي. أقترح عرض نقاط مضاعفة من الإثنين إلى الأربعاء؛ في الحملات السابقة استعاد نحو ٣١٪ منهم.',
+  ai_seed_a:'<b>٤٧ عميلاً</b> في دائرة الخطر: كانوا يزورون كل ٩ أيام تقريباً ولم يعودوا منذ ٢٦ يوماً. أغلبهم من عملاء الغداء في فرع الشارع الرئيسي. أقترح عرض نقاط مضاعفة من الإثنين إلى الأربعاء؛ في الحملات السابقة استعاد نحو ٣١٪ منهم.',
   ai_cta:'أرسل إلى ٤٧ عميلاً',
   p_eyebrow:'الأسعار', p_h2:'أسعار واضحة. بلا مفاجآت.',
   p_p:'خطتان تشترك فيهما مباشرة، شهرياً أو سنوياً. وللعمليات الأكبر عرض سعر مبني على طريقة عملها.',
   p_month:'/شهرياً', p_vat:'فوترة شهرية. غير شامل الضريبة. يمكن الإلغاء في أي وقت.',
-  p1:'الأساسية', p1d:'متجر واحد يجمع زبائنه الدائمين على بطاقة.',
-  p2:'الأعمال', p2d:'كل المميزات مفعّلة، لمتجر بقاعدة زبائن حقيقية.',
+  p1:'الأساسية', p1d:'متجر واحد يجمع عملاءه الدائمين على بطاقة.',
+  p2:'الأعمال', p2d:'كل المميزات مفعّلة، لمتجر بقاعدة عملاء حقيقية.',
   pop:'الأكثر اختياراً',
-  p1f:[['تصميم كرتين',1],['حتى ٥٠٠ عميل',1],['بطاقات بلا حدود',1],
+  p1f:[['تصميم بطاقتين',1],['حتى ٥٠٠ عميل',1],['بطاقات بلا حدود',1],
        ['تصميم مخصص للبطاقة',1],['تذكير بالموقع',1],['إحصاءات البطاقة',1],['حماية من الاحتيال',1],
        ['رسائل فورية',0],['رسائل موجّهة',0],['ختم عن بُعد',0],['جمع بريد العملاء',0],
        ['تصدير البيانات',0],['المساعد الذكي',0]],
-  p2f:[['تصميم كرتين',1],['عملاء بلا حدود',1],['بطاقات بلا حدود',1],
+  p2f:[['تصميم بطاقتين',1],['عملاء بلا حدود',1],['بطاقات بلا حدود',1],
        ['تصميم مخصص للبطاقة',1],['تذكير بالموقع',1],['إحصاءات البطاقة',1],['حماية من الاحتيال',1],
        ['رسائل فورية',1],['رسائل موجّهة',1],['ختم عن بُعد',1],['جمع بريد العملاء',1],
        ['تصدير البيانات',1],['المساعد الذكي',1]],
@@ -1319,15 +1324,15 @@ ar:{
   faq:[
     ['هل يحتاج عملائي إلى تحميل تطبيق؟','لا. يمسح العميل رمز QR مرة واحدة فتُحفظ البطاقة في محفظة آبل أو جوجل. ويستخدم الموظفون الماسح من متصفح أي هاتف أو جهاز لوحي.'],
     ['هل أستطيع نقل عملائي الحاليين؟','نعم. ارفع ملف CSV يحوي الأسماء والبريد وأرصدة النقاط، ويحتفظ الجميع بتقدّمهم. يستغرق الاستيراد دقيقتين تقريباً.'],
-    ['ماذا يحدث بعد انتهاء التجربة؟','لا شيء يتوقف. تبقى بطاقاتك فعّالة وتختار الخطة حين تكون جاهزاً، ونرسل تنبيهاً قبل يومين من انتهاء السبعة أيام.'],
+    ['ماذا يحدث بعد انتهاء التجربة؟','لا شيء يتوقف. تبقى بطاقاتك فعّالة وتختار الخطة حين تكون جاهزاً، ونرسل تنبيهاً قبل يومين من انتهاء الأيام السبعة.'],
     ['هل تعمل المنصة بالعربية؟','المنصة كاملة، بما فيها بطاقات العملاء والرسائل والإيصالات، تتحول إلى العربية بتخطيط كامل من اليمين إلى اليسار.'],
     ['هل أستطيع تشغيل أكثر من تصميم بطاقة؟','الخطتان تشملان تصميمين، فتستطيع تشغيل بطاقة أختام وبطاقة نقاط جنباً إلى جنب، أو تجربة مكافأة جديدة دون المساس بالبطاقة العاملة.'],
     ['هل يستطيع الموظف منح نفسه أختاماً؟','كشف الاحتيال ينبّه للأنماط غير المعتادة: الجهاز نفسه، مسح متكرر، نشاط خارج ساعات العمل، ويعرض لك من ومتى.'],
   ],
-  cta_h:'زبائنك المخلصون موجودون. ابدأ بمكافأتهم.',
-  cta_p:'جهّز بطاقتك الأولى خلال إحدى عشرة دقيقة تقريباً. مجاناً لمدة ٧ أيام.',
+  cta_h:'عملاؤك المخلصون موجودون. ابدأ بمكافأتهم.',
+  cta_p:'جهّز بطاقتك الأولى خلال ١١ دقيقة تقريباً. مجاناً لمدة ٧ أيام.',
   f_product:'المنتج', f_company:'الشركة', f_legal:'قانوني',
-  f_rights:'© ٢٠٢٦ لويانيكسا. صُنعت للأنشطة التي تتذكر أسماء زبائنها.',
+  f_rights:'© ٢٠٢٦ لويانيكسا. صُنعت للأنشطة التي تتذكر أسماء عملائها.',
   app_dash:'لوحة التحكم', app_cust:'العملاء', app_rew:'المكافآت', app_tx:'المعاملات',
   app_camp:'الحملات', app_an:'التحليلات', app_set:'الإعدادات', app_sub:'الاشتراك', app_prof:'الملف الشخصي',
   grp_run:'التشغيل', grp_grow:'النمو', grp_acct:'الحساب',
@@ -1366,8 +1371,8 @@ ar:{
   email:'البريد الإلكتروني', password:'كلمة المرور', forgot:'نسيت كلمة المرور؟',
   google:'المتابعة عبر جوجل', magic:'أرسل لي رابط دخول', or:'أو',
   no_acct:'ليس لديك حساب؟', create_acct:'ابدأ تجربة مجانية',
-  quote:'توقفنا عن التخمين بشأن زبائننا الدائمين. الآن تخبرنا اللوحة قبل زحمة الصباح.',
-  quote_by:'ليلى حداد · مقهى روان، ثلاثة فروع',
+  quote:'توقفنا عن التخمين بشأن عملائنا الدائمين. الآن تخبرنا اللوحة قبل زحمة الصباح.',
+  quote_by:'ليلى حداد · مقهى روان، ٣ فروع',
   back_site:'العودة للموقع', view_card:'عرض العميل', logout:'تسجيل الخروج',
   demo_toast:'هذا نموذج تفاعلي — البيانات المعروضة تجريبية.',
   hero_kicker:'بطاقات ولاء رقمية',
@@ -1398,7 +1403,7 @@ ar:{
   how_h:'كيف تعمل', how_sub:'ثلاث خطوات. أغلب المتاجر تنطلق في اليوم نفسه.',
   step:'الخطوة',
   s1:'صمّم بطاقتك', s1p:'حدّد المكافأة وعدد الأختام اللازمة. أضف شعارك واختر ألوانك لتشبه البطاقة متجرك أنت، لا متجرنا.',
-  s2:'شاركها مع عملائك', s2p:'تحصل على ملصق A4 جاهز للطباعة بنفس هويتك، مع رابط. ضع الملصق على الكاشير أو أرسل الرابط لزبائنك مباشرة.',
+  s2:'شاركها مع عملائك', s2p:'تحصل على ملصق A4 جاهز للطباعة بنفس هويتك، مع رابط. ضع الملصق على الكاشير أو أرسل الرابط لعملائك مباشرة.',
   s3:'امسح وانطلق', s3p:'تفتح أنت أو موظفوك الماسح، توجّهه إلى بطاقة العميل، فتضيف ختماً أو تصرف مكافأة. كل شيء يتحدّث فوراً.',
   try_now:'جرّبها الآن', stamps_left:'الأختام المتبقية', rewards_avail:'المكافآت المتاحة',
 
@@ -1409,7 +1414,7 @@ ar:{
   start_now:'ابدأ الآن',
 
   ind_h:'مصمَّمة للأنشطة التي يعود إليها الناس',
-  ind_p:'مقهى أو حلاق أو صالون أظافر أو نادٍ أو مغسلة سيارات — أينما كانت الزيارات المتكررة هي أساس العمل، تحوّل بطاقة الولاء المشتري العابر إلى زبون دائم.',
+  ind_p:'مقهى أو حلاق أو صالون أظافر أو نادٍ أو مغسلة سيارات — أينما كانت الزيارات المتكررة هي أساس العمل، تحوّل بطاقة الولاء المشتري العابر إلى عميل دائم.',
   ind_b1:'تعيش في محفظة آبل وجوجل، بلا شيء يثبّته العميل',
   ind_b2:'يظهر الختم على هاتفه لحظة الزيارة، والبطاقة لا تضيع',
   ind_b3:'ترى من عاد ومن ابتعد، من شاشة واحدة',
@@ -1431,7 +1436,7 @@ ar:{
   s1_t:'صمّم بطاقتك',
   s1_b:'حدّد المكافأة التي تريد تقديمها، واختر عدد الأختام اللازمة لنيلها. أضف شعارك وألوانك لتشبه البطاقة متجرك أنت، لا متجرنا.',
   s2_t:'شاركها مع عملائك',
-  s2_b:'حين ينتهي التصميم تحصل على ملصق A4 جاهز للطباعة بنفس هويتك، مع رابط. ضعه على الكاشير أو أرسل الرابط لزبائنك مباشرة.',
+  s2_b:'حين ينتهي التصميم تحصل على ملصق A4 جاهز للطباعة بنفس هويتك، مع رابط. ضعه على الكاشير أو أرسل الرابط لعملائك مباشرة.',
   s3_t:'امسح وابدأ',
   s3_b:'تفتح أنت أو موظفوك ماسح لويانيكسا وتوجّهه إلى بطاقة العميل، فتضيف ختماً أو تصرف مكافأة. وكل شيء يتحدّث على هاتفه فوراً.',
   hw_left:'الأختام المتبقية', hw_avail:'المكافآت المتاحة',
@@ -2281,7 +2286,7 @@ function customersPage(){
       <button class="btn btn-primary btn-sm" data-act="toast">${t('add_cust')}</button></div></div>
     <div class="tbl-wrap"><table>
       <thead><tr><th>${t('th_cust')}</th><th>${t('th_tier')}</th><th>${t('th_pts')}</th><th>${t('th_visits')}</th>
-        <th>${t('th_spend')}</th><th>${isAr()?'التقدم':'Card'}</th><th>${t('th_last')}</th></tr></thead>
+        <th>${t('th_spend')}</th><th>${isAr()?'التقدم':'Progress'}</th><th>${t('th_last')}</th></tr></thead>
       <tbody>${CUSTOMERS.map(c=>`<tr>
         <td><span class="who"><span class="avatar">${c.init}</span><div><b>${nameOf(c)}</b>
           <div class="small" style="font-size:.75rem">${c.n.split(' ')[0].toLowerCase()}@mail.com</div></div></span></td>
@@ -2871,7 +2876,7 @@ function toast(msg,icon='check'){
 
 const AI_ANSWERS={
   ai_q2:{en:'<b>Free pastry at 6 stamps</b> is your best bet for August. It costs £1.10 against an average £6.40 basket, and customers who redeem it return 2.3 days sooner than average. Free coffee is close behind but you are already giving 412 away a month.',
-         ar:'<b>معجنات مجانية عند ٦ أختام</b> هي الخيار الأفضل لشهر أغسطس. تكلفتها ١٫١٠ جنيه مقابل فاتورة متوسطها ٦٫٤٠، والعملاء الذين يستبدلونها يعودون أسرع بـ٢٫٣ يوم من المعدل. القهوة المجانية قريبة منها لكنك تمنح ٤١٢ منها شهرياً.'},
+         ar:'<b>معجنات مجانية عند ٦ أختام</b> هي الخيار الأفضل لشهر أغسطس. تكلفتها ١٫١٠ جنيه مقابل فاتورة متوسطها ٦٫٤٠ جنيه، والعملاء الذين يستبدلونها يعودون أسرع بـ٢٫٣ يوم من المعدل. القهوة المجانية قريبة منها لكنك تمنح ٤١٢ منها شهرياً.'},
   ai_q3:{en:'Here is a draft: <b>“Tuesday tastes better with double points.”</b> Send Monday 6pm to the 312 customers who have never visited on a Tuesday. Offer double points 11am–3pm. Projected: 58 extra visits, £371 revenue, £46 in reward cost.',
          ar:'إليك مسودة: <b>«الثلاثاء ألذّ بنقاط مضاعفة»</b>. أرسلها الإثنين ٦ مساءً إلى ٣١٢ عميلاً لم يزوروا يوم ثلاثاء قط. اعرض نقاطاً مضاعفة من ١١ص إلى ٣م. المتوقع: ٥٨ زيارة إضافية و٣٧١ جنيهاً إيراداً مقابل ٤٦ جنيهاً تكلفة مكافآت.'},
   ai_q4:{en:'<b>Nine customers</b> qualify for VIP this month — they each passed 20 visits and £250 spent. Grace Okoro and Yusuf Karim are the closest to lapsing, so upgrading them now is the highest-value move.',

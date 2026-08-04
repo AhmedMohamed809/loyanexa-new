@@ -364,6 +364,7 @@ async function makePublicRouteFixture(): Promise<{
       linkCode: randomLinkCode(),
       shortCode: `C${randomHex(4)}`.toUpperCase(),
       name: 'Public Route Test Card',
+      lang: 'en', // the enrol-page assertion below checks English copy; Card.lang defaults to 'ar' otherwise (BUILD.md §13)
       stampsGoal: 8,
       bgColor: '#203757',
       fgColor: '#FFFFFF',
@@ -397,6 +398,47 @@ test('GET / and the customer enrol page work with zero cookies', async () => {
     assert.ok(html.includes('Add to Apple Wallet'));
   } finally {
     await cleanupMerchant(fx.merchantId);
+  }
+});
+
+// BUILD.md §8.16 ("the highest-value page") / §13 — the enrol page used to
+// hardcode lang="en" and every string in it regardless of Card.lang, so an
+// Arabic card (the Prisma default) sent its own customers to an English
+// enrol page. This is the regression test for that fix.
+test('the customer enrol page renders in Arabic, RTL, with Arabic-Indic digits, for a card whose lang is ar (the Prisma default)', async () => {
+  const merchant = await prisma.merchant.create({
+    data: { firebaseUid: `pubroute-${randomHex(8)}`, email: `pubroute-${randomHex(8)}@example.test`, name: 'Public Route Test AR' },
+  });
+  const card = await prisma.card.create({
+    data: {
+      merchantId: merchant.id,
+      slot: 1,
+      linkCode: randomLinkCode(),
+      shortCode: `C${randomHex(4)}`.toUpperCase(),
+      name: 'بطاقة اختبار',
+      lang: 'ar',
+      stampsGoal: 8,
+      bgColor: '#203757',
+      fgColor: '#FFFFFF',
+      stampActive: '#F96400',
+      stampInactive: '#8794A5',
+      rewardText: 'Free coffee', // merchant-authored — must survive untranslated (BUILD.md §13)
+      active: true,
+    },
+  });
+  try {
+    const enrol = await fetch(`${server.baseUrl}/${card.linkCode}`);
+    assert.equal(enrol.status, 200);
+    const html = await enrol.text();
+    assert.match(html, /<html lang="ar" dir="rtl">/);
+    assert.ok(html.includes('أضف إلى محفظة آبل'), 'Apple Wallet button must be translated');
+    assert.ok(html.includes('أضف إلى محفظة جوجل'), 'Google Wallet button must be translated');
+    assert.ok(html.includes('مدعوم من لويانيكسا'), 'footer must be translated');
+    assert.ok(html.includes('٨ أختام'), 'the stamps-goal sentence must use Arabic-Indic digits, not "8"');
+    assert.ok(html.includes('Free coffee'), 'merchant-authored reward text must never be machine-translated');
+    assert.ok(!html.includes('Add to Apple Wallet'), 'no leftover English copy on the Arabic page');
+  } finally {
+    await cleanupMerchant(merchant.id);
   }
 });
 

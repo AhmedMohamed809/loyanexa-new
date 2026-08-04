@@ -94,7 +94,7 @@ test('saveLink() returns a pay.google.com URL whose JWT decodes to the expected 
   assert.deepEqual(object.barcode, { type: 'QR_CODE', value: 'SERIAL0001' });
 });
 
-test('saveLink() falls back accountName to "Member" when no customer name was given', () => {
+test('saveLink() falls back accountName to "Customer" (never "Member" — BUILD.md §13/docs/COPY.md) when no customer name was given and no override is supplied', () => {
   const { privateKeyPem } = makeRsaKeyPair();
   const client = new GoogleWalletClient({
     issuerId: '1',
@@ -107,5 +107,28 @@ test('saveLink() falls back accountName to "Member" when no customer name was gi
   const jwt = link.slice('https://pay.google.com/gp/v/save/'.length);
   const { payload } = decodeJwt(jwt);
   const claims = payload as { payload: { loyaltyObjects: Array<{ accountName: string }> } };
-  assert.equal(claims.payload.loyaltyObjects[0]?.accountName, 'Member');
+  assert.equal(claims.payload.loyaltyObjects[0]?.accountName, 'Customer');
+});
+
+test('saveLink() uses opts.accountNameFallback/opts.balanceText when supplied — the hook apps/demo/server.ts uses to localize the pass to the card\'s own language', () => {
+  const { privateKeyPem } = makeRsaKeyPair();
+  const client = new GoogleWalletClient({
+    issuerId: '1',
+    serviceAccountEmail: 'sa@example.iam.gserviceaccount.com',
+    privateKeyPem,
+    publicBaseUrl: 'https://example.test',
+  });
+
+  const link = client.saveLink(
+    { serial: 'SERIAL0003', stamps: 3 },
+    { id: 'card3', stampsGoal: 8 },
+    { accountNameFallback: 'عميل', balanceText: '٣ / ٨' }
+  );
+  const jwt = link.slice('https://pay.google.com/gp/v/save/'.length);
+  const { payload } = decodeJwt(jwt);
+  const claims = payload as {
+    payload: { loyaltyObjects: Array<{ accountName: string; loyaltyPoints: { balance: { string: string } } }> };
+  };
+  assert.equal(claims.payload.loyaltyObjects[0]?.accountName, 'عميل');
+  assert.deepEqual(claims.payload.loyaltyObjects[0]?.loyaltyPoints, { balance: { string: '٣ / ٨' } });
 });

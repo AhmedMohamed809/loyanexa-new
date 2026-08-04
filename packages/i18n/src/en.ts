@@ -234,4 +234,41 @@ export const en = {
   stampScreenManualPlaceholder: 'e.g. AB12CD34',
   stampScreenSubmitButton: 'Stamp',
   stampScreenNetworkError: 'Network error — check the connection and try again.',
+
+  // Customer enrol page (BUILD.md §8.16) — the highest-value page, and
+  // previously the one page that never read card.lang at all: it rendered
+  // English regardless of the card's own language. These keys fixed that.
+  enrolPageTitleSuffix: 'Join the loyalty card',
+  enrolShowPage: 'Show this page at {name} every visit to collect a stamp.',
+  enrolStripAlt: '{name} — empty stamp card',
+  enrolNameLabel: 'Name',
+  enrolPhoneLabel: 'Phone',
+  enrolOptional: 'optional',
+  enrolNamePlaceholder: 'Your name',
+  enrolPhonePlaceholder: 'Your phone number',
+  enrolConsent: "I agree to join {name}’s loyalty card and receive updates about my rewards.",
+  walletAddApple: 'Add to Apple Wallet',
+  walletAddGoogle: 'Add to Google Wallet',
+  poweredByLoyaNexa: 'Powered by LoyaNexa',
+  /** Google Wallet's accountName when no customer name was given — shown inside the actual saved card, so "customer" not "member" (docs/COPY.md). */
+  walletAccountNameFallback: 'Customer',
+
+  // The Wallet pass itself (BUILD.md §9.1 / §8.6) — REWARD, STAMPS
+  // REMAINING and the auto-generated terms are customer-facing copy too,
+  // and previously always rendered in English regardless of card.lang.
+  passStampsFieldLabel: 'STAMPS',
+  passStampsFieldValue: '{stamps} of {goal}',
+  passRewardFieldLabel: 'REWARD',
+  passStampsRemainingFieldLabel: 'STAMPS REMAINING',
+  passStampsRemainingValue: '{count} stamps',
+  passTermsFieldLabel: 'Terms',
+  passTermsStampPerVisit: '1 stamp per visit.',
+  passTermsCollectReward: 'Collect {goal} stamps to get a reward.',
+  passTermsExpiry: 'Card, stamps and rewards expiry: {expiry}.',
+  passTermsNoExchange: 'Stamps and rewards cannot be exchanged, returned or bought for cash.',
+  passTermsNoTransfer: 'Cards cannot be transferred or combined with other cards.',
+  passTermsAmend: 'The company reserves the right to amend these terms.',
+  passExpiryUnlimited: 'unlimited',
+  passExpiryDays: '{days} days',
+  passDescription: '{name} loyalty card',
 } as const;

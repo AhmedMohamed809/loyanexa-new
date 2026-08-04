@@ -75,28 +75,31 @@ function makePass(overrides: Partial<Pass> = {}): Pass {
 }
 
 test('primaryFields is empty, matching BUILD.md §9.1', () => {
-  const content = buildPassContentFor(makeCard(), makePass());
+  const content = buildPassContentFor(makeCard({ lang: 'en' }), makePass());
   assert.deepEqual(content.primaryFields, []);
 });
 
-test('headerFields carries the stamp count as "N of GOAL"', () => {
-  const content = buildPassContentFor(makeCard({ stampsGoal: 8 }), makePass({ stamps: 3 }));
+test('headerFields carries the stamp count as "N of GOAL" in English', () => {
+  const content = buildPassContentFor(makeCard({ lang: 'en', stampsGoal: 8 }), makePass({ stamps: 3 }));
   assert.equal(content.headerFields?.length, 1);
   assert.equal(content.headerFields?.[0]?.key, 'stamps');
+  assert.equal(content.headerFields?.[0]?.label, 'STAMPS');
   assert.equal(content.headerFields?.[0]?.value, '3 of 8');
 });
 
-test('secondaryFields carries the reward and stamps-remaining, in that order', () => {
-  const content = buildPassContentFor(makeCard({ stampsGoal: 8, rewardText: 'Free coffee' }), makePass({ stamps: 3 }));
+test('secondaryFields carries the reward and stamps-remaining, in that order, in English', () => {
+  const content = buildPassContentFor(makeCard({ lang: 'en', stampsGoal: 8, rewardText: 'Free coffee' }), makePass({ stamps: 3 }));
   assert.equal(content.secondaryFields?.length, 2);
   assert.equal(content.secondaryFields?.[0]?.key, 'reward');
+  assert.equal(content.secondaryFields?.[0]?.label, 'REWARD');
   assert.equal(content.secondaryFields?.[0]?.value, 'Free coffee');
   assert.equal(content.secondaryFields?.[1]?.key, 'stampsRemaining');
+  assert.equal(content.secondaryFields?.[1]?.label, 'STAMPS REMAINING');
   assert.ok(content.secondaryFields?.[1]?.value.startsWith('5 stamps'), 'stampsRemaining should read 8 - 3 = 5');
 });
 
 test('the invisible change marker is still appended to stampsRemaining, and changeMessage is set for the live-update banner', () => {
-  const content = buildPassContentFor(makeCard(), makePass({ stamps: 3 }));
+  const content = buildPassContentFor(makeCard({ lang: 'en' }), makePass({ stamps: 3 }));
   const field = content.secondaryFields?.[1];
   assert.ok(field?.value.startsWith('5 stamps'), 'visible text must still read "5 stamps"');
   assert.ok(field && field.value.length > '5 stamps'.length, 'invisible marker characters must be appended');
@@ -113,7 +116,39 @@ test('webServiceURL/authenticationToken are included together only when publicBa
   assert.equal(withoutUrl.authenticationToken, undefined);
 });
 
-test('buildTermsText describes the card\'s own expiry rule', () => {
-  assert.match(buildTermsText(makeCard({ expiryType: 'unlimited' })), /expiry: unlimited/);
-  assert.match(buildTermsText(makeCard({ expiryType: 'duration', expiryDays: 30 })), /expiry: 30 days/);
+test('buildTermsText describes the card\'s own expiry rule, in English', () => {
+  assert.match(buildTermsText(makeCard({ lang: 'en', expiryType: 'unlimited' })), /expiry: unlimited/);
+  assert.match(buildTermsText(makeCard({ lang: 'en', expiryType: 'duration', expiryDays: 30 })), /expiry: 30 days/);
+});
+
+// ---------------------------------------------------------------------------
+// BUILD.md §13/§9.1 — the pass is customer-facing copy too, and it must
+// follow the card's own language, not always English. Fixed alongside the
+// rest of this branch's bilingual copy pass; these tests would have caught
+// it rendering "STAMPS"/"REWARD" on an Arabic card, which it did before.
+// ---------------------------------------------------------------------------
+
+test('headerFields, secondaryFields and backFields labels are Arabic on an Arabic card (the Card/Prisma default)', () => {
+  const content = buildPassContentFor(makeCard({ lang: 'ar', stampsGoal: 8 }), makePass({ stamps: 3 }));
+  assert.equal(content.headerFields?.[0]?.label, 'الأختام');
+  assert.equal(content.headerFields?.[0]?.value, '٣ من ٨', 'stamp counts render in Arabic-Indic digits (BUILD.md §13)');
+  assert.equal(content.secondaryFields?.[0]?.label, 'المكافأة');
+  assert.equal(content.secondaryFields?.[1]?.label, 'الأختام المتبقية');
+  assert.ok(content.secondaryFields?.[1]?.value.startsWith('٥ أختام'), 'stampsRemaining should read 8 - 3 = 5, in Arabic-Indic digits');
+  assert.equal(content.backFields?.[0]?.label, 'الشروط');
+});
+
+test('merchant-authored rewardText is never translated, in either language (BUILD.md §13)', () => {
+  const en = buildPassContentFor(makeCard({ lang: 'en', rewardText: 'Free coffee' }), makePass());
+  const ar = buildPassContentFor(makeCard({ lang: 'ar', rewardText: 'Free coffee' }), makePass());
+  assert.equal(en.secondaryFields?.[0]?.value, 'Free coffee');
+  assert.equal(ar.secondaryFields?.[0]?.value, 'Free coffee', 'the merchant typed this in English — it must not be machine-translated');
+});
+
+test('buildTermsText describes the card\'s own expiry rule, in Arabic, with Arabic-Indic digits and no stray Western digits', () => {
+  const unlimited = buildTermsText(makeCard({ lang: 'ar', expiryType: 'unlimited' }));
+  assert.match(unlimited, /غير محدود/);
+  const duration = buildTermsText(makeCard({ lang: 'ar', expiryType: 'duration', expiryDays: 30 }));
+  assert.match(duration, /٣٠ يومًا/);
+  assert.doesNotMatch(duration, /[0-9]/, 'no Western digits should leak into the Arabic terms text');
 });
