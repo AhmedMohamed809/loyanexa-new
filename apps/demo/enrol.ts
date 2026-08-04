@@ -128,11 +128,45 @@ export interface EnrolmentResult {
  * was newly inserted (so a caller that fails a later step — e.g. signing
  * the .pkpass — knows whether it is safe to delete it again).
  */
+/**
+ * Parses the enrol form's `<input type="date">` into month and day, **throwing
+ * the year away**.
+ *
+ * The native date picker is by far the easiest control to use on a phone, so
+ * the form asks for a whole date — but a full date of birth is a real
+ * identity-theft input and one of the most sensitive things a corner café
+ * could end up holding. Month and day is everything a birthday greeting
+ * needs. The year is discarded here, at the boundary, before anything is
+ * written: it never reaches the database, a log, or a CSV export.
+ *
+ * Returns nulls for anything unparseable rather than throwing — an optional
+ * field a customer fumbled must never cost them their card.
+ */
+export function parseBirthday(raw: string): { birthdayMonth: number | null; birthdayDay: number | null } {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw.trim());
+  if (!match) return { birthdayMonth: null, birthdayDay: null };
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) {
+    return { birthdayMonth: null, birthdayDay: null };
+  }
+  // Rejects 31 February and friends. Day counts use a leap year so 29
+  // February is accepted — those customers exist, and automations.ts folds
+  // them onto the 28th in non-leap years rather than never greeting them.
+  const daysInMonth = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (day > daysInMonth[month - 1]!) return { birthdayMonth: null, birthdayDay: null };
+  return { birthdayMonth: month, birthdayDay: day };
+}
+
 export async function createPassForEnrolment(
   card: Card,
   custName: string,
   custPhone: string,
-  idempotencyKey?: string
+  idempotencyKey?: string,
+  birthday: { birthdayMonth: number | null; birthdayDay: number | null } = {
+    birthdayMonth: null,
+    birthdayDay: null,
+  }
 ): Promise<EnrolmentResult> {
   if (custPhone) {
     const candidates = await prisma.pass.findMany({
@@ -165,6 +199,10 @@ export async function createPassForEnrolment(
           stamps,
           custName,
           custPhone,
+          // Month and day only — parseBirthday() discarded the year at the
+          // HTTP boundary, so no year ever reaches this insert.
+          birthdayMonth: birthday.birthdayMonth,
+          birthdayDay: birthday.birthdayDay,
         },
       });
       if (!custPhone && idempotencyKey) {

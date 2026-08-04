@@ -176,6 +176,26 @@ model Card {
   rewardText    String
   formFields    Json      @default("[\"name\",\"phone\"]")
   locations     Json      @default("[]")
+
+  /// Birthday and win-back automations (BUILD.md §8.12), per card.
+  ///
+  /// Both default **off**. An automation that switched itself on would send
+  /// messages the merchant never wrote to customers they never chose, which
+  /// is the fastest way to get a loyalty card deleted — §8.12's own green
+  /// advisory is that over-notifying pushes customers to mute or delete it.
+  ///
+  /// The message text is merchant-authored and therefore never translated
+  /// (docs/CLAUDE.md): it is sent verbatim in whatever language they wrote.
+  birthdayEnabled Boolean @default(false)
+  birthdayMessage String  @default("")
+
+  /// Win-back fires when a customer has not been stamped for `winbackDays`.
+  /// 30 is a deliberate default: long enough that someone who simply had a
+  /// quiet fortnight is not chased, short enough to still be a nudge.
+  winbackEnabled  Boolean @default(false)
+  winbackDays     Int     @default(30)
+  winbackMessage  String  @default("")
+
   active        Boolean   @default(false)
   passes        Pass[]
   broadcastJobs BroadcastJob[]
@@ -250,6 +270,29 @@ model Pass {
   messageExpiresAt DateTime? @db.Timestamptz(3)
   platform     String    @default("")
   lastStampAt  DateTime?
+
+  /// The customer's birthday, stored as **month and day only** — the year is
+  /// deliberately discarded at the point of capture (apps/demo/enrol.ts).
+  ///
+  /// A full date of birth is a genuine identity-theft input and one of the
+  /// most sensitive fields a small business could be persuaded to collect;
+  /// month-and-day is everything a birthday greeting needs and is not. The
+  /// enrol form asks with a native date picker for usability, then throws the
+  /// year away server-side before anything is written. Both are null unless
+  /// the customer volunteered one — the field is optional, because enrolment
+  /// rate is the metric the business rests on (docs/CLAUDE.md).
+  birthdayMonth Int?
+  birthdayDay   Int?
+
+  /// When the birthday and win-back automations last fired for this pass.
+  ///
+  /// These are what make the daily scheduler idempotent, and they are written
+  /// in the same atomic UPDATE that selects the pass (apps/demo/automations.ts)
+  /// rather than afterwards — otherwise a scheduler that ran twice, or two
+  /// machines running one each, would greet the same customer twice.
+  lastBirthdayAt DateTime? @db.Timestamptz(3)
+  lastWinbackAt  DateTime? @db.Timestamptz(3)
+
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
   devices      Device[]
@@ -257,6 +300,8 @@ model Pass {
   @@index([cardId])
   @@index([merchantId, lastStampAt])
   @@index([updatedAt])
+  /// Drives the birthday sweep: "every pass whose birthday is today".
+  @@index([birthdayMonth, birthdayDay])
 }
 
 model Device {
