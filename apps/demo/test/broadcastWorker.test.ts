@@ -140,6 +140,55 @@ test('the worker sends to every recipient exactly once, and marks the job sent w
   }
 });
 
+// ---------------------------------------------------------------------------
+// Sub-project 9 ("ephemeral notifications") — Pass.messageExpiresAt is
+// stamped alongside message/messageJobCreatedAt, under the same
+// out-of-order guard.
+// ---------------------------------------------------------------------------
+
+test('processRecipient stamps Pass.messageExpiresAt to now + ttlMinutes when it writes a message', async () => {
+  const fx = await makeMerchantAndCard();
+  try {
+    const serial = await addPassWithDevices(fx.cardId, fx.merchantId);
+    const card = await prisma.card.findUniqueOrThrow({ where: { id: fx.cardId } });
+    const job = await enqueueBroadcast(card, 'Half price today!', 'manual');
+
+    const fixedNow = new Date('2026-08-04T12:00:00.000Z');
+    const { sendOne } = makeRecordingSender();
+    const worker = new BroadcastWorker({ sendOne, batchSize: 10, pushIntervalMs: 0, ttlMinutes: 20, now: () => fixedNow });
+    await drainAll(worker);
+
+    const pass = await prisma.pass.findUniqueOrThrow({ where: { serial } });
+    assert.equal(pass.message, job.pushMessage);
+    assert.ok(pass.messageExpiresAt, 'messageExpiresAt must be set once a message is written');
+    assert.equal(pass.messageExpiresAt?.getTime(), fixedNow.getTime() + 20 * 60_000);
+  } finally {
+    await cleanup(fx);
+  }
+});
+
+test('processRecipient defaults ttlMinutes to resolveBroadcastMessageTtlMinutes() (15) when no override is given', async () => {
+  const fx = await makeMerchantAndCard();
+  try {
+    const serial = await addPassWithDevices(fx.cardId, fx.merchantId);
+    const card = await prisma.card.findUniqueOrThrow({ where: { id: fx.cardId } });
+    await enqueueBroadcast(card, 'Half price today!', 'manual');
+
+    const before = Date.now();
+    const { sendOne } = makeRecordingSender();
+    const worker = new BroadcastWorker({ sendOne, batchSize: 10, pushIntervalMs: 0 });
+    await drainAll(worker);
+    const after = Date.now();
+
+    const pass = await prisma.pass.findUniqueOrThrow({ where: { serial } });
+    assert.ok(pass.messageExpiresAt);
+    const expiresAt = pass.messageExpiresAt!.getTime();
+    assert.ok(expiresAt >= before + 15 * 60_000 && expiresAt <= after + 15 * 60_000, 'defaults to a 15-minute TTL');
+  } finally {
+    await cleanup(fx);
+  }
+});
+
 test('a recipient with no registered devices yet is still marked sent (message stored, nothing to push to)', async () => {
   const fx = await makeMerchantAndCard();
   try {

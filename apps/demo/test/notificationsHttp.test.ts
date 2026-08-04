@@ -360,6 +360,82 @@ test('GET /notifications/recipient-count returns the live count for the merchant
 });
 
 // ---------------------------------------------------------------------------
+// History (sub-project 9, "ephemeral notifications") — "visible outside, in
+// the log page": what was sent, when, to how many recipients, and whether
+// it has expired.
+// ---------------------------------------------------------------------------
+
+test('GET /notifications shows a sent broadcast in the history list with its message, recipient count and an "Active" expiry pill', async () => {
+  const fx = await makeMerchantFixture('history1', 3);
+  try {
+    const sendRes = await fetch(`${server.baseUrl}/notifications/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: fx.cookie },
+      body: JSON.stringify({ cardId: fx.cardId, message: 'Half price today!' }),
+    });
+    assert.equal(sendRes.status, 200);
+
+    const pageRes = await fetch(`${server.baseUrl}/notifications`, { headers: { Cookie: `${fx.cookie}; lnx-lang=en` } });
+    assert.equal(pageRes.status, 200);
+    const html = await pageRes.text();
+
+    assert.match(html, /notif-history/, 'the history section must be present');
+    assert.match(html, /Half price today!/, 'the sent message text must appear');
+    assert.match(html, /3 of 3 sent|0 of 3 sent/, 'the recipient progress must appear');
+    assert.match(html, /class="status-pill active"/, 'a just-sent broadcast is still within its TTL — "Active"');
+    assert.doesNotMatch(html, /class="status-pill expired"/, 'nothing has expired yet');
+  } finally {
+    await cleanupMerchant(fx.merchantId);
+  }
+});
+
+test('GET /notifications shows an "Expired" pill for a broadcast sent well outside the TTL window', async () => {
+  const fx = await makeMerchantFixture('history3', 2);
+  try {
+    const sendRes = await fetch(`${server.baseUrl}/notifications/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: fx.cookie },
+      body: JSON.stringify({ cardId: fx.cardId, message: 'Old news' }),
+    });
+    const sendJson = (await sendRes.json()) as { job: { id: string } };
+    // Backdate the job well past any sane TTL — the point is proving the
+    // history list's expiry pill reflects the job's own age, not just
+    // "always active right after sending" (the previous test's case).
+    await prisma.broadcastJob.update({
+      where: { id: sendJson.job.id },
+      data: { createdAt: new Date(Date.now() - 24 * 60 * 60_000) },
+    });
+
+    const pageRes = await fetch(`${server.baseUrl}/notifications`, { headers: { Cookie: `${fx.cookie}; lnx-lang=en` } });
+    const html = await pageRes.text();
+    assert.match(html, /class="status-pill expired"/, 'a broadcast sent a day ago must show as expired');
+  } finally {
+    await cleanupMerchant(fx.merchantId);
+  }
+});
+
+test('POST /notifications/send and GET /notifications/jobs/:id both return sentAtText and expired alongside the job', async () => {
+  const fx = await makeMerchantFixture('history2', 1);
+  try {
+    const sendRes = await fetch(`${server.baseUrl}/notifications/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: fx.cookie },
+      body: JSON.stringify({ cardId: fx.cardId, message: 'Sale!' }),
+    });
+    const sendJson = (await sendRes.json()) as { job: { id: string; sentAtText: string; expired: boolean } };
+    assert.ok(sendJson.job.sentAtText.length > 0);
+    assert.equal(sendJson.job.expired, false);
+
+    const statusRes = await fetch(`${server.baseUrl}/notifications/jobs/${sendJson.job.id}`, { headers: { Cookie: fx.cookie } });
+    const statusJson = (await statusRes.json()) as { job: { sentAtText: string; expired: boolean } };
+    assert.ok(statusJson.job.sentAtText.length > 0);
+    assert.equal(statusJson.job.expired, false);
+  } finally {
+    await cleanupMerchant(fx.merchantId);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Per-merchant broadcast rate limit — "a mistake cannot fire fifty in a
 // minute."
 // ---------------------------------------------------------------------------

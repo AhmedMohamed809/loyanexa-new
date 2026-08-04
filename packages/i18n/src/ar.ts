@@ -356,6 +356,8 @@ export const ar: Record<keyof typeof en, string> = {
   notificationsStatusQueued: 'قيد الانتظار',
   notificationsStatusSending: 'جارٍ الإرسال',
   notificationsStatusSent: 'تم الإرسال',
+  notificationsExpiryActive: 'نشط',
+  notificationsExpiryExpired: 'منتهي',
   notificationsProgress: 'تم الإرسال إلى {sent} من {total}',
   notificationsProgressWithFailed: 'تم الإرسال إلى {sent} من {total}، وفشل {failed}',
   notificationsAutomatedWelcomeTitle: 'الترحيب',

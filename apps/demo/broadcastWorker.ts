@@ -53,6 +53,7 @@
 
 import type { BroadcastJob, Device } from '@prisma/client';
 import { prisma } from '../../packages/db/src/index.ts';
+import { resolveBroadcastMessageTtlMinutes } from './broadcast.ts';
 
 export type SendPushOutcome = { ok: true } | { ok: false; gone?: boolean; error?: string };
 /** Injected by the caller — server.ts wires this to the real ApnsClient's warm HTTP/2 session (never a new client per push); tests inject a stub that never touches a network, same convention as apps/demo/cardPush.ts's `sendOne`. */
@@ -72,6 +73,8 @@ export interface BroadcastWorkerOptions {
   staleClaimMs?: number;
   /** Delay between runOnce() cycles when running via start()/stop(). */
   pollIntervalMs?: number;
+  /** How long a written `Pass.message` stays live before apps/demo/messageSweeper.ts clears it (sub-project 9). Defaults to `resolveBroadcastMessageTtlMinutes()` — `BROADCAST_MESSAGE_TTL_MINUTES`, or 15. Read once, at construction, same as every other env-derived default in this file's caller (server.ts). */
+  ttlMinutes?: number;
   /** Minimum delay between individual pushes within one batch — the actual burst throttle: pacing requests out instead of firing a whole batch at once. 0 in tests. */
   pushIntervalMs?: number;
   /** Injectable clock, so tests can control `now`/backoff/staleness without waiting on real wall-clock time. */
@@ -117,6 +120,7 @@ export class BroadcastWorker {
   private readonly staleClaimMs: number;
   private readonly pollIntervalMs: number;
   private readonly pushIntervalMs: number;
+  private readonly ttlMinutes: number;
   private readonly now: () => Date;
   private readonly sleep: (ms: number) => Promise<void>;
 
@@ -133,6 +137,7 @@ export class BroadcastWorker {
     this.staleClaimMs = options.staleClaimMs ?? DEFAULTS.staleClaimMs;
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULTS.pollIntervalMs;
     this.pushIntervalMs = options.pushIntervalMs ?? DEFAULTS.pushIntervalMs;
+    this.ttlMinutes = options.ttlMinutes ?? resolveBroadcastMessageTtlMinutes();
     this.now = options.now ?? ((): Date => new Date());
     this.sleep = options.sleep ?? defaultSleep;
   }
@@ -218,12 +223,26 @@ export class BroadcastWorker {
     // later retry of *itself* — a no-op in content, since job.pushMessage
     // is fixed at enqueue time (enqueueBroadcast's own comment) — while
     // still refusing to move backwards for a strictly older job.
+    // messageExpiresAt (sub-project 9, "ephemeral notifications"): stamped
+    // at write time, not at enqueue time, alongside message/
+    // messageJobCreatedAt above and under the exact same out-of-order
+    // guard — a stale retry that loses the ordering race must not push the
+    // expiry backwards any more than it should push the text backwards.
+    // apps/demo/messageSweeper.ts is what actually clears it once it
+    // passes; apps/demo/passContent.ts is what stops rendering the "msg"
+    // field once it has (whichever happens first — the sweeper's own push
+    // is what makes an already-issued pass catch up before its next
+    // incidental rebuild).
     await prisma.pass.updateMany({
       where: {
         serial: row.passSerial,
         OR: [{ messageJobCreatedAt: null }, { messageJobCreatedAt: { lte: job.createdAt } }],
       },
-      data: { message: job.pushMessage, messageJobCreatedAt: job.createdAt },
+      data: {
+        message: job.pushMessage,
+        messageJobCreatedAt: job.createdAt,
+        messageExpiresAt: new Date(this.now().getTime() + this.ttlMinutes * 60_000),
+      },
     });
 
     let failed = false;

@@ -223,6 +223,31 @@ model Pass {
   /// landed) from resurrecting stale text on a customer's lock screen —
   /// see that function's own comment for the full scenario.
   messageJobCreatedAt DateTime?
+  /// When the current `message` stops being shown (sub-project 9,
+  /// "ephemeral notifications" — the owner's own complaint: a broadcast is
+  /// a moment-in-time message, not permanent card content, and a customer
+  /// who enrols after it was sent should never see it at all). Set by
+  /// apps/demo/broadcastWorker.ts's processRecipient() alongside `message`,
+  /// to the write time plus `BROADCAST_MESSAGE_TTL_MINUTES` (default 15,
+  /// apps/demo/broadcast.ts's `resolveBroadcastMessageTtlMinutes()`).
+  /// `null` whenever `message` is `""` — a brand-new pass has neither.
+  /// apps/demo/passContent.ts reads this to decide whether the "msg" back
+  /// field is included in pass.json at all (omitted once expired, not
+  /// rendered blank), and apps/demo/messageSweeper.ts's periodic sweep
+  /// clears both columns and pushes once the expiry passes, so the field
+  /// disappears from an already-issued pass too, not only on its next
+  /// incidental rebuild.
+  ///
+  /// `@db.Timestamptz(3)`, deliberately, matching BroadcastRecipient's own
+  /// `claimedAt`/`nextAttemptAt` columns just below and their doc comment's
+  /// full explanation: this column is compared against a JS `Date`
+  /// parameter inside messageSweeper.ts's raw `$queryRaw` claim query (the
+  /// same `SELECT … FOR UPDATE SKIP LOCKED` idiom broadcastWorker.ts uses),
+  /// as well as written through Prisma's typed API in broadcastWorker.ts —
+  /// a plain `timestamp` column would silently store the wrong instant on
+  /// a server whose local zone isn't UTC, exactly the bug that comment
+  /// describes.
+  messageExpiresAt DateTime? @db.Timestamptz(3)
   platform     String    @default("")
   lastStampAt  DateTime?
   createdAt    DateTime  @default(now())

@@ -33,6 +33,30 @@ import { invisibleChangeMarker } from '../../packages/pass/src/buildPass.ts';
 export const BROADCAST_MESSAGE_MAX_LENGTH = 150;
 
 /**
+ * Default `BROADCAST_MESSAGE_TTL_MINUTES` (sub-project 9, "ephemeral
+ * notifications") — how long a broadcast's text stays on a `Pass` before
+ * `apps/demo/messageSweeper.ts` clears it. The owner's own ask: "it should
+ * disappear after ten or twenty minutes." 15 splits that range.
+ */
+export const DEFAULT_BROADCAST_MESSAGE_TTL_MINUTES = 15;
+
+/**
+ * `BROADCAST_MESSAGE_TTL_MINUTES` from the environment, falling back to
+ * {@link DEFAULT_BROADCAST_MESSAGE_TTL_MINUTES} for anything missing,
+ * non-numeric or non-positive — same "parse once, fail soft to a sane
+ * default" convention as apps/demo/server.ts's `resolvePort()`. Read by
+ * apps/demo/broadcastWorker.ts (to stamp `Pass.messageExpiresAt` when it
+ * writes a message) and apps/demo/messageSweeper.ts's own default batch
+ * cadence is independent of this value, but both live in the same process
+ * and are meant to be tuned together without a deploy.
+ */
+export function resolveBroadcastMessageTtlMinutes(): number {
+  const raw = process.env.BROADCAST_MESSAGE_TTL_MINUTES;
+  const n = raw ? Number.parseInt(raw, 10) : NaN;
+  return Number.isInteger(n) && n > 0 ? n : DEFAULT_BROADCAST_MESSAGE_TTL_MINUTES;
+}
+
+/**
  * Cleans and caps a merchant- or system-authored broadcast message before
  * it is ever stored: strips control characters (defence for the "escape
  * for every context" requirement — HTML via escapeHtml() at render time,
