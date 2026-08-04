@@ -40,7 +40,7 @@ interface Fixture {
 }
 
 async function makeFixture(
-  opts: { stampsGoal?: number; stamps?: number; lastStampAt?: Date | null } = {}
+  opts: { stampsGoal?: number; stamps?: number; lastStampAt?: Date | null; lang?: string } = {}
 ): Promise<Fixture> {
   const merchant = await prisma.merchant.create({
     data: {
@@ -62,6 +62,7 @@ async function makeFixture(
       stampActive: '#F96400',
       stampInactive: '#8794A5',
       rewardText: 'Free coffee',
+      ...(opts.lang !== undefined ? { lang: opts.lang } : {}),
     },
   });
   const pass = await prisma.pass.create({
@@ -273,5 +274,31 @@ test('a pass belonging to a different merchant is not_found — a merchant canno
   } finally {
     await cleanup(owner);
     await cleanup(intruder);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// StampOutcome.lang (BUILD.md §13) — carries the stamped card's own
+// language so server.ts's live-update fan-out (pushPassUpdate ->
+// pushGoogleWalletUpdate) can localise the Google Wallet balance PATCH
+// without a second database read. This was the one stamp-time surface
+// still hardcoding Western digits regardless of card.lang before this
+// change (docs/COPY.md §5's own "known follow-up, not fixed this pass").
+// ---------------------------------------------------------------------------
+
+test('a successful stamp\'s outcome carries the card\'s own language, coerced from Card.lang', async () => {
+  const en = await makeFixture({ lang: 'en' });
+  const ar = await makeFixture({ lang: 'ar' });
+  try {
+    const enOutcome = await applyStamp(en.serial, en.merchantId);
+    assert.equal(enOutcome.ok, true);
+    if (enOutcome.ok) assert.equal(enOutcome.lang, 'en');
+
+    const arOutcome = await applyStamp(ar.serial, ar.merchantId);
+    assert.equal(arOutcome.ok, true);
+    if (arOutcome.ok) assert.equal(arOutcome.lang, 'ar');
+  } finally {
+    await cleanup(en);
+    await cleanup(ar);
   }
 });

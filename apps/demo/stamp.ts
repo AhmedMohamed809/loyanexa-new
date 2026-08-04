@@ -12,6 +12,7 @@
 // write can never leave them disagreeing.
 
 import { prisma } from '../../packages/db/src/index.ts';
+import type { Lang } from '../../packages/i18n/src/index.ts';
 
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
 
@@ -24,6 +25,18 @@ export type StampOutcome =
       totalStamps: number;
       rewards: number;
       rewardEarned: boolean;
+      /**
+       * The stamped card's own language (Card.lang, already coerced) —
+       * carried on the outcome so a caller pushing the live update
+       * (server.ts's pushPassUpdate -> pushGoogleWalletUpdate) can localise
+       * the Google Wallet balance string (BUILD.md §13) without a second
+       * database read. Google Wallet's own object is customer-facing text,
+       * same as the Apple pass fields buildPassContentFor() already
+       * localises — this was the one stamp-time surface still hardcoding
+       * Western digits regardless of the card's language (docs/COPY.md §5's
+       * own "known follow-up, not fixed this pass").
+       */
+      lang: Lang;
     }
   | { ok: false; reason: 'not_found' }
   | { ok: false; reason: 'too_soon'; lastStampAt: Date; retryAt: Date };
@@ -125,6 +138,7 @@ export async function applyStamp(
       totalStamps: after.totalStamps,
       rewards,
       rewardEarned,
+      lang: pass.card.lang === 'en' ? 'en' : 'ar',
     };
   });
 }

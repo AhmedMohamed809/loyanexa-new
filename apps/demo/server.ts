@@ -491,10 +491,13 @@ function getApnsClient(): ApnsClient | undefined {
  * device-registration step of its own (see googleWallet.ts's
  * `updateLoyaltyObject` doc comment). Callers must invoke this *after*
  * responding to the triggering request (BUILD.md §18 item 6) — it is never
- * awaited by a request handler, only fired from one.
+ * awaited by a request handler, only fired from one. `lang` is the
+ * stamped card's own language (stamp.ts's StampOutcome), used only to
+ * localise the Google Wallet balance string below (BUILD.md §13) — the
+ * APNs push itself carries no content (see pushApnsUpdate's own comment).
  */
-async function pushPassUpdate(serial: string, stamps: number, goal: number): Promise<void> {
-  await Promise.all([pushApnsUpdate(serial), pushGoogleWalletUpdate(serial, stamps, goal)]);
+async function pushPassUpdate(serial: string, stamps: number, goal: number, lang: Lang): Promise<void> {
+  await Promise.all([pushApnsUpdate(serial), pushGoogleWalletUpdate(serial, stamps, goal, lang)]);
 }
 
 async function pushApnsUpdate(serial: string): Promise<void> {
@@ -638,13 +641,18 @@ function getGoogleWalletClient(): GoogleWalletClient | undefined {
  * Google Wallet is configured. `reason: 'not_found'` just means this pass
  * was never added to Google Wallet (the customer used Apple, or hasn't
  * saved either yet) — not worth logging, same as APNs' "no devices
- * registered" case above never logging anything either.
+ * registered" case above never logging anything either. The balance string
+ * is localised to `lang` (the stamped card's own language, BUILD.md §13) —
+ * this is customer-facing text inside the actual saved Google Wallet card,
+ * same as saveLink()'s own accountName/balance at enrolment time.
  */
-async function pushGoogleWalletUpdate(serial: string, stamps: number, goal: number): Promise<void> {
+async function pushGoogleWalletUpdate(serial: string, stamps: number, goal: number, lang: Lang): Promise<void> {
   const client = getGoogleWalletClient();
   if (!client) return; // getGoogleWalletClient() already logged why, once.
 
-  const result = await client.updateLoyaltyObject(serial, stamps, goal);
+  const result = await client.updateLoyaltyObject(serial, stamps, goal, {
+    balanceText: `${arabicDigits(stamps, lang)} / ${arabicDigits(goal, lang)}`,
+  });
   if (!result.ok && result.reason === 'error') {
     console.error(
       `[google-wallet] pass ${serial}: updateLoyaltyObject failed — status=${result.status} body=${result.body}`
@@ -1072,6 +1080,19 @@ function layout(title: string, bodyHtml: string, active?: NavKey, lang: Lang = '
     flex: 1; justify-content: center;
   }
   .shape-toggle input { accent-color: var(--accent); }
+  /* Card-language picker (BUILD.md §8.2's "two large cards" pattern, reused
+     here for the per-card choice — BUILD.md §8.5 step 3 / §8.9). Two big,
+     scannable tiles rather than a <select> buried among colour pickers,
+     since a merchant should never have to read English to find "العربية". */
+  .lang-toggle { display: flex; gap: 12px; flex-wrap: wrap; }
+  .lang-card {
+    position: relative; flex: 1; min-width: 130px; display: flex; align-items: center;
+    justify-content: center; border: 2px solid var(--line); border-radius: var(--radius-lg);
+    padding: 20px 16px; cursor: pointer; margin: 0; background: var(--sunk);
+  }
+  .lang-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent) inset; }
+  .lang-card input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .lang-card-name { font-size: 19px; font-weight: 700; color: var(--ink); letter-spacing: 0; }
   .switch-row { display: flex; align-items: center; gap: 10px; }
   .switch-row label { margin: 0; font-weight: 500; }
   .switch-row input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); }
@@ -1214,12 +1235,12 @@ function renderSignInForm(opts: { email?: string; next: string; error?: string }
       <input type="hidden" name="next" value="${escapeHtml(next)}">
       <div class="field">
         <label for="email">${escapeHtml(t(lang, 'signInEmailLabel'))}</label>
-        <input type="text" id="email" name="email" required autocomplete="email" value="${escapeHtml(email)}">
+        <input type="email" id="email" name="email" required autocomplete="email" inputmode="email" dir="ltr" autocapitalize="none" autocorrect="off" spellcheck="false" value="${escapeHtml(email)}">
       </div>
       <div class="field">
         <label for="password">${escapeHtml(t(lang, 'signInPasswordLabel'))}</label>
         <div class="hex-row">
-          <input type="password" id="password" name="password" required autocomplete="current-password" style="flex:1;">
+          <input type="password" id="password" name="password" required autocomplete="current-password" dir="ltr" autocapitalize="none" autocorrect="off" spellcheck="false" style="flex:1;">
           <button type="button" class="btn secondary small" id="toggleSignInPassword">${escapeHtml(t(lang, 'signInShowPassword'))}</button>
         </div>
       </div>
@@ -1258,11 +1279,11 @@ function renderSignUpForm(
       </div>
       <div class="field">
         <label for="email">${escapeHtml(t(lang, 'signUpEmailLabel'))}</label>
-        <input type="text" id="email" name="email" required autocomplete="email" value="${escapeHtml(email)}">
+        <input type="email" id="email" name="email" required autocomplete="email" inputmode="email" dir="ltr" autocapitalize="none" autocorrect="off" spellcheck="false" value="${escapeHtml(email)}">
       </div>
       <div class="field">
         <label for="password">${escapeHtml(t(lang, 'signUpPasswordLabel'))}</label>
-        <input type="password" id="password" name="password" required autocomplete="new-password" minlength="${MIN_PASSWORD_LENGTH}">
+        <input type="password" id="password" name="password" required autocomplete="new-password" dir="ltr" autocapitalize="none" autocorrect="off" spellcheck="false" minlength="${MIN_PASSWORD_LENGTH}">
         <p class="field-hint">${escapeHtml(t(lang, 'signUpPasswordHint'))}</p>
       </div>
       <button class="btn" type="submit" style="width:100%;">${escapeHtml(t(lang, 'signUpSubmitButton'))}</button>
@@ -1532,6 +1553,51 @@ async function handleCardsList(req: http.IncomingMessage, res: http.ServerRespon
   sendHtml(res, 200, layout(t(lang, 'cardsListTitle'), body, 'cards', lang));
 }
 
+/**
+ * The card-language picker: two large, clearly-labelled tiles (BUILD.md
+ * §8.2's own "two large cards" pattern for the dashboard-language choice,
+ * reused here for the per-card one — §8.5 step 3 / §8.9), never a
+ * `<select>` a merchant would have to read English to operate. Shared by
+ * both the create form and the edit designer. `selected` is the card's own
+ * language (Card.lang, already coerced to 'en' | 'ar' by the caller);
+ * `dashboardLang` only decides which language the surrounding field label
+ * and hint render in — it must never decide which tile starts checked, or
+ * a merchant using an English dashboard could never even see an Arabic
+ * card's language reflected correctly. "English"/"العربية" are each
+ * language's own name in its own script and are deliberately never passed
+ * through t() — a language name is not translated (docs/COPY.md), matching
+ * the pre-existing convention in public/index.html's own language <select>.
+ */
+function renderLangToggle(selected: string, dashboardLang: Lang): string {
+  const isEn = selected === 'en';
+  return `
+          <div class="field">
+            <label>${escapeHtml(t(dashboardLang, 'newCardLangLabel'))}</label>
+            <div class="lang-toggle" data-lang-toggle>
+              <label class="lang-card${isEn ? ' selected' : ''}">
+                <input type="radio" name="lang" value="en" ${isEn ? 'checked' : ''}>
+                <span class="lang-card-name" lang="en" dir="ltr">English</span>
+              </label>
+              <label class="lang-card${isEn ? '' : ' selected'}">
+                <input type="radio" name="lang" value="ar" ${isEn ? '' : 'checked'}>
+                <span class="lang-card-name" lang="ar" dir="rtl">العربية</span>
+              </label>
+            </div>
+            <p class="field-hint">${escapeHtml(t(dashboardLang, 'newCardLangHint'))}</p>
+          </div>`;
+}
+
+/** Wires the live "selected" highlight for any `[data-lang-toggle]` on the page — pure presentation, the checked radio is still the actual source of truth on submit even with JS disabled (the browser's own radio styling just looks plainer). Shared verbatim by both the create form and the edit designer's inline `<script>`. */
+const LANG_TOGGLE_SCRIPT = `
+        document.querySelectorAll('[data-lang-toggle] input').forEach(function (input) {
+          input.addEventListener('change', function () {
+            var toggle = input.closest('[data-lang-toggle]');
+            toggle.querySelectorAll('.lang-card').forEach(function (card) {
+              card.classList.toggle('selected', card.querySelector('input').checked);
+            });
+          });
+        });`;
+
 // ---------------------------------------------------------------------------
 // Route: GET /cards/new — creation form with a live preview
 // ---------------------------------------------------------------------------
@@ -1542,10 +1608,12 @@ interface NewCardFormValues {
   bg?: string;
   active?: string;
   inactive?: string;
+  /** The card's own language (Card.lang, BUILD.md §8.5 step 3) — 'ar' | 'en', defaulting to 'ar' (Card.lang's own schema default) when unset. Renamed to `cardLang` on destructure below so it never shadows this function's own `lang` parameter, which is the merchant's *dashboard* language and picks the surrounding chrome, never which tile starts checked. */
+  lang?: string;
 }
 
 function renderNewCardForm(
-  { name = '', rewardText = '', goal = 8, bg = '#203757', active = '#F96400', inactive = '#8794A5' }: NewCardFormValues = {},
+  { name = '', rewardText = '', goal = 8, bg = '#203757', active = '#F96400', inactive = '#8794A5', lang: cardLang = 'ar' }: NewCardFormValues = {},
   error?: string,
   lang: Lang = 'en'
 ): string {
@@ -1589,6 +1657,7 @@ function renderNewCardForm(
             <input type="color" id="inactive" name="inactive" value="${escapeHtml(inactive)}">
           </div>
         </div>
+${renderLangToggle(cardLang, lang)}
         <div class="field preview-panel">
           <img id="preview" src="/preview.png?${previewQs.toString()}" alt="Live stamp strip preview" width="375" height="144">
         </div>
@@ -1598,6 +1667,8 @@ function renderNewCardForm(
     </div>
     <script>
       (function () {
+${LANG_TOGGLE_SCRIPT}
+
         var goalInput = document.getElementById('goal');
         var goalVal = document.getElementById('goalVal');
         var bgInput = document.getElementById('bg');
@@ -1656,6 +1727,13 @@ async function handleCreateCard(req: http.IncomingMessage, res: http.ServerRespo
   const bg = String(fields.bg ?? '').trim();
   const active = String(fields.active ?? '').trim();
   const inactive = String(fields.inactive ?? '').trim();
+  // The card's own language (BUILD.md §8.5 step 3) — anything other than
+  // exactly "en" becomes "ar", same coercion passContent.ts's cardLang()
+  // and every other card.lang reader in this file already uses, so a
+  // missing or tampered field is never a validation error: it just falls
+  // back to Card.lang's own schema default, matching "the default when
+  // nothing is chosen is still ar".
+  const cardLang = String(fields.lang ?? '').trim() === 'en' ? 'en' : 'ar';
 
   const errors: string[] = [];
   if (!name) errors.push(t(lang, 'newCardNameRequired'));
@@ -1676,7 +1754,7 @@ async function handleCreateCard(req: http.IncomingMessage, res: http.ServerRespo
       res,
       400,
       renderNewCardForm(
-        { name, rewardText, goal: Number.isFinite(goalNum) ? goalNum : 8, bg: bg || '#203757', active: active || '#F96400', inactive: inactive || '#8794A5' },
+        { name, rewardText, goal: Number.isFinite(goalNum) ? goalNum : 8, bg: bg || '#203757', active: active || '#F96400', inactive: inactive || '#8794A5', lang: cardLang },
         errors.join(' '),
         lang
       )
@@ -1713,6 +1791,7 @@ async function handleCreateCard(req: http.IncomingMessage, res: http.ServerRespo
           stampActive,
           stampInactive,
           rewardText,
+          lang: cardLang,
         },
       });
       break;
@@ -1840,14 +1919,23 @@ async function handleCardDetail(req: http.IncomingMessage, res: http.ServerRespo
 // theme; the printable sheet itself switches to dark-ink-on-white paper
 // under @media print — printing the dark UI verbatim would waste a
 // cartridge of ink on a background nobody wants on a counter poster.
+//
+// This entire page is customer-facing content, exactly like the enrol page
+// (BUILD.md §13/§8.16): it is printed and stuck on a counter for the
+// merchant's own customers to scan and read, so its language must follow
+// the card's own language, never the *merchant's* dashboard cookie — a
+// merchant running an English dashboard for an Arabic-speaking café's
+// Arabic card must not hand their customers an English poster. This used
+// to call resolveLang(req) (the merchant's own lnx-lang cookie) for the
+// whole document, `<html lang>` included, which was exactly that bug.
 // ---------------------------------------------------------------------------
-async function handleCardPrint(req: http.IncomingMessage, res: http.ServerResponse, id: string, merchant: Merchant): Promise<void> {
-  const lang = resolveLang(req);
+async function handleCardPrint(_req: http.IncomingMessage, res: http.ServerResponse, id: string, merchant: Merchant): Promise<void> {
   const card = await findOwnedCard(id, merchant.id);
   if (!card) {
     sendNotFound(res, `No card with id "${id}".`);
     return;
   }
+  const lang: Lang = card.lang === 'en' ? 'en' : 'ar';
 
   const enrolUrl = `${PUBLIC_URL}/${card.linkCode}`;
   // moduleSize 10 (vs. the site-wide default of 6) — a print sheet is
@@ -2034,6 +2122,8 @@ const ICON_SWATCH_COLOR = '#33415C';
 
 interface EditCardFormValues {
   name: string;
+  /** Card.lang, already coerced to 'en' | 'ar' by the caller (BUILD.md §8.9's "Settings" step lists it next to name/expiry) — a presentation field (cardEdit.ts's AESTHETIC_FIELDS), so it stays editable even on a locked card, unlike rewardText just below. */
+  lang: string;
   rewardText: string;
   stampsGoal: number;
   starterStamps: number;
@@ -2186,6 +2276,7 @@ function renderEditCardForm(
             <label for="name">${escapeHtml(t(lang, 'newCardNameLabel'))}</label>
             <input type="text" id="name" name="name" required maxlength="80" value="${escapeHtml(values.name)}">
           </div>
+${renderLangToggle(values.lang, lang)}
 
           <div class="field">
             <label>${escapeHtml(t(lang, 'designerLogoHeading'))}</label>
@@ -2347,6 +2438,8 @@ function renderEditCardForm(
     </div>
     <script>
       (function () {
+${LANG_TOGGLE_SCRIPT}
+
         var uploadUrl = ${JSON.stringify(`/cards/${card.id}/image`)};
         var uploadingLabel = ${JSON.stringify(t(lang, 'designerUploadingLabel'))};
         var genericError = ${JSON.stringify(t(lang, 'designerUploadErrorGeneric'))};
@@ -2735,6 +2828,7 @@ async function handleEditCardForm(req: http.IncomingMessage, res: http.ServerRes
       lang,
       {
         name: card.name,
+        lang: card.lang === 'en' ? 'en' : 'ar',
         rewardText: card.rewardText,
         stampsGoal: card.stampsGoal,
         starterStamps: card.starterStamps,
@@ -2804,6 +2898,19 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
   );
   const iconFitRaw = String(fields.iconFit ?? '').trim();
   const iconFit = iconFitRaw === 'cover' ? 'cover' : iconFitRaw === 'contain' ? 'contain' : card.iconFit;
+  // The card's own language (BUILD.md §8.9's "Settings" step) — a
+  // presentation field (cardEdit.ts's AESTHETIC_FIELDS), so unlike
+  // rewardText/stampsGoal below this is read and applied unconditionally,
+  // locked card or not: it must stay editable even after customers have
+  // joined. Same missing-or-tampered-falls-back-to-"ar" coercion as
+  // handleCreateCard's own cardLang, except the fallback here is the
+  // card's *current* saved language, not the schema default — an absent
+  // field (a normal submission from this very form, which always renders
+  // the radio) should never silently flip an Arabic card back to Arabic's
+  // own default in a way that happens to be a no-op today but would be a
+  // real bug if the schema default ever changed.
+  const langRaw = String(fields.lang ?? '').trim();
+  const cardLang = langRaw === 'en' ? 'en' : langRaw === 'ar' ? 'ar' : (card.lang === 'en' ? 'en' : 'ar');
 
   // Location reminders (BUILD.md §9.4/§9.1) — always editable (cardEdit.ts's
   // AESTHETIC_FIELDS), so this runs unconditionally, locked card or not,
@@ -2833,6 +2940,7 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
         lang,
         {
           name,
+          lang: cardLang,
           rewardText: card.rewardText,
           stampsGoal: card.stampsGoal,
           starterStamps: card.starterStamps,
@@ -2860,6 +2968,7 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
 
   const patch: CardEditInput = {
     name: name || card.name,
+    lang: cardLang,
     bgColor,
     bgOpacity,
     stampActive,
@@ -2954,6 +3063,7 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
         lang,
         {
           name,
+          lang: cardLang,
           rewardText: card.rewardText,
           stampsGoal: card.stampsGoal,
           starterStamps: card.starterStamps,
@@ -2990,6 +3100,17 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
   // `.pkpass` cache-key fix above (PKPASS_STORE / pkpassCacheKey) actually
   // visible to a customer promptly instead of only on their device's next
   // unprompted poll.
+  //
+  // pushCardUpdate only wakes Apple devices to re-poll (they then rebuild
+  // from the now-current Card row, language included). It does not, and
+  // never has for any card-designer field (colour/name/logo edits behave
+  // identically), proactively PATCH an already-saved Google Wallet
+  // LoyaltyObject — Google has no per-card "class" field for language, and
+  // ensureLoyaltyClass only re-patches at next issuance. A language-only
+  // edit therefore relocalises Google Wallet's balance string at the
+  // customer's *next stamp* (pushGoogleWalletUpdate, driven by
+  // stamp.ts's StampOutcome.lang), not immediately on save — a pre-existing
+  // limitation shared by every other design edit, not something new here.
   setImmediate(() => {
     pushCardUpdate(id).catch((err) => {
       console.error(`[push] card-edit live-update fan-out threw for card ${id}:`, err);
@@ -4240,7 +4361,14 @@ async function handleIssuePass(req: http.IncomingMessage, res: http.ServerRespon
   }
 
   if (!checkPassIssuanceRateLimit(req)) {
-    sendRateLimited(res, resolveLang(req));
+    // Customer-facing (BUILD.md §13): this is the enrolling *customer's*
+    // own browser hitting the rate limit, not the merchant's — resolveLang
+    // reads the merchant's lnx-lang dashboard cookie, which the customer's
+    // browser normally never even carries, so this always coerced to
+    // resolveLang()'s own 'ar' default. Read from the card, which is
+    // already available here, same as every other customer-facing string
+    // on this route.
+    sendRateLimited(res, card.lang === 'en' ? 'en' : 'ar');
     return;
   }
 
@@ -4346,7 +4474,9 @@ async function handleIssueGooglePass(
   }
 
   if (!checkPassIssuanceRateLimit(req)) {
-    sendRateLimited(res, resolveLang(req));
+    // Same fix, same reasoning as handleIssuePass just above: the card's
+    // own language, not the merchant's dashboard cookie.
+    sendRateLimited(res, card.lang === 'en' ? 'en' : 'ar');
     return;
   }
 
@@ -5067,7 +5197,7 @@ async function handleApiStamp(req: http.IncomingMessage, res: http.ServerRespons
   // slow or failed push can never slow down, let alone fail, the stamp
   // itself.
   setImmediate(() => {
-    pushPassUpdate(outcome.serial, outcome.stamps, outcome.goal).catch((err) => {
+    pushPassUpdate(outcome.serial, outcome.stamps, outcome.goal, outcome.lang).catch((err) => {
       console.error(`[push] live-update fan-out threw for pass ${outcome.serial}:`, err);
     });
   });
