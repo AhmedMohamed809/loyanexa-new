@@ -1,6 +1,44 @@
 # Where the project stands — 4 August 2026
 
-**Live: https://loyanexa-new.fly.dev** · `main` at `7c121c6` · **474 tests** · typecheck clean
+**Live: https://loyanexa-new.fly.dev** · `main` at `28c024c` · **492 tests** · typecheck clean
+
+---
+
+## Reliability: why stamps were "sometimes instant, sometimes never"
+
+Found in the production log, not by guessing:
+
+```
+[apns] push to device 691020eb… failed — status=0 body=read ETIMEDOUT
+```
+
+The connection to Apple was reused after it had died. A TCP connection dropped by a router's
+idle timeout leaves a **half-open** socket: the checks in place (`not closed`, `not
+destroyed`) both pass, so pushes were written into a dead pipe, and with no deadline of our
+own each one waited on the OS timeout minutes away. **A quiet café hits this constantly; a
+busy one never does** — which is exactly what "sometimes" looked like.
+
+Fixed with a 30-second keepalive ping, a 5-second deadline per push, and one retry on a
+fresh connection — for transport failures only. A real answer from Apple (410 "the pass was
+deleted") is never retried.
+
+Separately: the app was running **two machines with one stopped**. Each has its own
+connection to Apple and its own image cache, and anything routed to the stopped one paid an
+8-second cold start. Now one always-warm machine, which is what `fly.toml` always intended.
+
+## Also shipped
+
+- **Bottom tab bar on mobile** — under 720px the nav moves to a native-feeling bottom bar:
+  safe-area inset so labels clear the iPhone home bar, pressed rather than hover states,
+  48px targets. Five tabs; Reports and Settings live in More. Desktop unchanged.
+- **Language switch in the nav** — shares the landing page's cookie. The `Referer` is never
+  trusted: same-origin paths only, never protocol-relative `//host`.
+- **Card deletion** — a confirmation page showing how many customers hold the card and
+  stating plainly that their wallet cards stop working. Requires the card name typed back.
+  Frees the slot.
+- **The print sheet wears the card's design** — cover photo, logo, colours. The QR keeps a
+  hardcoded white backing (a black card would otherwise print an unscannable code), and
+  `print-color-adjust: exact` stops the browser dropping the background.
 
 ---
 
