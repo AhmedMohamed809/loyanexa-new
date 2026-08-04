@@ -51,6 +51,7 @@
 // same already-stored text, which causes no *new* lock-screen banner on a
 // device that already caught up, only a harmless extra wake-up.
 
+import { Prisma } from '@prisma/client';
 import type { BroadcastJob, Device } from '@prisma/client';
 import { prisma } from '../../packages/db/src/index.ts';
 import { resolveBroadcastMessageTtlMinutes } from './broadcast.ts';
@@ -81,6 +82,22 @@ export interface BroadcastWorkerOptions {
   now?: () => Date;
   /** Injectable sleep, so tests never actually wait out pushIntervalMs. */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Restricts claiming to these job ids. **A test-isolation seam, not a
+   * production feature** — leave it unset in production, where claiming
+   * queue-wide is the whole point and every worker is a real sender.
+   *
+   * It exists because `node --test` runs test *files* in parallel against
+   * one shared local Postgres, and the queue-wide claim below is doing
+   * exactly its job when it claims another file's recipients: they are
+   * pending rows in the same table. The victim file then observes zero
+   * pushes, because the thief pushed them through *its* recorder. That is
+   * the same property `broadcastWorker.test.ts`'s "two workers never claim
+   * the same recipient" test asserts on purpose — correct in production,
+   * ruinous across test files. Scoping each test's worker to its own job
+   * ids makes the suite deterministic without weakening that guarantee.
+   */
+  onlyJobIds?: string[];
 }
 
 interface ClaimedRow {
@@ -123,6 +140,7 @@ export class BroadcastWorker {
   private readonly ttlMinutes: number;
   private readonly now: () => Date;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly onlyJobIds: string[] | undefined;
 
   private timer: NodeJS.Timeout | undefined;
   private stopped = true;
@@ -140,6 +158,8 @@ export class BroadcastWorker {
     this.ttlMinutes = options.ttlMinutes ?? resolveBroadcastMessageTtlMinutes();
     this.now = options.now ?? ((): Date => new Date());
     this.sleep = options.sleep ?? defaultSleep;
+    this.onlyJobIds =
+      options.onlyJobIds && options.onlyJobIds.length > 0 ? options.onlyJobIds : undefined;
   }
 
   private backoffFor(attempts: number): number {
@@ -150,13 +170,17 @@ export class BroadcastWorker {
   private async claimBatch(): Promise<ClaimedRow[]> {
     const now = this.now();
     const staleBefore = new Date(now.getTime() - this.staleClaimMs);
+    const jobScope = this.onlyJobIds
+      ? Prisma.sql`AND "jobId" IN (${Prisma.join(this.onlyJobIds)})`
+      : Prisma.empty;
     return prisma.$queryRaw<ClaimedRow[]>`
       UPDATE "BroadcastRecipient" AS r
       SET status = 'sending', "claimedAt" = ${now}, attempts = r.attempts + 1
       FROM (
         SELECT id FROM "BroadcastRecipient"
-        WHERE (status = 'pending' AND "nextAttemptAt" <= ${now})
-           OR (status = 'sending' AND "claimedAt" < ${staleBefore})
+        WHERE ((status = 'pending' AND "nextAttemptAt" <= ${now})
+           OR (status = 'sending' AND "claimedAt" < ${staleBefore}))
+        ${jobScope}
         ORDER BY id
         LIMIT ${this.batchSize}
         FOR UPDATE SKIP LOCKED
