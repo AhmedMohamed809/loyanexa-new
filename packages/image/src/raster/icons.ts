@@ -92,210 +92,345 @@ function discCoverage(px: number, py: number, cx: number, cy: number, r: number)
 }
 
 /** A thick straight stroke from (ax,ay) to (bx,by), radius `r`, round caps — a 2D capsule. Used for scissors blades, the dumbbell bar, and the checkmark. */
-function fillCapsule(s: Surface, ax: number, ay: number, bx: number, by: number, r: number, color: RGBA): void {
-  const abx = bx - ax;
-  const aby = by - ay;
-  const abLen2 = abx * abx + aby * aby || 1;
-  paintCoverage(s, Math.min(ax, bx) - r - 1, Math.min(ay, by) - r - 1, Math.max(ax, bx) + r + 1, Math.max(ay, by) + r + 1, color, (px, py) => {
-    const apx = px - ax;
-    const apy = py - ay;
-    const t = clamp01((apx * abx + apy * aby) / abLen2);
-    return discCoverage(px, py, ax + abx * t, ay + aby * t, r);
+type Pt = readonly [number, number];
+
+/**
+ * A stroked polyline with round caps and round joins, painted in **one**
+ * coverage pass.
+ *
+ * Drawing a path as a series of separate capsules is the obvious approach and
+ * it is wrong: each capsule anti-aliases its own edge, so wherever two
+ * overlap the two partial coverages blend twice and leave a visible seam. The
+ * old heart had exactly that — a white band straight through the middle where
+ * its two lobes met. Taking the *minimum distance to any segment* and
+ * converting that once into coverage makes the path a single shape, so joins
+ * are seamless by construction.
+ */
+function strokePath(s: Surface, pts: readonly Pt[], w: number, color: RGBA, closed = false): void {
+  if (pts.length === 0) return;
+  const r = w / 2;
+  const segs: Array<readonly [number, number, number, number]> = [];
+  for (let i = 0; i + 1 < pts.length; i++) {
+    segs.push([pts[i]![0], pts[i]![1], pts[i + 1]![0], pts[i + 1]![1]]);
+  }
+  if (closed && pts.length > 2) {
+    const a = pts[pts.length - 1]!;
+    const b = pts[0]!;
+    segs.push([a[0], a[1], b[0], b[1]]);
+  }
+  if (segs.length === 0) {
+    // A single point is a dot.
+    const [x, y] = pts[0]!;
+    paintCoverage(s, x - r - 1, y - r - 1, x + r + 1, y + r + 1, color, (px, py) =>
+      discCoverage(px, py, x, y, r)
+    );
+    return;
+  }
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const [ax, ay, bx, by] of segs) {
+    x0 = Math.min(x0, ax, bx);
+    y0 = Math.min(y0, ay, by);
+    x1 = Math.max(x1, ax, bx);
+    y1 = Math.max(y1, ay, by);
+  }
+  paintCoverage(s, x0 - r - 1, y0 - r - 1, x1 + r + 1, y1 + r + 1, color, (px, py) => {
+    let best = Infinity;
+    for (const [ax, ay, bx, by] of segs) {
+      const abx = bx - ax;
+      const aby = by - ay;
+      const len2 = abx * abx + aby * aby || 1;
+      const t = clamp01(((px - ax) * abx + (py - ay) * aby) / len2);
+      best = Math.min(best, Math.hypot(px - (ax + abx * t), py - (ay + aby * t)));
+      if (best <= 0) break;
+    }
+    return clamp01(r + 0.5 - best);
   });
 }
 
 /**
- * A filled convex polygon (`pts` in either winding order) — the same
- * clamp(0.5 - distance) technique fillRoundedRect already uses for its
- * signed-distance edge, generalised from "distance to a rounded rect" to
- * "max distance to any of a convex shape's edges". Used for the star and
- * the heart's lower point.
+ * An arc as a stroked path. `a0`/`a1` in radians, clockwise in screen space.
+ * Segment count scales with radius so a large icon stays smooth and a small
+ * one does not pay for detail it cannot show.
  */
-function fillConvexPolygon(s: Surface, pts: ReadonlyArray<readonly [number, number]>, color: RGBA): void {
-  const n = pts.length;
-  if (n < 3) return;
-  let area2 = 0;
-  for (let i = 0; i < n; i++) {
-    const [x1, y1] = pts[i]!;
-    const [x2, y2] = pts[(i + 1) % n]!;
-    area2 += x1 * y2 - x2 * y1;
+function strokeArc(
+  s: Surface,
+  cx: number,
+  cy: number,
+  radius: number,
+  a0: number,
+  a1: number,
+  w: number,
+  color: RGBA
+): void {
+  const steps = Math.max(6, Math.ceil(Math.abs(a1 - a0) * radius * 0.5));
+  const pts: Pt[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const a = a0 + ((a1 - a0) * i) / steps;
+    pts.push([cx + Math.cos(a) * radius, cy + Math.sin(a) * radius]);
   }
-  const sign = area2 < 0 ? -1 : 1;
-  let x0 = Infinity, y0 = Infinity, x1b = -Infinity, y1b = -Infinity;
+  strokePath(s, pts, w, color);
+}
+
+/**
+ * A filled polygon of any shape, using the even-odd rule — unlike
+ * fillConvexPolygon above, this handles concave and self-intersecting outlines,
+ * which is what a five-pointed star actually is. (The previous "star" was a
+ * four-vertex diamond, because a convex fill cannot express a star at all.)
+ *
+ * Anti-aliased by 3x3 supersampling rather than analytically: an exact
+ * coverage integral for an arbitrary polygon is a much larger piece of code,
+ * and nine samples is visually indistinguishable at every size these icons
+ * render at.
+ */
+function fillPolygon(s: Surface, pts: readonly Pt[], color: RGBA): void {
+  if (pts.length < 3) return;
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
   for (const [x, y] of pts) {
-    if (x < x0) x0 = x;
-    if (y < y0) y0 = y;
-    if (x > x1b) x1b = x;
-    if (y > y1b) y1b = y;
+    x0 = Math.min(x0, x);
+    y0 = Math.min(y0, y);
+    x1 = Math.max(x1, x);
+    y1 = Math.max(y1, y);
   }
-  paintCoverage(s, x0 - 1, y0 - 1, x1b + 1, y1b + 1, color, (px, py) => {
-    let maxD = -Infinity;
-    for (let i = 0; i < n; i++) {
-      const [ax, ay] = pts[i]!;
-      const [bx, by] = pts[(i + 1) % n]!;
-      const ex = bx - ax;
-      const ey = by - ay;
-      const nx = sign * ey;
-      const ny = -sign * ex;
-      const len = Math.hypot(nx, ny) || 1;
-      const d = ((px - ax) * nx + (py - ay) * ny) / len;
-      if (d > maxD) maxD = d;
+  const inside = (px: number, py: number): boolean => {
+    let hit = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const [xi, yi] = pts[i]!;
+      const [xj, yj] = pts[j]!;
+      if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) hit = !hit;
     }
-    return clamp01(0.5 - maxD);
+    return hit;
+  };
+  paintCoverage(s, x0 - 1, y0 - 1, x1 + 1, y1 + 1, color, (px, py) => {
+    let hits = 0;
+    for (let sy = 0; sy < 3; sy++) {
+      for (let sx = 0; sx < 3; sx++) {
+        if (inside(px + (sx - 1) / 3, py + (sy - 1) / 3)) hits++;
+      }
+    }
+    return hits / 9;
   });
 }
 
-/** A crescent: `r`-radius disc at (cx,cy) with a `cutR`-radius disc cut out, offset by (dx,dy) — the same subtractive-coverage idea strokeRing uses for a ring, generalised to an off-centre cut. Used for the croissant. */
-function fillCrescent(s: Surface, cx: number, cy: number, r: number, dx: number, dy: number, cutR: number, color: RGBA): void {
-  paintCoverage(s, cx - r - 1, cy - r - 1, cx + r + 1, cy + r + 1, color, (px, py) => {
-    const outer = discCoverage(px, py, cx, cy, r);
-    const inner = discCoverage(px, py, cx + dx, cy + dy, cutR);
-    return clamp01(outer - inner);
+/**
+ * Fills the union of several coverage functions in one pass.
+ *
+ * The same seam problem strokePath solves, for filled shapes: a heart drawn as
+ * two discs and a triangle blended one after another shows its seams. Taking
+ * the max coverage first makes it one silhouette.
+ */
+function fillUnion(
+  s: Surface,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  color: RGBA,
+  parts: ReadonlyArray<(x: number, y: number) => number>
+): void {
+  paintCoverage(s, x0, y0, x1, y1, color, (px, py) => {
+    let best = 0;
+    for (const part of parts) {
+      const c = part(px, py);
+      if (c > best) best = c;
+      if (best >= 1) break;
+    }
+    return best;
   });
+}
+
+/**
+ * The stroke weight every icon shares, as a fraction of the icon radius.
+ *
+ * A single shared weight is most of what makes a set look drawn by one hand.
+ * The floor matters as much as the ratio: a stamp can render as small as 22px
+ * across, where a purely proportional stroke would fall below a pixel and the
+ * glyph would dissolve into grey mush — which is what the previous set did.
+ */
+function strokeWidth(r: number): number {
+  return Math.max(1.7, r * 0.235);
+}
+
+/** Maps a design-space coordinate in [-1,1] onto the icon's actual centre and radius. */
+function project(cx: number, cy: number, r: number, pts: readonly Pt[]): Pt[] {
+  return pts.map(([x, y]) => [cx + x * r, cy + y * r] as Pt);
 }
 
 // ---------------------------------------------------------------------------
-// The ten glyphs. Each draws into a circle of radius `r` centred at (cx,
-// cy) — the same footprint fillDisc(surface, cx, cy, r, ...) would have
-// occupied, so swapping "plain disc" for "built-in icon" never changes how
-// much of the slot the stamp fills. Proportions are picked to still read as
-// their subject at the smallest a stamp ever gets: r≈11px (goal 20, @1x) —
-// see icons.test.ts's own render-at-every-scale test.
+// The ten glyphs.
+//
+// Each is drawn in a design space of [-1,1] on both axes and projected onto
+// the real centre/radius, so the shapes below read as geometry rather than as
+// arithmetic. All are line-art at one shared weight (see strokeWidth) — the
+// convention every modern interface icon set uses, and the reason a set looks
+// coherent rather than assembled.
 // ---------------------------------------------------------------------------
 
 function drawCoffee(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
-  const bodyW = r * 1.2;
-  const bodyH = r * 1.15;
-  const bodyX = cx - bodyW * 0.62;
-  const bodyY = cy - bodyH * 0.48;
-  fillRoundedRect(s, bodyX, bodyY, bodyW, bodyH, bodyH * 0.22, c);
-  const handleR = r * 0.34;
-  const handleCx = bodyX + bodyW + handleR * 0.6;
-  strokeRing(s, handleCx, cy, handleR, Math.max(1, r * 0.17), c);
+  const w = strokeWidth(r);
+  // Tapered vessel — wider at the rim than the base, which is what makes it a
+  // cup rather than a tub. Kept symmetric about the centre line so the handle
+  // reads as an addition rather than as a lopsided body.
+  strokePath(s, project(cx, cy, r, [
+    [-0.5, -0.28], [-0.38, 0.56], [0.38, 0.56], [0.5, -0.28],
+  ]), w, c);
+  // Rim, tucked just inside the body ends so its round caps do not bulge.
+  // Rim ends flush with the body. Any overhang reads as a lopsided lid,
+  // which is worse on the left where there is no handle to balance it.
+  strokePath(s, project(cx, cy, r, [[-0.5, -0.28], [0.5, -0.28]]), w, c);
+  // Handle, clear of the rim so the two never merge into a blob.
+  // Radius comfortably larger than the stroke width, or the ring fills in
+  // solid and reads as a blob stuck to the cup.
+  strokeArc(s, cx + 0.62 * r, cy + 0.08 * r, 0.34 * r, -Math.PI * 0.46, Math.PI * 0.46, w, c);
 }
 
 function drawCroissant(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
-  const outerR = r * 0.86;
-  fillCrescent(s, cx, cy, outerR, outerR * 0.55, -outerR * 0.05, outerR * 0.82, c);
+  // Built from a centre-line arc whose thickness is modulated by sin(pi*t):
+  // zero at both ends, greatest in the middle. That is precisely a croissant —
+  // fat in the belly, tapering to two horns. Two concentric arcs cannot do
+  // this (they give a constant-width band, i.e. an arch), and a plain crescent
+  // reads as a moon, which is what the previous glyph was mistaken for.
+  const steps = Math.max(14, Math.ceil(r));
+  // Sweep past a half-turn so the horns turn downward — a shorter arc reads
+  // as a hill. Thickness stays well under the radius or the inner edge
+  // collapses through the centre and the crescent fills in.
+  const A0 = Math.PI * 0.92;
+  const A1 = Math.PI * 2.08;
+  const RAD = 0.74;
+  const MAXT = 0.23;
+  const top: Pt[] = [];
+  const bottom: Pt[] = [];
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const a = A0 + (A1 - A0) * t;
+    const nx = Math.cos(a);
+    const ny = Math.sin(a);
+    const h = MAXT * Math.sin(Math.PI * t);
+    top.push([nx * (RAD + h), ny * (RAD + h) + 0.3]);
+    bottom.push([nx * (RAD - h), ny * (RAD - h) + 0.3]);
+  }
+  fillPolygon(s, project(cx, cy, r, [...top, ...bottom.reverse()]), c);
 }
 
 function drawScissors(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
-  // A symmetric X pivoting just left of centre: two blades fan out to the
-  // right (no loop — a real blade tip), two handle arms fan out to the
-  // left, each ending in a finger loop. The first version of this icon
-  // crossed the blades and handles asymmetrically, which at a 37px stamp
-  // (goal 8, scale 1 — the size this was checked at) blurred into an
-  // unreadable blob; this symmetric layout reads as an open pair of
-  // scissors at every size down to a 22px stamp (goal 20, scale 1).
-  const pivotX = cx - r * 0.05;
-  const pivotY = cy;
-  const armLen = r * 0.82;
-  const thickness = Math.max(1, r * 0.2);
-  fillCapsule(s, pivotX, pivotY, pivotX + armLen * 0.95, pivotY - armLen * 0.62, thickness, c);
-  fillCapsule(s, pivotX, pivotY, pivotX + armLen * 0.95, pivotY + armLen * 0.62, thickness, c);
-  const handleTipX = pivotX - armLen * 0.8;
-  const handleTipYUp = pivotY - armLen * 0.58;
-  const handleTipYDown = pivotY + armLen * 0.58;
-  fillCapsule(s, pivotX, pivotY, handleTipX, handleTipYUp, thickness * 0.8, c);
-  fillCapsule(s, pivotX, pivotY, handleTipX, handleTipYDown, thickness * 0.8, c);
-  const loopR = r * 0.32;
-  const loopT = Math.max(1, r * 0.15);
-  strokeRing(s, handleTipX, handleTipYUp, loopR, loopT, c);
-  strokeRing(s, handleTipX, handleTipYDown, loopR, loopT, c);
-  fillDisc(s, pivotX, pivotY, thickness * 0.55, c);
+  const w = strokeWidth(r);
+  const pivot: Pt = [0, 0.12];
+  // Two blades crossing at the pivot, opening upward.
+  strokePath(s, project(cx, cy, r, [[-0.52, -0.82], pivot, [0.4, 0.52]]), w, c);
+  strokePath(s, project(cx, cy, r, [[0.52, -0.82], pivot, [-0.4, 0.52]]), w, c);
+  // Finger rings below, which is what distinguishes scissors from a cross.
+  strokeArc(s, cx - 0.44 * r, cy + 0.66 * r, 0.26 * r, 0, Math.PI * 2, w, c);
+  strokeArc(s, cx + 0.44 * r, cy + 0.66 * r, 0.26 * r, 0, Math.PI * 2, w, c);
 }
 
 function drawFlower(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
-  const petalR = r * 0.4;
-  const orbit = r * 0.46;
-  const petals = 5;
-  for (let i = 0; i < petals; i++) {
-    const a = (Math.PI * 2 * i) / petals - Math.PI / 2;
-    fillDisc(s, cx + Math.cos(a) * orbit, cy + Math.sin(a) * orbit, petalR, c);
+  const w = strokeWidth(r);
+  // Five stroked petals around a stroked centre. Filled petals made a solid
+  // blob that read as a ball; outlines keep it a flower and keep it in the
+  // same visual language as the other nine.
+  for (let i = 0; i < 5; i++) {
+    const a = -Math.PI / 2 + (i * Math.PI * 2) / 5;
+    strokeArc(s, cx + Math.cos(a) * 0.6 * r, cy + Math.sin(a) * 0.6 * r, 0.33 * r, 0, Math.PI * 2, w, c);
   }
-  fillDisc(s, cx, cy, r * 0.3, c);
+  strokeArc(s, cx, cy, 0.17 * r, 0, Math.PI * 2, w, c);
 }
 
 function drawCar(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
-  const bodyW = r * 1.7;
-  const bodyH = r * 0.6;
-  const bodyY = cy - bodyH * 0.1;
-  fillRoundedRect(s, cx - bodyW / 2, bodyY, bodyW, bodyH, bodyH * 0.4, c);
-  const cabinW = bodyW * 0.5;
-  const cabinH = bodyH * 0.85;
-  fillRoundedRect(s, cx - cabinW / 2, bodyY - cabinH * 0.72, cabinW, cabinH, cabinH * 0.35, c);
-  const wheelR = r * 0.22;
-  fillDisc(s, cx - bodyW * 0.28, bodyY + bodyH * 0.92, wheelR, c);
-  fillDisc(s, cx + bodyW * 0.28, bodyY + bodyH * 0.92, wheelR, c);
+  const w = strokeWidth(r);
+  // Cabin over body: the roofline is the whole reason a car silhouette reads.
+  strokePath(s, project(cx, cy, r, [
+    [-0.86, 0.18], [-0.78, -0.16], [-0.46, -0.2],
+    [-0.24, -0.62], [0.3, -0.62], [0.6, -0.2],
+    [0.82, -0.14], [0.88, 0.18],
+  ]), w, c);
+  strokePath(s, project(cx, cy, r, [[-0.46, -0.2], [0.6, -0.2]]), w, c);
+  // Wheels.
+  strokeArc(s, cx - 0.46 * r, cy + 0.42 * r, 0.24 * r, 0, Math.PI * 2, w, c);
+  strokeArc(s, cx + 0.46 * r, cy + 0.42 * r, 0.24 * r, 0, Math.PI * 2, w, c);
 }
 
 function drawDumbbell(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
-  const barLen = r * 1.05;
-  fillCapsule(s, cx - barLen / 2, cy, cx + barLen / 2, cy, Math.max(1, r * 0.14), c);
-  const plateR = r * 0.4;
-  fillDisc(s, cx - barLen / 2, cy, plateR, c);
-  fillDisc(s, cx + barLen / 2, cy, plateR, c);
+  const w = strokeWidth(r);
+  // Bar plus two plates at each end. The previous glyph was two discs joined
+  // by a bar, which reads as an infinity sign; it is the *vertical* plates
+  // that say dumbbell.
+  strokePath(s, project(cx, cy, r, [[-0.5, 0], [0.5, 0]]), w, c);
+  for (const sx of [-1, 1]) {
+    strokePath(s, project(cx, cy, r, [[sx * 0.5, -0.54], [sx * 0.5, 0.54]]), w, c);
+    strokePath(s, project(cx, cy, r, [[sx * 0.82, -0.34], [sx * 0.82, 0.34]]), w, c);
+  }
 }
 
 function drawStar(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
-  // A single elongated diamond — the simplest four-point "sparkle" shape,
-  // chosen over a classic five-point star because a five-point star's
-  // narrow points are the first detail to vanish at a 22px stamp (goal 20,
-  // @1x); a bold diamond keeps its silhouette at any size.
-  fillConvexPolygon(
-    s,
-    [
-      [cx, cy - r * 0.92],
-      [cx + r * 0.55, cy],
-      [cx, cy + r * 0.92],
-      [cx - r * 0.55, cy],
-    ],
-    c
-  );
+  // An actual five-pointed star: ten alternating vertices, filled even-odd.
+  // The previous glyph was a four-vertex diamond, because the convex fill it
+  // used cannot represent a concave outline.
+  const pts: Pt[] = [];
+  for (let i = 0; i < 10; i++) {
+    const a = -Math.PI / 2 + (i * Math.PI) / 5;
+    const rad = i % 2 === 0 ? 0.98 : 0.42;
+    pts.push([Math.cos(a) * rad, Math.sin(a) * rad]);
+  }
+  fillPolygon(s, project(cx, cy, r, pts), c);
 }
 
 function drawHeart(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
-  const lobeR = r * 0.42;
-  const lobeY = cy - r * 0.18;
-  fillDisc(s, cx - lobeR * 0.95, lobeY, lobeR, c);
-  fillDisc(s, cx + lobeR * 0.95, lobeY, lobeR, c);
-  fillConvexPolygon(
-    s,
-    [
-      [cx - lobeR * 1.85, lobeY],
-      [cx + lobeR * 1.85, lobeY],
-      [cx, cy + r * 0.85],
-    ],
-    c
-  );
+  // Two lobes and a point, unioned in one pass. Blended separately they left
+  // a white seam straight across the middle — which the old glyph had.
+  const lobeR = 0.45 * r;
+  const lx = cx - 0.42 * r;
+  const rx = cx + 0.42 * r;
+  const ly = cy - 0.32 * r;
+  const tri: Pt[] = project(cx, cy, r, [[-0.9, -0.16], [0.9, -0.16], [0, 0.92]]);
+  const insideTri = (px: number, py: number): boolean => {
+    let hit = false;
+    for (let i = 0, j = tri.length - 1; i < tri.length; j = i++) {
+      const [xi, yi] = tri[i]!;
+      const [xj, yj] = tri[j]!;
+      if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) hit = !hit;
+    }
+    return hit;
+  };
+  fillUnion(s, cx - r - 2, cy - r - 2, cx + r + 2, cy + r + 2, c, [
+    (x, y) => discCoverage(x, y, lx, ly, lobeR),
+    (x, y) => discCoverage(x, y, rx, ly, lobeR),
+    (x, y) => {
+      let hits = 0;
+      for (let sy = 0; sy < 3; sy++) {
+        for (let sx = 0; sx < 3; sx++) if (insideTri(x + (sx - 1) / 3, y + (sy - 1) / 3)) hits++;
+      }
+      return hits / 9;
+    },
+  ]);
 }
 
 function drawCheck(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
-  const t = Math.max(1, r * 0.22);
-  fillCapsule(s, cx - r * 0.55, cy, cx - r * 0.1, cy + r * 0.45, t, c);
-  fillCapsule(s, cx - r * 0.1, cy + r * 0.45, cx + r * 0.6, cy - r * 0.45, t, c);
+  // One polyline, round caps and a round join — a tick, not two crossed bars.
+  strokePath(s, project(cx, cy, r, [[-0.68, 0.02], [-0.2, 0.5], [0.7, -0.5]]), strokeWidth(r) * 1.15, c);
 }
 
 function drawGift(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
-  const boxW = r * 1.3;
-  const boxH = r * 1.1;
-  const boxY = cy - boxH * 0.35;
-  fillRoundedRect(s, cx - boxW / 2, boxY, boxW, boxH, boxH * 0.14, c);
-  const ribbonW = Math.max(1, boxW * 0.16);
-  fillRoundedRect(s, cx - ribbonW / 2, boxY, ribbonW, boxH, 0, c);
-  const ribbonH = Math.max(1, boxH * 0.16);
-  fillRoundedRect(s, cx - boxW / 2, cy - ribbonH / 2, boxW, ribbonH, 0, c);
-  const bowR = r * 0.18;
-  fillDisc(s, cx - bowR * 0.9, boxY - bowR * 0.5, bowR, c);
-  fillDisc(s, cx + bowR * 0.9, boxY - bowR * 0.5, bowR, c);
+  const w = strokeWidth(r);
+  // Box.
+  strokePath(s, project(cx, cy, r, [
+    [-0.72, -0.1], [0.72, -0.1], [0.72, 0.8], [-0.72, 0.8],
+  ]), w, c, true);
+  // Lid, slightly proud of the box on both sides.
+  strokePath(s, project(cx, cy, r, [[-0.82, -0.1], [0.82, -0.1]]), w, c);
+  // Ribbon down the front.
+  strokePath(s, project(cx, cy, r, [[0, -0.1], [0, 0.8]]), w, c);
+  // Bow: two half-loops sitting above the lid. Full loops, or teardrops
+  // crossing down into the box, turn the whole top into noise at small sizes.
+  for (const sx of [-1, 1]) {
+    strokeArc(s, cx + sx * 0.3 * r, cy - 0.38 * r, 0.26 * r, Math.PI * 0.06, Math.PI * 0.94, w, c);
+  }
 }
 
-/**
- * Draws built-in icon `id` filled with `color`, occupying the same
- * radius-`r` footprint a plain `fillDisc(s, cx, cy, r, color)` would have —
- * the drop-in replacement strip.ts's render loop reaches for when
- * `stampSource === 'builtin'`.
- */
 export function drawBuiltinIcon(s: Surface, cx: number, cy: number, r: number, color: RGBA, id: BuiltinIconId): void {
   switch (id) {
     case 'coffee':

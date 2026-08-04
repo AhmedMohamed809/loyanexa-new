@@ -825,7 +825,7 @@ function generateShortCode(): string {
 
 // ---------------------------------------------------------------------------
 // HTML shell — BUILD.md §3 as revised 2026-08-03: dark canvas #0F172A, paper
-// #1C2A42, sunk #162338, accent #F28C38, Alexandria typeface, radius
+// #1C2A42, sunk #162338, accent #F28C38, IBM Plex Sans Arabic typeface, radius
 // 14-18px, borders doing the separating (no gradients, no glass blur). The
 // same token set already used standalone by renderStampScreen() above — one
 // shell for every merchant page from here on, so the two never drift apart.
@@ -866,13 +866,27 @@ const CHROME_CSS = `
     --radius-lg: 18px;
   }
   html[lang="ar"] * { letter-spacing: 0 !important; }
+  /* Arabic letterforms have deeper ascenders and descenders, so the same
+     line-height that suits Latin runs tight in Arabic. */
+  html[lang="ar"] body { line-height: 1.75; }
   * { box-sizing: border-box; }
   body {
     margin: 0;
     background: var(--canvas);
     color: var(--ink);
-    font-family: 'Alexandria', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-family: 'IBM Plex Sans Arabic', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    /* The family stops at 700. Without this, asking for a heavier weight makes
+       the browser smear the outlines into a fake bold — subtly wrong in a way
+       that is hard to name and easy to feel. Fail visibly instead. */
+    font-synthesis-weight: none;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
+  /* Form controls do not inherit the family by default. */
+  button, input, select, textarea { font-family: inherit; }
+  /* A proportional face gives digits different widths, so figures jitter
+     between rows. Tabular figures keep numeric columns aligned. */
+  table.data td, table.data th, .kpi .n, .num, code.pill { font-variant-numeric: tabular-nums; }
   header.top {
     background: var(--sunk);
     border-bottom: 1px solid var(--line);
@@ -881,7 +895,7 @@ const CHROME_CSS = `
     align-items: center;
     gap: 28px;
   }
-  header.top a.brand { color: var(--ink); text-decoration: none; font-weight: 800; font-size: 17px; letter-spacing: 0.2px; }
+  header.top a.brand { color: var(--ink); text-decoration: none; font-weight: 700; font-size: 17px; letter-spacing: 0.2px; }
   header.top nav.nav { display: flex; gap: 4px; flex-wrap: wrap; margin-inline-start: auto; }
   header.top nav.nav a {
     color: var(--ink-2); text-decoration: none; font-weight: 600; font-size: 14px;
@@ -1141,7 +1155,7 @@ function layout(title: string, bodyHtml: string, active?: NavKey, lang: Lang = '
 <title>${escapeHtml(title)} · LoyaNexa</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Alexandria:wght@300;400;500;600;700;800&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&display=swap">
 <style>
 ${CHROME_CSS}
   main {
@@ -1262,7 +1276,7 @@ ${CHROME_CSS}
   .progress-bar span.frac { font-size: 12px; color: var(--ink-3); white-space: nowrap; }
   .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 20px; }
   .kpi { background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 18px 20px; }
-  .kpi .n { font-size: 28px; font-weight: 800; color: var(--ink); }
+  .kpi .n { font-size: 28px; font-weight: 700; color: var(--ink); }
   .kpi .label { font-size: 13px; color: var(--ink-3); margin-top: 4px; }
   .chips { display: flex; gap: 8px; flex-wrap: wrap; }
   .chip {
@@ -1369,7 +1383,7 @@ ${CHROME_CSS}
 
   /* Settings — staff PINs (BUILD.md §8.13). */
   .staff-pin-reveal { background: rgba(34,197,94,.10); border: 1px solid rgba(34,197,94,.35); border-radius: 12px; padding: 14px 16px; margin-bottom: 18px; }
-  .staff-pin-reveal .pin { font-size: 24px; font-weight: 800; letter-spacing: 0.12em; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .staff-pin-reveal .pin { font-size: 24px; font-weight: 700; letter-spacing: 0.12em; color: var(--ink); font-variant-numeric: tabular-nums; }
   .staff-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
   .staff-row:last-child { border-bottom: none; }
   .staff-row .name { font-weight: 600; color: var(--ink); }
@@ -1423,7 +1437,7 @@ ${tabBar(active, lang)}
 // Sign-up / sign-in / sign-out (BUILD.md §8.1/§8.2 — see BUILD.md §2's
 // 2026-08-04 note on why this is self-contained session auth rather than
 // Firebase). A minimal, unstyled-by-framework page each, matching §3's dark
-// palette and Alexandria via the same layout() shell every merchant page
+// palette and IBM Plex Sans Arabic via the same layout() shell every merchant page
 // uses (undefined `active` — neither is a nav-bar tab).
 // ---------------------------------------------------------------------------
 
@@ -2601,12 +2615,12 @@ async function handleCardPrint(_req: http.IncomingMessage, res: http.ServerRespo
 <title>${escapeHtml(card.name)} · ${escapeHtml(t(lang, 'printButton'))} · LoyaNexa</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Alexandria:wght@400;600;700;800&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&display=swap">
 <style>
   :root { --canvas: #0F172A; --paper: #1C2A42; --sunk: #162338; --accent: #F28C38; --ink: #FFFFFF; --ink-2: #CBD5E1; --line: rgba(255,255,255,.12); }
   html[lang="ar"] * { letter-spacing: 0 !important; }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--canvas); color: var(--ink); font-family: 'Alexandria', system-ui, sans-serif; }
+  body { margin: 0; background: var(--canvas); color: var(--ink); font-family: 'IBM Plex Sans Arabic', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
   .toolbar { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--sunk); }
   .toolbar a { color: var(--ink-2); text-decoration: none; font-weight: 600; font-size: 14px; }
   .toolbar button {
@@ -2655,7 +2669,7 @@ async function handleCardPrint(_req: http.IncomingMessage, res: http.ServerRespo
   /* No logo: the card's name does the job, in the same plate. */
   .sheet .logo-plate .wordmark {
     background: rgba(0,0,0,.55); padding: 4mm 7mm; border-radius: 4mm;
-    font-size: 20px; font-weight: 800; color: #fff; letter-spacing: .01em;
+    font-size: 20px; font-weight: 700; color: #fff; letter-spacing: .01em;
   }
 
   .sheet .body { padding: 14mm 16mm 12mm; display: flex; flex-direction: column; align-items: center; flex: 1; }
@@ -2692,7 +2706,7 @@ async function handleCardPrint(_req: http.IncomingMessage, res: http.ServerRespo
   .sheet .step .num {
     flex: none; width: 8mm; height: 8mm; border-radius: 50%;
     background: var(--sheet-accent); color: var(--sheet-bg);
-    display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 800;
+    display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700;
   }
   .sheet .step p { margin: 0; font-size: 15px; line-height: 1.45; }
 
@@ -5744,7 +5758,7 @@ function handleQrPng(res: http.ServerResponse, query: URLSearchParams): void {
 // (serial or shortCode) works fully independently of the camera path, and
 // both converge on the same POST /api/stamp write below. Dark brand tokens
 // per BUILD.md §3 (2026-08-03 revision):
-// canvas #0F172A, paper #1C2A42, accent #F28C38, Alexandria typeface.
+// canvas #0F172A, paper #1C2A42, accent #F28C38, IBM Plex Sans Arabic typeface.
 // ---------------------------------------------------------------------------
 /** Who is viewing the stamp screen — mirrors StampAuth above, minus the full Merchant/Staff rows (renderStampScreen only ever needs a name to display). */
 type StampScreenViewer = { kind: 'merchant' } | { kind: 'staff'; staffName: string };
@@ -5775,7 +5789,7 @@ function renderStampScreen(lang: Lang = 'en', viewer: StampScreenViewer = { kind
 <title>${escapeHtml(t(lang, 'stampScreenTitle'))} · LoyaNexa</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Alexandria:wght@400;600;700;800&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&display=swap">
 <style>
 ${CHROME_CSS}
   /* Stamp-screen-only chrome overrides: this page is a single narrow
