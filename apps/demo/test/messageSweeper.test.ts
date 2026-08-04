@@ -106,7 +106,7 @@ test('runOnce() clears message/messageExpiresAt on an expired Pass and pushes ev
   try {
     const serial = await addExpiringPass(fx, PAST, 2);
     const { sendOne, calls } = makeRecordingSender();
-    const sweeper = new MessageSweeper({ sendOne, pushIntervalMs: 0 });
+    const sweeper = new MessageSweeper({ onlyMerchantIds: [fx.merchantId], sendOne, pushIntervalMs: 0 });
 
     const cleared = await sweeper.runOnce();
     assert.equal(cleared, 1);
@@ -130,7 +130,7 @@ test('runOnce() sweeps a legacy Pass that has a message but NO expiry — a NULL
     // broadcast forever — the owner's original report.
     const serial = await addExpiringPass(fx, null, 1, 'A months-old broadcast');
     const { sendOne, calls } = makeRecordingSender();
-    const sweeper = new MessageSweeper({ sendOne, pushIntervalMs: 0 });
+    const sweeper = new MessageSweeper({ onlyMerchantIds: [fx.merchantId], sendOne, pushIntervalMs: 0 });
 
     const cleared = await sweeper.runOnce();
     assert.ok(cleared >= 1, 'the legacy row must be swept, not skipped');
@@ -149,7 +149,7 @@ test('runOnce() leaves a Pass whose messageExpiresAt is still in the future unto
   try {
     const serial = await addExpiringPass(fx, FUTURE, 1);
     const { sendOne, calls } = makeRecordingSender();
-    const sweeper = new MessageSweeper({ sendOne, pushIntervalMs: 0 });
+    const sweeper = new MessageSweeper({ onlyMerchantIds: [fx.merchantId], sendOne, pushIntervalMs: 0 });
 
     const cleared = await sweeper.runOnce();
     assert.equal(cleared, 0);
@@ -168,7 +168,7 @@ test('runOnce() never touches a Pass with no active message (messageExpiresAt ==
   try {
     const serial = await addExpiringPass(fx, null, 1, '');
     const { sendOne, calls } = makeRecordingSender();
-    const sweeper = new MessageSweeper({ sendOne, pushIntervalMs: 0 });
+    const sweeper = new MessageSweeper({ onlyMerchantIds: [fx.merchantId], sendOne, pushIntervalMs: 0 });
 
     const cleared = await sweeper.runOnce();
     assert.equal(cleared, 0);
@@ -191,7 +191,7 @@ test('runOnce() clears several expired passes across different merchants in one 
       addExpiringPass(fx2, PAST, 1),
     ]);
     const { sendOne, calls } = makeRecordingSender();
-    const sweeper = new MessageSweeper({ sendOne, batchSize: 2, pushIntervalMs: 0 });
+    const sweeper = new MessageSweeper({ onlyMerchantIds: [fx1.merchantId, fx2.merchantId], sendOne, batchSize: 2, pushIntervalMs: 0 });
 
     const firstCycle = await sweeper.runOnce();
     assert.equal(firstCycle, 2, 'a batch never clears more than batchSize rows in one cycle');
@@ -215,7 +215,7 @@ test('a 410 Gone push result deletes the Device row, and the Pass is still clear
   const fx = await makeMerchantAndCard();
   try {
     const serial = await addExpiringPass(fx, PAST, 1);
-    const sweeper = new MessageSweeper({
+    const sweeper = new MessageSweeper({ onlyMerchantIds: [fx.merchantId],
       sendOne: async () => ({ ok: false, gone: true }),
       pushIntervalMs: 0,
     });
@@ -237,7 +237,7 @@ test('a Pass with no registered devices is still cleared — nothing to push to,
   try {
     const serial = await addExpiringPass(fx, PAST, 0);
     const { sendOne, calls } = makeRecordingSender();
-    const sweeper = new MessageSweeper({ sendOne, pushIntervalMs: 0 });
+    const sweeper = new MessageSweeper({ onlyMerchantIds: [fx.merchantId], sendOne, pushIntervalMs: 0 });
 
     const cleared = await sweeper.runOnce();
     assert.equal(cleared, 1);
@@ -255,7 +255,7 @@ test('start() then stop() clears expired passes and leaves no dangling timer', a
   try {
     await addExpiringPass(fx, PAST, 1);
     const { sendOne, calls } = makeRecordingSender();
-    const sweeper = new MessageSweeper({ sendOne, pushIntervalMs: 0, pollIntervalMs: 10 });
+    const sweeper = new MessageSweeper({ onlyMerchantIds: [fx.merchantId], sendOne, pushIntervalMs: 0, pollIntervalMs: 10 });
 
     sweeper.start();
     await new Promise((resolve) => setTimeout(resolve, 100));

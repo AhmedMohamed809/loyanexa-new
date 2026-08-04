@@ -28,6 +28,7 @@
 // this module never constructs a client or opens a new connection, and
 // tests never touch a network.
 
+import { Prisma } from '@prisma/client';
 import { prisma } from '../../packages/db/src/index.ts';
 import type { SendPushFn } from './broadcastWorker.ts';
 
@@ -48,6 +49,18 @@ export interface MessageSweeperOptions {
   now?: () => Date;
   /** Injectable sleep, so tests never actually wait out pushIntervalMs. */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Restricts sweeping to these merchant ids. **A test-isolation seam, not a
+   * production feature** — leave it unset in production, where sweeping
+   * every expired row is the whole point.
+   *
+   * `node --test` runs test files in parallel against one shared local
+   * Postgres, and clearExpiredBatch() sweeps globally. Widening it to catch
+   * NULL-expiry rows made it claim other files' fixtures routinely, which
+   * surfaces in the victim file as a broadcast whose message vanished
+   * mid-test. Same shape as BroadcastWorker's own `onlyJobIds`.
+   */
+  onlyMerchantIds?: string[];
 }
 
 const DEFAULTS = {
@@ -78,6 +91,7 @@ export class MessageSweeper {
   private readonly pollIntervalMs: number;
   private readonly now: () => Date;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly onlyMerchantIds: string[] | undefined;
 
   private timer: NodeJS.Timeout | undefined;
   private stopped = true;
@@ -90,6 +104,10 @@ export class MessageSweeper {
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULTS.pollIntervalMs;
     this.now = options.now ?? ((): Date => new Date());
     this.sleep = options.sleep ?? defaultSleep;
+    this.onlyMerchantIds =
+      options.onlyMerchantIds && options.onlyMerchantIds.length > 0
+        ? options.onlyMerchantIds
+        : undefined;
   }
 
   /**
@@ -107,6 +125,9 @@ export class MessageSweeper {
    */
   private async clearExpiredBatch(): Promise<ExpiredRow[]> {
     const now = this.now();
+    const merchantScope = this.onlyMerchantIds
+      ? Prisma.sql`AND "merchantId" IN (${Prisma.join(this.onlyMerchantIds)})`
+      : Prisma.empty;
     return prisma.$queryRaw<ExpiredRow[]>`
       UPDATE "Pass" AS p
       SET message = '', "messageExpiresAt" = NULL
@@ -121,6 +142,7 @@ export class MessageSweeper {
         -- only hiding them from passes that happen to be rebuilt later.
         WHERE message <> ''
           AND ("messageExpiresAt" IS NULL OR "messageExpiresAt" <= ${now})
+          ${merchantScope}
         ORDER BY "messageExpiresAt" NULLS FIRST
         LIMIT ${this.batchSize}
         FOR UPDATE SKIP LOCKED

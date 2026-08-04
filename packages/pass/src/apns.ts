@@ -111,6 +111,22 @@ export type PushResult =
 /** Apple rejects provider tokens older than 60 minutes and rate-limits how often a key can mint a new one. Refresh well inside that margin. */
 const TOKEN_LIFETIME_MS = 50 * 60 * 1000;
 
+/**
+ * How often to PING an idle APNs session (see #getSession). Comfortably
+ * under the ~60s after which NAT tables and load balancers typically drop a
+ * silent flow, so the connection is kept genuinely alive rather than merely
+ * believed to be.
+ */
+const KEEPALIVE_INTERVAL_MS = 30_000;
+
+/**
+ * Hard deadline for a single push. Generous against Apple's own latency
+ * (measured 140-155ms) and deliberately far below the OS TCP timeout, whose
+ * multi-minute wait is what made a dead connection look like a push that
+ * simply never arrived.
+ */
+const PUSH_TIMEOUT_MS = 5_000;
+
 const PRODUCTION_HOST = 'https://api.push.apple.com';
 const SANDBOX_HOST = 'https://api.sandbox.push.apple.com';
 
@@ -275,6 +291,48 @@ export class ApnsClient {
     session.on('close', () => {
       if (this.#session === session) this.#session = undefined;
     });
+
+    // Keepalive. Without this, a session that is dead but not *closed* stays
+    // cached and every push through it hangs.
+    //
+    // Observed in production 2026-08-04, and the reason the owner reported
+    // stamps and notifications as "sometimes instant, sometimes it doesn't
+    // arrive":
+    //
+    //   [apns] push to device 691020eb... failed — auth=certificate
+    //   host=https://api.push.apple.com status=0 body=read ETIMEDOUT
+    //
+    // The checks above (`!closed && !destroyed`) cannot detect this. A TCP
+    // connection dropped by a NAT idle timeout, or reaped by Apple after a
+    // quiet spell, leaves a *half-open* socket: Node still believes the
+    // session is live, so it is reused, and the request sits there until the
+    // OS gives up minutes later. A café that stamps twice an hour hits this
+    // constantly; a busy one never does — hence "sometimes".
+    //
+    // An HTTP/2 PING both keeps middleboxes from expiring the flow and, when
+    // the peer is already gone, fails fast so the reference is dropped while
+    // no real push is waiting on it. unref() so this timer never holds the
+    // process open on shutdown.
+    const keepalive = setInterval(() => {
+      if (session.closed || session.destroyed) {
+        clearInterval(keepalive);
+        return;
+      }
+      try {
+        session.ping((err) => {
+          if (!err) return;
+          if (this.#session === session) this.#session = undefined;
+          session.destroy();
+        });
+      } catch {
+        // ping() throws if the session died between the check and the call.
+        if (this.#session === session) this.#session = undefined;
+        session.destroy();
+      }
+    }, KEEPALIVE_INTERVAL_MS);
+    keepalive.unref();
+    session.on('close', () => clearInterval(keepalive));
+
     this.#session = session;
     return session;
   }
@@ -315,7 +373,38 @@ export class ApnsClient {
    * measurement session put the mTLS round trip to Apple (certificate
    * auth, warm HTTP/2 session, `lhr`) at ~140-155ms per push.
    */
+  /**
+   * Sends one push, and retries **once on a fresh session** if the first
+   * attempt died at the transport layer (status 0 — timeout, reset,
+   * half-open socket) rather than being answered by Apple.
+   *
+   * The keepalive ping in #getSession closes most of this window, but not
+   * all of it: a push can still be the unlucky request that discovers the
+   * session died since the last ping. Without a retry that push is simply
+   * lost, and the customer's card silently never updates — the failure the
+   * owner sees as "the stamp didn't show this time". A transport failure is
+   * safe to retry: Apple never received it, so there is nothing to
+   * duplicate.
+   *
+   * Only status 0 retries. A real HTTP answer (410 Gone, 400, 403) is
+   * Apple's verdict and retrying it would be wrong — and would re-push to a
+   * device that has already deleted the pass.
+   */
   async sendPush(pushToken: string, passTypeId: string): Promise<PushResult> {
+    const first = await this.#sendPushOnce(pushToken, passTypeId);
+    if (first.ok || first.status !== 0) return first;
+
+    // Transport-level failure. Make sure the next call cannot reuse whatever
+    // just failed, then try once more on a genuinely new connection.
+    if (this.#session) {
+      const dead = this.#session;
+      this.#session = undefined;
+      dead.destroy();
+    }
+    return this.#sendPushOnce(pushToken, passTypeId);
+  }
+
+  async #sendPushOnce(pushToken: string, passTypeId: string): Promise<PushResult> {
     const session = this.#getSession();
     const body = Buffer.from('{}', 'utf8');
 
@@ -337,6 +426,20 @@ export class ApnsClient {
       let status = 0;
       let responseBody = '';
       req.setEncoding('utf8');
+
+      // A hard ceiling on how long one push may take. The production failure
+      // that motivated this waited for `read ETIMEDOUT` — the OS-level TCP
+      // timeout, minutes away — because nothing here imposed a deadline of
+      // its own. The whole stamp-to-banner budget is 1-2 seconds
+      // (BUILD.md §9.3); a push that has not been answered in five is not
+      // going to be useful, and failing fast is what lets sendPush retry on
+      // a fresh session while the customer is still standing at the counter.
+      req.setTimeout(PUSH_TIMEOUT_MS, () => {
+        // Destroying the stream fires 'error' below, which drops the cached
+        // session — so a timed-out push never leaves a poisoned connection
+        // behind for the next one.
+        req.destroy(new Error(`APNs push timed out after ${PUSH_TIMEOUT_MS}ms`));
+      });
       req.on('response', (responseHeaders) => {
         status = Number(responseHeaders[':status'] ?? 0);
       });

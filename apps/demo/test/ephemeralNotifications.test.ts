@@ -149,7 +149,7 @@ test('a returning customer re-scanning (same phone) gets their existing card bac
       where: { id: firstVisit.id },
       data: { messageExpiresAt: new Date(Date.now() - 60_000) },
     });
-    const sweeper = new MessageSweeper({ sendOne: noopSender(), pushIntervalMs: 0 });
+    const sweeper = new MessageSweeper({ onlyMerchantIds: [fx.merchantId], sendOne: noopSender(), pushIntervalMs: 0 });
     const cleared = await sweeper.runOnce();
     assert.equal(cleared, 1);
 
