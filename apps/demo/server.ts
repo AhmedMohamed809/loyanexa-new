@@ -77,8 +77,10 @@ import {
   getBroadcastJob,
   sanitizeBroadcastMessage,
   BROADCAST_MESSAGE_MAX_LENGTH,
+  resolveBroadcastMessageTtlMinutes,
 } from './broadcast.ts';
 import { BroadcastWorker, type SendPushOutcome } from './broadcastWorker.ts';
+import { MessageSweeper } from './messageSweeper.ts';
 import {
   hashPassword,
   verifyPassword,
@@ -1154,6 +1156,9 @@ function layout(title: string, bodyHtml: string, active?: NavKey, lang: Lang = '
   .notif-job .status-pill.queued { background: rgba(148,163,184,.14); color: var(--ink-3); }
   .notif-job .status-pill.sending { background: rgba(242,140,56,.14); color: var(--accent-light); }
   .notif-job .status-pill.sent { background: rgba(34,197,94,.14); color: var(--green); }
+  /* Expiry pill (sub-project 9, "ephemeral notifications") — whether this broadcast's message is still showing on recipients' passes. */
+  .notif-job .status-pill.active { background: rgba(34,197,94,.14); color: var(--green); }
+  .notif-job .status-pill.expired { background: rgba(148,163,184,.14); color: var(--ink-3); }
   .automated-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
   .automated-card { background: var(--sunk); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 18px; }
   .automated-card h3 { margin: 0 0 6px; font-size: 15px; color: var(--ink); display: flex; align-items: center; gap: 8px; }
@@ -3664,15 +3669,44 @@ function broadcastJobProgressText(job: Pick<BroadcastJob, 'sentCount' | 'failedC
     : t(lang, 'notificationsProgress', vars);
 }
 
+/** "When" for the history list (BUILD.md §8.12/§18's "visible outside, in the log page" ask) — date and minute, Arabic-Indic digits on an Arabic card, same "ISO slice, then arabicDigits" convention as formatLastVisit() above. */
+function formatBroadcastSentAt(date: Date, lang: Lang): string {
+  return arabicDigits(date.toISOString().slice(0, 16).replace('T', ' '), lang);
+}
+
+/**
+ * Whether a broadcast's messages have, by now, aged out (sub-project 9,
+ * "ephemeral notifications") — judged from the job's own `createdAt` plus
+ * the configured TTL, not from re-querying every recipient's `Pass` row.
+ * This is an approximation of "has every recipient's copy of this exact
+ * message actually been cleared yet" — the real, authoritative clock is
+ * each `Pass.messageExpiresAt`, stamped by apps/demo/broadcastWorker.ts at
+ * write time (moments after the job is created) and cleared by
+ * apps/demo/messageSweeper.ts — but it is a close enough approximation for
+ * a history list, and avoids an extra query per row on every page load.
+ */
+function broadcastJobExpired(job: Pick<BroadcastJob, 'createdAt'>, ttlMinutes: number, now: Date): boolean {
+  return now.getTime() >= job.createdAt.getTime() + ttlMinutes * 60_000;
+}
+
+function broadcastJobExpiryLabel(expired: boolean, lang: Lang): string {
+  return t(lang, expired ? 'notificationsExpiryExpired' : 'notificationsExpiryActive');
+}
+
 /** One `<div class="notif-job">` row — shared between the initial server-rendered list and the JS template string the Send tab's own `<script>` uses to render newly-submitted/polled jobs, so the two can never visually drift apart. */
 function renderBroadcastJobRow(
-  job: Pick<BroadcastJob, 'id' | 'status' | 'sentCount' | 'failedCount' | 'recipientCount'> & { cardName: string; message: string },
+  job: Pick<BroadcastJob, 'id' | 'status' | 'sentCount' | 'failedCount' | 'recipientCount' | 'createdAt'> & {
+    cardName: string;
+    message: string;
+    expired: boolean;
+  },
   lang: Lang
 ): string {
   return `<div class="notif-job" data-job-id="${escapeHtml(job.id)}" data-status="${escapeHtml(job.status)}">
     <span class="msg">${escapeHtml(job.cardName)} — ${escapeHtml(job.message)}</span>
-    <span class="meta">${escapeHtml(broadcastJobProgressText(job, lang))}</span>
+    <span class="meta">${escapeHtml(formatBroadcastSentAt(job.createdAt, lang))} · ${escapeHtml(broadcastJobProgressText(job, lang))}</span>
     <span class="status-pill ${escapeHtml(job.status)}">${escapeHtml(broadcastJobStatusLabel(job, lang))}</span>
+    <span class="status-pill ${job.expired ? 'expired' : 'active'}">${escapeHtml(broadcastJobExpiryLabel(job.expired, lang))}</span>
   </div>`;
 }
 
@@ -3682,7 +3716,9 @@ function renderNotificationsPage(
   cards: Card[],
   selectedCardId: string | undefined,
   initialRecipientCount: number,
-  jobs: Array<BroadcastJob & { card: { name: string } }>
+  jobs: Array<BroadcastJob & { card: { name: string } }>,
+  ttlMinutes: number,
+  now: Date
 ): string {
   const tabsHtml = `<div class="notif-tabs">
     <a href="/notifications?tab=send"${tab === 'send' ? ' class="active"' : ''}>${escapeHtml(t(lang, 'notificationsTabSend'))}</a>
@@ -3721,7 +3757,11 @@ function renderNotificationsPage(
   const historyHtml =
     jobs.length === 0
       ? `<p class="muted">${escapeHtml(t(lang, 'notificationsHistoryEmpty'))}</p>`
-      : jobs.map((j) => renderBroadcastJobRow({ ...j, cardName: j.card.name }, lang)).join('\n');
+      : jobs
+          .map((j) =>
+            renderBroadcastJobRow({ ...j, cardName: j.card.name, expired: broadcastJobExpired(j, ttlMinutes, now) }, lang)
+          )
+          .join('\n');
 
   const body = `<h1>${escapeHtml(t(lang, 'navNotifications'))}</h1>
   ${tabsHtml}
@@ -3753,6 +3793,10 @@ function renderNotificationsPage(
         queued: ${JSON.stringify(t(lang, 'notificationsStatusQueued'))},
         sending: ${JSON.stringify(t(lang, 'notificationsStatusSending'))},
         sent: ${JSON.stringify(t(lang, 'notificationsStatusSent'))}
+      };
+      var EXPIRY_LABELS = {
+        active: ${JSON.stringify(t(lang, 'notificationsExpiryActive'))},
+        expired: ${JSON.stringify(t(lang, 'notificationsExpiryExpired'))}
       };
       var counterTpl = ${JSON.stringify(t(lang, 'notificationsMessageCounter', { count: '__N__', max: String(BROADCAST_MESSAGE_MAX_LENGTH) }))};
       var progressTpl = ${JSON.stringify(t(lang, 'notificationsProgress', { sent: '__S__', total: '__T__' }))};
@@ -3809,13 +3853,18 @@ function renderNotificationsPage(
         msg.textContent = job.cardName + ' — ' + job.message;
         var meta = document.createElement('span');
         meta.className = 'meta';
-        meta.textContent = progressText(job);
+        meta.textContent = job.sentAtText + ' · ' + progressText(job);
         var pill = document.createElement('span');
         pill.className = 'status-pill ' + job.status;
         pill.textContent = LABELS[job.status] || job.status;
+        var expiryKey = job.expired ? 'expired' : 'active';
+        var expiryPill = document.createElement('span');
+        expiryPill.className = 'status-pill ' + expiryKey;
+        expiryPill.textContent = EXPIRY_LABELS[expiryKey];
         row.appendChild(msg);
         row.appendChild(meta);
         row.appendChild(pill);
+        row.appendChild(expiryPill);
         return row;
       }
 
@@ -3898,7 +3947,25 @@ async function handleNotificationsPage(req: http.IncomingMessage, res: http.Serv
 
   const jobs = tab === 'send' ? await listBroadcastJobs(merchant.id) : [];
 
-  sendHtml(res, 200, layout(t(lang, 'navNotifications'), renderNotificationsPage(lang, tab, cards, selectedCard?.id, initialRecipientCount, jobs), 'notifications', lang));
+  sendHtml(
+    res,
+    200,
+    layout(
+      t(lang, 'navNotifications'),
+      renderNotificationsPage(
+        lang,
+        tab,
+        cards,
+        selectedCard?.id,
+        initialRecipientCount,
+        jobs,
+        resolveBroadcastMessageTtlMinutes(),
+        new Date()
+      ),
+      'notifications',
+      lang
+    )
+  );
 }
 
 async function handleRecipientCount(req: http.IncomingMessage, res: http.ServerResponse, url: URL, merchant: Merchant): Promise<void> {
@@ -3912,7 +3979,17 @@ async function handleRecipientCount(req: http.IncomingMessage, res: http.ServerR
   sendJson(res, 200, { ok: true, count });
 }
 
-function broadcastJobJson(job: BroadcastJob & { card?: { name: string } }) {
+/**
+ * `sentAtText`/`expired` (sub-project 9, "ephemeral notifications") let the
+ * client-side `renderRow()` in the Send tab's own `<script>` (below) render
+ * a freshly-submitted or polled job identically to a server-rendered
+ * history row — same reasoning as renderBroadcastJobRow's own doc comment:
+ * one shape, never two that can drift apart. Both are computed here,
+ * server-side (so the client script never needs its own date-formatting or
+ * Arabic-digit-conversion logic) — see formatBroadcastSentAt()'s and
+ * broadcastJobExpired()'s own doc comments.
+ */
+function broadcastJobJson(job: BroadcastJob & { card?: { name: string } }, lang: Lang) {
   return {
     id: job.id,
     status: job.status,
@@ -3921,6 +3998,8 @@ function broadcastJobJson(job: BroadcastJob & { card?: { name: string } }) {
     sentCount: job.sentCount,
     failedCount: job.failedCount,
     cardName: job.card?.name ?? '',
+    sentAtText: formatBroadcastSentAt(job.createdAt, lang),
+    expired: broadcastJobExpired(job, resolveBroadcastMessageTtlMinutes(), new Date()),
   };
 }
 
@@ -3963,17 +4042,18 @@ async function handleSendBroadcast(req: http.IncomingMessage, res: http.ServerRe
   }
 
   const job = await enqueueBroadcast(card, message, 'manual');
-  sendJson(res, 200, { ok: true, job: broadcastJobJson({ ...job, card: { name: card.name } }) });
+  sendJson(res, 200, { ok: true, job: broadcastJobJson({ ...job, card: { name: card.name } }, lang) });
 }
 
 async function handleBroadcastJobStatus(req: http.IncomingMessage, res: http.ServerResponse, jobId: string, merchant: Merchant): Promise<void> {
+  const lang = resolveLang(req);
   const job = await getBroadcastJob(jobId, merchant.id);
   if (!job) {
     sendJson(res, 404, { ok: false });
     return;
   }
   const card = await prisma.card.findUnique({ where: { id: job.cardId }, select: { name: true } });
-  sendJson(res, 200, { ok: true, job: broadcastJobJson({ ...job, card: card ?? undefined }) });
+  sendJson(res, 200, { ok: true, job: broadcastJobJson({ ...job, card: card ?? undefined }, lang) });
 }
 
 // ---------------------------------------------------------------------------
@@ -5469,6 +5549,16 @@ async function broadcastSendOne(device: Device): Promise<SendPushOutcome> {
 const broadcastWorker = new BroadcastWorker({ sendOne: broadcastSendOne });
 
 // ---------------------------------------------------------------------------
+// Message sweeper (sub-project 9, "ephemeral notifications") — clears an
+// expired Pass.message/messageExpiresAt and wakes its devices, in the same
+// process as the broadcast worker just above. Shares `broadcastSendOne`
+// directly (the exact same warm ApnsClient session every other push path in
+// this file uses) — never a client or connection of its own. Started once,
+// at boot, alongside broadcastWorker; stopped cleanly on shutdown.
+// ---------------------------------------------------------------------------
+const messageSweeper = new MessageSweeper({ sendOne: broadcastSendOne });
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 const server = http.createServer(async (req, res) => {
@@ -5821,11 +5911,20 @@ server.listen(PORT, '0.0.0.0', () => {
   // place a BroadcastWorker ever actually runs under test, and it always
   // constructs its own instance directly with an injected stub `sendOne`,
   // never through this server process.
-  if (process.env.DISABLE_BROADCAST_WORKER !== '1') broadcastWorker.start();
+  // DISABLE_BROADCAST_WORKER also gates the message sweeper, deliberately
+  // reusing the same flag rather than adding a second one: the reasoning
+  // above (a spawned test server must never run a background job against
+  // the shared local test Postgres) applies identically here, and every
+  // existing test file that spawns this server already sets it.
+  if (process.env.DISABLE_BROADCAST_WORKER !== '1') {
+    broadcastWorker.start();
+    messageSweeper.start();
+  }
 });
 
 async function shutdown(): Promise<void> {
   await broadcastWorker.stop();
+  await messageSweeper.stop();
   await prisma.$disconnect();
   process.exit(0);
 }

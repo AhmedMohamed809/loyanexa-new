@@ -416,6 +416,64 @@ Automated types: **welcome · birthday · win-back**.
 > (not per push, not per retry) so a repeated identical broadcast still banks
 > a banner, while a retried push re-writes the *same* already-marked text and
 > never re-shows a banner a device already caught up on.
+>
+> **Revised, 2026-08-04 (sub-project 9, "ephemeral notifications").** The
+> owner reported this bug precisely: *"If I send two notifications and after
+> that there is a new customer, when the new customer installs the card in
+> the wallet it's showing all the previous notifications. I don't want this.
+> If someone registers after my notification, don't show them any
+> notification until I send one. And it should disappear after ten or twenty
+> minutes."*
+>
+> **Root cause, found by reproducing the bug against a real database before
+> writing any fix** (`apps/demo/enqueueBroadcast()` already snapshots
+> recipients at send time, so a genuinely new `Pass` was never actually
+> targeted): enrolment is idempotent by phone number
+> (`apps/demo/enrol.ts`'s `createPassForEnrolment()`, shipped earlier this
+> project) — re-enrolling on a phone number the card already has a `Pass`
+> for returns *that same row*, old `message` and all. What looked like "a
+> new customer" was the owner's own phone number, tested twice; a
+> genuinely new phone number always got (and still gets) a brand-new `Pass`
+> with an empty message. `apps/demo/test/ephemeralNotifications.test.ts`
+> proves both halves side by side against the real local Postgres.
+>
+> Two fixes ship together, both needed:
+>
+> 1. **Expiry.** `Pass` gains `messageExpiresAt DateTime? @db.Timestamptz(3)`.
+>    `apps/demo/broadcastWorker.ts`'s `processRecipient()` stamps it to
+>    write-time + `BROADCAST_MESSAGE_TTL_MINUTES` (env var, default **15**,
+>    `apps/demo/broadcast.ts`'s `resolveBroadcastMessageTtlMinutes()`)
+>    alongside `message`/`messageJobCreatedAt`, under the same out-of-order
+>    guard. `apps/demo/passContent.ts`'s `buildPassContentFor()` now
+>    **omits the "msg" back field entirely** — not a blank one — whenever
+>    `message` is `""` or `messageExpiresAt` has passed. A brand-new pass
+>    has neither, so its very first pass.json carries no news field at all:
+>    the owner's report, fixed. See that function's own dated doc comment
+>    for the accepted trade-off this supersedes (the field used to be kept
+>    present-but-blank specifically so a field's *first* real value always
+>    had an "old value" on the device to diff against for the
+>    `changeMessage` banner — see §9.3's own note below for what was found
+>    about that trade-off).
+> 2. **The sweeper.** An expired field only disappearing the next time a
+>    pass happens to be rebuilt (a stamp, a card edit) is not good enough —
+>    a customer's card would keep showing it for hours. `apps/demo/messageSweeper.ts`'s
+>    `MessageSweeper` is a second periodic task, in the same process as
+>    `BroadcastWorker` (started alongside it at boot, same
+>    `DISABLE_BROADCAST_WORKER` test gate, same shared warm `sendOne`/ApnsClient
+>    session — never a connection of its own), batched the same way
+>    (`FOR UPDATE SKIP LOCKED`, `batchSize` default 50): it atomically clears
+>    `message`/`messageExpiresAt` on every `Pass` whose expiry has passed and
+>    pushes a wake-up to each of its devices, so the field disappears
+>    immediately rather than on the pass's next incidental rebuild.
+>
+> **The Notifications history** (`GET /notifications`'s Send tab, already
+> shipped above) now also shows **when** each broadcast was sent and
+> whether it has **expired** — a pill per row, computed from the job's own
+> `createdAt` + the configured TTL (`broadcastJobExpired()` in server.ts;
+> an approximation of "has every recipient's copy actually been cleared
+> yet" close enough for a history list — the authoritative clock is each
+> `Pass.messageExpiresAt`). This is the "visible outside, in the log page"
+> the owner separately asked for.
 
 ### 8.13 Settings
 Business profile · **Billing & subscription** → Manage billing ·
@@ -597,6 +655,45 @@ arrive with no error. Use ngrok in development.
 > 2. **The certificate-mode mTLS round trip to Apple is ~140-155ms** on a warm HTTP/2
 >    session, from `lhr`. That is the bulk of the "network layer" slice of the 1-2
 >    second budget the paragraph above describes.
+
+> **Investigated, 2026-08-04 (sub-project 9, "ephemeral notifications").**
+> Two field-identity questions this change turned on, neither of which could
+> be device-tested in this environment (no physical iPhone/Wallet available
+> here — everything below is reasoned from Apple's documented mechanism plus
+> corroborating third-party reports, not confirmed against a real device):
+>
+> 1. **A field disappearing (`apps/demo/messageSweeper.ts` clearing the
+>    "msg" back field once it expires) does not produce a second,
+>    spurious banner.** `changeMessage`'s `%@` placeholder is substituted
+>    with the field's *new* value; a removed field has no new value to
+>    substitute, so there is nothing for Wallet to construct banner text
+>    from. No source found (official or third-party) describes a "field
+>    removed" banner firing, and it would be a strange thing for Apple's
+>    own implementation to do given the mechanism is explicitly
+>    value-substitution. This is the load-bearing assumption behind
+>    shipping the sweeper at all — if it turns out wrong on a real device,
+>    stop and revisit before this reaches production, per this
+>    sub-project's own brief.
+> 2. **A field appearing for the first time (present in a new pass.json,
+>    absent from whatever the device currently has) is not guaranteed to
+>    fire its `changeMessage` banner the first time.** This is the exact
+>    trap the pre-2026-08-04 design avoided by keeping the "msg" field
+>    always present, even blank, from a pass's very first pass.json (see
+>    `apps/demo/passContent.ts`'s superseded doc comment) — Wallet needs an
+>    "old value" already on the device to diff the new one against, and a
+>    wholly new key has none. A third-party developer report found while
+>    researching this (Apple's own docs did not render for this
+>    environment's fetch tooling) describes exactly this: a field seeded
+>    only in a later update, never in the pass's original download, banks
+>    no banner the *first* time it changes — only from the second change
+>    onward, once the key has an anchor. Since §8.12's fix requires the
+>    "msg" field to be *absent* on a brand-new pass (the whole point — no
+>    stale news for someone who wasn't a customer yet), this is now an
+>    accepted, inherent trade-off: a customer's very first-ever broadcast
+>    may arrive without a lock-screen banner, but is still visible the next
+>    time they open Wallet or the next time their pass is otherwise
+>    rebuilt. Every broadcast after their first carries an anchor and
+>    behaves exactly as before.
 
 ### 9.4 Location reminders are free and automatic
 Geofences live **inside the pass** (max 10). The OS surfaces the card when the customer is

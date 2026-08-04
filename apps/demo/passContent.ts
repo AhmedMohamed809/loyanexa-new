@@ -67,13 +67,43 @@ export function buildTermsText(card: Card): string {
  * moving the field does not touch what makes the banner appear, only where
  * the text lives once the customer taps in to read it. Do not put this back
  * in `auxiliaryFields`/`secondaryFields` without re-reading that note first.
+ *
+ * **Revised, 2026-08-04 (sub-project 9, "ephemeral notifications").** The
+ * "msg" back field is now **omitted entirely** — not rendered with an
+ * empty value — whenever `pass.message` is `""` or `pass.messageExpiresAt`
+ * has passed. This is what fixes the owner's report: a brand-new `Pass`
+ * (freshly enrolled, or a genuinely new customer's own fresh row) has never
+ * had a message, so its very first pass.json carries no "msg" field at all,
+ * rather than one sitting there blank forever — "a back field with a blank
+ * value looks broken." `messageExpiresAt` is stamped by
+ * apps/demo/broadcastWorker.ts alongside `message` (default 15 minutes,
+ * `BROADCAST_MESSAGE_TTL_MINUTES`), and apps/demo/messageSweeper.ts clears
+ * both columns once it passes so an already-issued pass stops carrying the
+ * field on its next rebuild too — not only a brand-new one.
+ *
+ * This *reverses* the previous "always present, even blank" design (see the
+ * now-superseded reasoning this replaces: the field existing from the very
+ * first pass.json so its first real value has an "old value" already on the
+ * device to diff against). That reasoning was about `changeMessage`
+ * reliably banking a banner the first time a field's value changes; opting
+ * a brand-new field *in* for the very first broadcast a given customer ever
+ * receives is an inherent, accepted trade-off of fixing the reported bug —
+ * Apple does not document its own diffing algorithm precisely enough to
+ * rule out "a wholly new field key never bankable's a banner on its first
+ * appearance" with certainty either way, and it could not be verified
+ * against a real device in this change. Worst case, a customer's first-ever
+ * broadcast shows without a lock-screen banner and is still visible the
+ * next time they open Wallet — better than the bug being fixed (a stranger
+ * seeing a merchant's old messages the moment they enrol).
  */
 export function buildPassContentFor(
   card: Card,
   pass: Pass,
-  options: { publicBaseUrl?: string } = {}
+  options: { publicBaseUrl?: string; now?: Date } = {}
 ): PassContent {
   const lang = cardLang(card);
+  const now = options.now ?? new Date();
+  const messageActive = pass.message !== '' && (!pass.messageExpiresAt || pass.messageExpiresAt.getTime() > now.getTime());
   const stampsRemaining = Math.max(card.stampsGoal - pass.stamps, 0);
   // Location reminders (BUILD.md §9.4/§9.1) — geofences live inside the
   // pass itself, so this is the only place they're ever written; there is
@@ -124,26 +154,23 @@ export function buildPassContentFor(
       },
     ],
     // backFields, in order (BUILD.md §9.1's dated note): the merchant
-    // broadcast message first, then the auto-generated terms (§8.6). The
-    // message field (BUILD.md §9.1's "msg"/"NEWS" sample, §8.12) is always
-    // present, even before any broadcast has ever been sent (pass.message
-    // defaults to ""), so the field already exists in the very first
-    // pass.json a device downloads; see PassContent's own auxiliaryFields
-    // doc comment in buildPass.ts for why a field's first real value needs
-    // an "old value" already on the device to diff against — that reasoning
-    // holds identically for a back field. `value` is pass.message verbatim,
-    // never re-marked here — apps/demo/broadcastWorker.ts computes and
-    // stores the invisible change marker exactly once per broadcast job, at
-    // the point it writes Pass.message, so every subsequent pass.json
-    // rebuild (a stamp landing, a card edit) reads the same already-marked
-    // text and causes no spurious repeat of the news banner. It was moved
-    // here from `auxiliaryFields` (which Apple renders on the card *face*)
+    // broadcast message first (only when `messageActive`, per this
+    // function's own 2026-08-04 doc comment above), then the auto-generated
+    // terms (§8.6). `value` is pass.message verbatim, never re-marked here —
+    // apps/demo/broadcastWorker.ts computes and stores the invisible change
+    // marker exactly once per broadcast job, at the point it writes
+    // Pass.message, so every subsequent pass.json rebuild (a stamp landing,
+    // a card edit) reads the same already-marked text and causes no
+    // spurious repeat of the news banner. It was moved here from
+    // `auxiliaryFields` (which Apple renders on the card *face*)
     // specifically so a stale broadcast stops being permanent clutter once
     // it stops being new — `changeMessage` still fires from a back field
     // exactly as it did from a front one, so the lock-screen banner is
     // unaffected; only where the text lives once read is different.
     backFields: [
-      { key: 'msg', label: t(lang, 'passMessageFieldLabel'), value: pass.message, changeMessage: '%@' },
+      ...(messageActive
+        ? [{ key: 'msg', label: t(lang, 'passMessageFieldLabel'), value: pass.message, changeMessage: '%@' }]
+        : []),
       { key: 'terms', label: t(lang, 'passTermsFieldLabel'), value: buildTermsText(card) },
     ],
     barcodeMessage: pass.serial,

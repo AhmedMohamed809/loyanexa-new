@@ -66,6 +66,7 @@ function makePass(overrides: Partial<Pass> = {}): Pass {
     totalStamps: 3,
     rewards: 0,
     message: '',
+    messageExpiresAt: null,
     platform: '',
     lastStampAt: null,
     createdAt: new Date(),
@@ -121,10 +122,47 @@ test('backFields\' first entry is the "msg" field, sourced verbatim from pass.me
   assert.equal(withMessage.backFields?.[0]?.changeMessage, '%@');
 });
 
-test('backFields\' "msg" field is present even before any broadcast has ever been sent (pass.message === "") — the field must already exist for its first real value to diff against', () => {
+// ---------------------------------------------------------------------------
+// Revised 2026-08-04 (sub-project 9, "ephemeral notifications"): the owner's
+// report — a brand-new customer's freshly issued pass showed old broadcast
+// text. buildPassContentFor now omits the "msg" back field entirely
+// (rather than rendering it with an empty value) whenever pass.message is
+// "" or pass.messageExpiresAt has passed. See this file's own doc comment
+// for the accepted trade-off this supersedes.
+// ---------------------------------------------------------------------------
+
+test('the "msg" back field is omitted entirely — not rendered blank — on a brand-new pass (pass.message === "")', () => {
   const content = buildPassContentFor(makeCard({ lang: 'en' }), makePass({ message: '' }));
+  assert.equal(content.backFields?.some((f) => f.key === 'msg'), false, 'no "msg" entry at all');
+  assert.equal(content.backFields?.length, 1, 'only the terms field remains');
+  assert.equal(content.backFields?.[0]?.key, 'terms');
+});
+
+test('the "msg" back field is present when a message has no expiry set (messageExpiresAt === null)', () => {
+  const content = buildPassContentFor(makeCard({ lang: 'en' }), makePass({ message: 'Sale!', messageExpiresAt: null }));
   assert.equal(content.backFields?.[0]?.key, 'msg');
-  assert.equal(content.backFields?.[0]?.value, '');
+  assert.equal(content.backFields?.[0]?.value, 'Sale!');
+});
+
+test('the "msg" back field is present while messageExpiresAt is still in the future', () => {
+  const now = new Date('2026-08-04T12:00:00.000Z');
+  const content = buildPassContentFor(
+    makeCard({ lang: 'en' }),
+    makePass({ message: 'Sale!', messageExpiresAt: new Date('2026-08-04T12:10:00.000Z') }),
+    { now }
+  );
+  assert.equal(content.backFields?.[0]?.key, 'msg');
+});
+
+test('the "msg" back field is omitted once messageExpiresAt has passed, even though pass.message is still non-empty in the row', () => {
+  const now = new Date('2026-08-04T12:20:00.000Z');
+  const content = buildPassContentFor(
+    makeCard({ lang: 'en' }),
+    makePass({ message: 'Sale!', messageExpiresAt: new Date('2026-08-04T12:10:00.000Z') }),
+    { now }
+  );
+  assert.equal(content.backFields?.some((f) => f.key === 'msg'), false);
+  assert.equal(content.backFields?.length, 1);
 });
 
 test('the "msg" field label is localised (NEWS in English, translated in Arabic)', () => {
@@ -175,7 +213,7 @@ test('buildTermsText describes the card\'s own expiry rule, in English', () => {
 // ---------------------------------------------------------------------------
 
 test('headerFields, secondaryFields and backFields labels are Arabic on an Arabic card (the Card/Prisma default)', () => {
-  const content = buildPassContentFor(makeCard({ lang: 'ar', stampsGoal: 8 }), makePass({ stamps: 3 }));
+  const content = buildPassContentFor(makeCard({ lang: 'ar', stampsGoal: 8 }), makePass({ stamps: 3, message: 'تخفيض!' }));
   assert.equal(content.headerFields?.[0]?.label, 'الأختام');
   assert.equal(content.headerFields?.[0]?.value, '٣ من ٨', 'stamp counts render in Arabic-Indic digits (BUILD.md §13)');
   assert.equal(content.secondaryFields?.[0]?.label, 'المكافأة');
@@ -183,6 +221,13 @@ test('headerFields, secondaryFields and backFields labels are Arabic on an Arabi
   assert.ok(content.secondaryFields?.[1]?.value.startsWith('٥ أختام'), 'stampsRemaining should read 8 - 3 = 5, in Arabic-Indic digits');
   assert.equal(content.backFields?.[0]?.label, 'أخبار', 'the message field is now backFields[0]');
   assert.equal(content.backFields?.[1]?.label, 'الشروط', 'terms come after the message in backFields');
+});
+
+test('backFields carries only the terms field, in Arabic, when there is no active message (pass.message === "")', () => {
+  const content = buildPassContentFor(makeCard({ lang: 'ar', stampsGoal: 8 }), makePass({ stamps: 3 }));
+  assert.equal(content.backFields?.length, 1);
+  assert.equal(content.backFields?.[0]?.key, 'terms');
+  assert.equal(content.backFields?.[0]?.label, 'الشروط');
 });
 
 test('merchant-authored rewardText is never translated, in either language (BUILD.md §13)', () => {

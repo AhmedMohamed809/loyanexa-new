@@ -376,6 +376,9 @@ export const en = {
   notificationsStatusQueued: 'Queued',
   notificationsStatusSending: 'Sending',
   notificationsStatusSent: 'Sent',
+  /** History-list pill (sub-project 9, "ephemeral notifications") — whether this broadcast's message is still showing on recipients' passes, or has already aged out (BROADCAST_MESSAGE_TTL_MINUTES, default 15). */
+  notificationsExpiryActive: 'Active',
+  notificationsExpiryExpired: 'Expired',
   notificationsProgress: '{sent} of {total} sent',
   notificationsProgressWithFailed: '{sent} of {total} sent, {failed} failed',
   notificationsAutomatedWelcomeTitle: 'Welcome',
