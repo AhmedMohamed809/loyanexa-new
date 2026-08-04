@@ -8,19 +8,49 @@ datasource db {
 }
 
 model Merchant {
-  id           String    @id @default(cuid())
-  firebaseUid  String    @unique
-  email        String    @unique
-  name         String
+  id          String @id @default(cuid())
+  /// Firebase Auth's own user id — unused by the shipped self-contained
+  /// session auth (see docs/BUILD.md §2's 2026-08-04 note), kept nullable
+  /// and unique so a future Firebase migration can populate it per merchant
+  /// without a schema change. Never read or written by apps/demo/auth.ts.
+  firebaseUid String? @unique
+  email       String @unique
+  name        String
+  /// scrypt password hash, `scrypt$N$r$p$saltHex$hashHex` (apps/demo/auth.ts's
+  /// hashPassword/verifyPassword) — never a plain hash, never a fast one.
+  /// Nullable so a Merchant row can exist before a password is set (e.g. the
+  /// pre-auth demo row this migration preserves — see its own migration.sql
+  /// comment); apps/demo/auth.ts treats a null hash exactly like a wrong
+  /// password on sign-in, never as a distinguishable case.
+  passwordHash String?
   locale       String    @default("ar")
   plan         Plan      @default(STARTER)
   stripeCustId String?
   subStatus    String    @default("trialing")
   trialEndsAt  DateTime?
   cards        Card[]
+  sessions     Session[]
   createdAt    DateTime  @default(now())
 
   @@index([firebaseUid])
+}
+
+/// Server-side session storage (docs/BUILD.md §2's 2026-08-04 note) — `id`
+/// itself *is* the opaque random session token (32 random bytes,
+/// base64url — apps/demo/auth.ts's createSession), set as the `lnx-session`
+/// cookie's value. Deleting a row here is what makes a sign-out or an
+/// expiry actually invalidate the session server-side, not just clear the
+/// cookie client-side — a stolen/reused cookie value stops working the
+/// moment its row is gone.
+model Session {
+  id         String   @id
+  merchantId String
+  merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([merchantId])
+  @@index([expiresAt])
 }
 
 model Card {

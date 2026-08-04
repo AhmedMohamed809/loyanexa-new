@@ -40,7 +40,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import querystring from 'node:querystring';
 import { fileURLToPath } from 'node:url';
-import { Prisma, type Card, type Pass } from '@prisma/client';
+import { Prisma, type Card, type Pass, type Merchant } from '@prisma/client';
 import { buildPass, type PassCredentials, type PassImages } from '../../packages/pass/src/buildPass.ts';
 import { buildPassContentFor } from './passContent.ts';
 import {
@@ -70,6 +70,19 @@ import { createAppleCredentialsResolver } from './appleCredentials.ts';
 import { csvRow } from './csv.ts';
 import { createPassForEnrolment, deleteOrphanedPass } from './enrol.ts';
 import { RateLimiter, resolveClientIp } from './rateLimit.ts';
+import {
+  hashPassword,
+  verifyPassword,
+  validatePassword,
+  MIN_PASSWORD_LENGTH,
+  createSession,
+  deleteSession,
+  getMerchantForSession,
+  setSessionCookie,
+  clearSessionCookie,
+  sessionIdFromRequest,
+  normalizeEmail,
+} from './auth.ts';
 import {
   normalizeUpload,
   storeCardImage,
@@ -677,22 +690,40 @@ function passFilenameStem(name: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Merchant resolution — no auth in this slice (Firebase lands in
-// sub-project 4). There is exactly one merchant on this machine: the owner
-// sitting at the laptop. We find-or-create it on first use.
+// Merchant resolution — session auth (see docs/BUILD.md §2's 2026-08-04
+// note and apps/demo/auth.ts). Every merchant-facing route below resolves
+// its merchant from the session cookie via requireMerchant(), never from
+// "the only merchant row that exists" the way the old single-tenant demo
+// did — that is exactly the gap this branch closes.
 // ---------------------------------------------------------------------------
-async function getOrCreateMerchant() {
-  // TODO(sub-project 4): real auth — resolve the merchant from the signed-in
-  // Firebase user instead of "the only merchant row that exists locally".
-  const existing = await prisma.merchant.findFirst({ orderBy: { createdAt: 'asc' } });
-  if (existing) return existing;
-  return prisma.merchant.create({
-    data: {
-      firebaseUid: 'local-demo-merchant',
-      email: 'ahmedabdulalgane@gmail.com',
-      name: 'Demo Merchant',
-    },
-  });
+
+/**
+ * Guards a merchant-facing route: resolves the signed-in Merchant from the
+ * session cookie, or 302s to /signin (carrying the original path as `next`)
+ * and returns `undefined` when there is no valid session. Callers must
+ * check for `undefined` and return immediately without writing any further
+ * response — requireMerchant has already sent one.
+ */
+async function requireMerchant(req: http.IncomingMessage, res: http.ServerResponse): Promise<Merchant | undefined> {
+  const merchant = await getMerchantForSession(sessionIdFromRequest(req));
+  if (merchant) return merchant;
+  const next = encodeURIComponent(req.url ?? '/app');
+  res.writeHead(302, { Location: `/signin?next=${next}` });
+  res.end();
+  return undefined;
+}
+
+/**
+ * Loads Card `id`, scoped to `merchantId` — the one lookup every
+ * merchant-facing card route uses instead of a bare `findUnique({ where:
+ * { id } })`. A card that exists but belongs to a different merchant comes
+ * back `null`, identical to one that doesn't exist at all: the caller's
+ * usual `sendNotFound` renders the same 404 either way, so a request can
+ * never learn that someone else's card id is real (BUILD.md job brief: 404,
+ * not 403).
+ */
+function findOwnedCard(id: string, merchantId: string): Promise<Card | null> {
+  return prisma.card.findFirst({ where: { id, merchantId } });
 }
 
 /** Atomically allocate the next link code from the shared counter (starts at 10000). */
@@ -740,6 +771,9 @@ function navBar(active: NavKey | undefined, lang: Lang = 'en'): string {
       )
       .join('\n    ')}
   </nav>
+  <form method="POST" action="/signout" style="margin:0;">
+    <button type="submit" class="btn secondary small">${escapeHtml(t(lang, 'navSignOut'))}</button>
+  </form>
 </header>`;
 }
 
@@ -1001,8 +1035,250 @@ ${bodyHtml}
 </html>`;
 }
 
-function authBanner(lang: Lang): string {
-  return `<div class="banner"><b>${escapeHtml(t(lang, 'authBannerTitle'))}</b> ${escapeHtml(t(lang, 'authBannerBody'))}</div>`;
+// ---------------------------------------------------------------------------
+// Sign-up / sign-in / sign-out (BUILD.md §8.1/§8.2 — see BUILD.md §2's
+// 2026-08-04 note on why this is self-contained session auth rather than
+// Firebase). A minimal, unstyled-by-framework page each, matching §3's dark
+// palette and Alexandria via the same layout() shell every merchant page
+// uses (undefined `active` — neither is a nav-bar tab).
+// ---------------------------------------------------------------------------
+
+/** Login attempts are rate-limited both per email and per IP (BUILD.md job brief) — either alone lets an attacker route around the other (many emails from one IP, or one email from many IPs/a botnet). Separate, generous-for-a-human limits: a real merchant mistyping a password a few times must never be locked out by the same rule that stops a credential-stuffing script. */
+const loginLimiterByEmail = new RateLimiter({ limit: 8, windowMs: 15 * 60 * 1000 });
+const loginLimiterByIp = new RateLimiter({ limit: 30, windowMs: 15 * 60 * 1000 });
+
+/**
+ * A fixed, valid-shaped scrypt hash that no real password will ever match,
+ * computed once at module load. handleSignIn() always runs a verifyPassword
+ * call against *some* hash — this one when there's no real merchant/password
+ * to check against — so that scrypt's cost (tens of milliseconds) is paid on
+ * every sign-in attempt equally. Without this, "no such account" returns
+ * near-instantly (no hash to check) while "wrong password on a real
+ * account" pays the full scrypt cost — a response-time side channel that
+ * would let the identical, deliberately generic `signInInvalidCredentials`
+ * message (BUILD.md job brief: "the same generic message for wrong password
+ * and no such account") still leak which emails are registered, just
+ * through timing instead of content.
+ */
+const DUMMY_PASSWORD_HASH = hashPassword(crypto.randomBytes(24).toString('hex'));
+
+function authPageShell(title: string, bodyHtml: string, lang: Lang): string {
+  return layout(title, `<div class="panel" style="max-width:420px;margin:40px auto;">${bodyHtml}</div>`, undefined, lang);
+}
+
+/** A safe `next` path to redirect to after sign-in — only ever an in-app, same-origin path (starts with exactly one `/`, never `//…` which browsers treat as protocol-relative), so this can never be turned into an open redirect off a query parameter. */
+function safeNextPath(raw: string | null): string {
+  if (!raw) return '/app';
+  if (!raw.startsWith('/') || raw.startsWith('//')) return '/app';
+  return raw;
+}
+
+function renderSignInForm(opts: { email?: string; next: string; error?: string }, lang: Lang): string {
+  const { email = '', next, error } = opts;
+  const body = `
+    <h1>${escapeHtml(t(lang, 'signInTitle'))}</h1>
+    ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
+    <form method="POST" action="/signin">
+      <input type="hidden" name="next" value="${escapeHtml(next)}">
+      <div class="field">
+        <label for="email">${escapeHtml(t(lang, 'signInEmailLabel'))}</label>
+        <input type="text" id="email" name="email" required autocomplete="email" value="${escapeHtml(email)}">
+      </div>
+      <div class="field">
+        <label for="password">${escapeHtml(t(lang, 'signInPasswordLabel'))}</label>
+        <div class="hex-row">
+          <input type="password" id="password" name="password" required autocomplete="current-password" style="flex:1;">
+          <button type="button" class="btn secondary small" id="toggleSignInPassword">${escapeHtml(t(lang, 'signInShowPassword'))}</button>
+        </div>
+      </div>
+      <button class="btn" type="submit" style="width:100%;">${escapeHtml(t(lang, 'signInSubmitButton'))}</button>
+    </form>
+    <p class="muted" style="margin-top:16px;">${escapeHtml(t(lang, 'signInNoAccountText'))} <a href="/signup">${escapeHtml(t(lang, 'signInSignUpLink'))}</a></p>
+    <script>
+      (function () {
+        var btn = document.getElementById('toggleSignInPassword');
+        var input = document.getElementById('password');
+        if (!btn || !input) return;
+        btn.addEventListener('click', function () {
+          var show = input.type === 'password';
+          input.type = show ? 'text' : 'password';
+          btn.textContent = show ? ${JSON.stringify(t(lang, 'signInHidePassword'))} : ${JSON.stringify(t(lang, 'signInShowPassword'))};
+        });
+      })();
+    </script>
+  `;
+  return authPageShell(t(lang, 'signInTitle'), body, lang);
+}
+
+function renderSignUpForm(
+  opts: { businessName?: string; email?: string; next: string; error?: string },
+  lang: Lang
+): string {
+  const { businessName = '', email = '', next, error } = opts;
+  const body = `
+    <h1>${escapeHtml(t(lang, 'signUpTitle'))}</h1>
+    ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
+    <form method="POST" action="/signup">
+      <input type="hidden" name="next" value="${escapeHtml(next)}">
+      <div class="field">
+        <label for="businessName">${escapeHtml(t(lang, 'signUpBusinessNameLabel'))}</label>
+        <input type="text" id="businessName" name="businessName" required maxlength="120" value="${escapeHtml(businessName)}" placeholder="${escapeHtml(t(lang, 'signUpBusinessNamePlaceholder'))}">
+      </div>
+      <div class="field">
+        <label for="email">${escapeHtml(t(lang, 'signUpEmailLabel'))}</label>
+        <input type="text" id="email" name="email" required autocomplete="email" value="${escapeHtml(email)}">
+      </div>
+      <div class="field">
+        <label for="password">${escapeHtml(t(lang, 'signUpPasswordLabel'))}</label>
+        <input type="password" id="password" name="password" required autocomplete="new-password" minlength="${MIN_PASSWORD_LENGTH}">
+        <p class="field-hint">${escapeHtml(t(lang, 'signUpPasswordHint'))}</p>
+      </div>
+      <button class="btn" type="submit" style="width:100%;">${escapeHtml(t(lang, 'signUpSubmitButton'))}</button>
+    </form>
+    <p class="muted" style="margin-top:16px;">${escapeHtml(t(lang, 'signUpHaveAccountText'))} <a href="/signin">${escapeHtml(t(lang, 'signUpSignInLink'))}</a></p>
+  `;
+  return authPageShell(t(lang, 'signUpTitle'), body, lang);
+}
+
+function handleSignInForm(req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
+  const lang = resolveLang(req);
+  sendHtml(res, 200, renderSignInForm({ next: safeNextPath(url.searchParams.get('next')) }, lang));
+}
+
+function handleSignUpForm(req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
+  const lang = resolveLang(req);
+  sendHtml(res, 200, renderSignUpForm({ next: safeNextPath(url.searchParams.get('next')) }, lang));
+}
+
+/**
+ * POST /signin — BUILD.md job brief: rate-limited per email and per IP, and
+ * "wrong password" / "no such account" return the exact same generic
+ * message, so the sign-in form can never be used to enumerate registered
+ * emails. A fresh session is always minted here (never reused/extended from
+ * an existing one) — that is what "rotation on login" means.
+ */
+async function handleSignIn(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const lang = resolveLang(req);
+  let fields: querystring.ParsedUrlQuery;
+  try {
+    fields = await readUrlencodedBody(req);
+  } catch (err) {
+    const status = isHttpError(err) ? err.statusCode : 400;
+    const message = err instanceof Error ? err.message : String(err);
+    sendHtml(res, status, layout('Error', `<div class="panel"><h1>${status}</h1><p>${escapeHtml(message)}</p></div>`, undefined, lang));
+    return;
+  }
+
+  const emailRaw = String(fields.email ?? '').trim();
+  const password = String(fields.password ?? '');
+  const next = safeNextPath(typeof fields.next === 'string' ? fields.next : null);
+  const email = normalizeEmail(emailRaw);
+
+  const ip = resolveClientIp(req.headers, req.socket.remoteAddress);
+  if (!loginLimiterByEmail.check(email || `empty:${ip}`) || !loginLimiterByIp.check(ip)) {
+    sendHtml(res, 429, renderSignInForm({ email: emailRaw, next, error: t(lang, 'signInRateLimited') }, lang));
+    return;
+  }
+
+  // The same generic message either way — a missing merchant and a wrong
+  // password must be indistinguishable to the caller (BUILD.md job brief).
+  const invalid = () => sendHtml(res, 401, renderSignInForm({ email: emailRaw, next, error: t(lang, 'signInInvalidCredentials') }, lang));
+
+  if (!email || !password) {
+    invalid();
+    return;
+  }
+
+  const merchant = await prisma.merchant.findUnique({ where: { email } });
+  // Always call verifyPassword — against the real hash when there is one,
+  // against DUMMY_PASSWORD_HASH otherwise (no such merchant, or a merchant
+  // row with no password set yet) — so a missing account and a wrong
+  // password cost the same scrypt work and are not just message-identical
+  // but time-identical (see DUMMY_PASSWORD_HASH's own doc comment).
+  const ok = verifyPassword(password, merchant?.passwordHash ?? DUMMY_PASSWORD_HASH);
+  if (!merchant || !ok) {
+    invalid();
+    return;
+  }
+
+  const session = await createSession(merchant.id);
+  setSessionCookie(res, session);
+  res.writeHead(303, { Location: next });
+  res.end();
+}
+
+/** POST /signup — creates the Merchant, logs them in (a fresh session, same as sign-in), and lands on the dashboard (or `next`, if it was carrying one — e.g. a bookmarked merchant link that redirected here). */
+async function handleSignUp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const lang = resolveLang(req);
+  let fields: querystring.ParsedUrlQuery;
+  try {
+    fields = await readUrlencodedBody(req);
+  } catch (err) {
+    const status = isHttpError(err) ? err.statusCode : 400;
+    const message = err instanceof Error ? err.message : String(err);
+    sendHtml(res, status, layout('Error', `<div class="panel"><h1>${status}</h1><p>${escapeHtml(message)}</p></div>`, undefined, lang));
+    return;
+  }
+
+  const businessName = String(fields.businessName ?? '').trim().slice(0, 120);
+  const emailRaw = String(fields.email ?? '').trim();
+  const email = normalizeEmail(emailRaw);
+  const password = String(fields.password ?? '');
+  const next = safeNextPath(typeof fields.next === 'string' ? fields.next : null);
+
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  const fail = (error: string, status = 400) =>
+    sendHtml(res, status, renderSignUpForm({ businessName, email: emailRaw, next, error }, lang));
+
+  if (!businessName) {
+    fail(t(lang, 'signUpBusinessNameRequired'));
+    return;
+  }
+  if (!EMAIL_RE.test(email)) {
+    fail(t(lang, 'signUpEmailInvalid'));
+    return;
+  }
+  const passwordCheck = validatePassword(password);
+  if (!passwordCheck.ok) {
+    fail(passwordCheck.reason === 'too_short' ? t(lang, 'signUpPasswordTooShort') : t(lang, 'signUpPasswordTooCommon'));
+    return;
+  }
+
+  const existing = await prisma.merchant.findUnique({ where: { email } });
+  if (existing) {
+    fail(t(lang, 'signUpEmailTaken'), 409);
+    return;
+  }
+
+  const passwordHash = hashPassword(password);
+  let merchant: Merchant;
+  try {
+    merchant = await prisma.merchant.create({ data: { email, name: businessName, passwordHash } });
+  } catch (err) {
+    // A raced double-submit past the findUnique check above (P2002 on the
+    // unique email constraint) — same user-facing message as the check
+    // finding it first, not a 500.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      fail(t(lang, 'signUpEmailTaken'), 409);
+      return;
+    }
+    throw err;
+  }
+
+  const session = await createSession(merchant.id);
+  setSessionCookie(res, session);
+  res.writeHead(303, { Location: next });
+  res.end();
+}
+
+/** POST /signout — deletes the Session row (server-side invalidation — a copied/leaked cookie value stops working immediately, not just once it expires) and clears the cookie. Never errors on a missing/already-invalid session: signing out twice, or with a stale cookie, both just land back on the sign-in page. */
+async function handleSignOut(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const sessionId = sessionIdFromRequest(req);
+  if (sessionId) await deleteSession(sessionId);
+  clearSessionCookie(res);
+  res.writeHead(303, { Location: '/signin' });
+  res.end();
 }
 
 /**
@@ -1043,9 +1319,9 @@ function cardThumbSrc(card: Card): string {
   return `/preview.png?${stripPreviewParams(card, defaultFilled(card.stampsGoal)).toString()}`;
 }
 
-async function handleCardsList(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+async function handleCardsList(req: http.IncomingMessage, res: http.ServerResponse, merchant: Merchant): Promise<void> {
   const lang = resolveLang(req);
-  const cards = await prisma.card.findMany({ orderBy: { createdAt: 'desc' } });
+  const cards = await prisma.card.findMany({ where: { merchantId: merchant.id }, orderBy: { createdAt: 'desc' } });
 
   const body = cards.length
     ? `<div class="row" style="margin-bottom:18px;">
@@ -1074,7 +1350,7 @@ async function handleCardsList(req: http.IncomingMessage, res: http.ServerRespon
          <p><a class="btn" href="/cards/new">${escapeHtml(t(lang, 'createCardButton'))}</a></p>
        </div>`;
 
-  sendHtml(res, 200, layout(t(lang, 'cardsListTitle'), authBanner(lang) + body, 'cards', lang));
+  sendHtml(res, 200, layout(t(lang, 'cardsListTitle'), body, 'cards', lang));
 }
 
 // ---------------------------------------------------------------------------
@@ -1173,7 +1449,7 @@ function renderNewCardForm(
       })();
     </script>
   `;
-  return layout(t(lang, 'newCardTitle'), authBanner(lang) + body, 'cards', lang);
+  return layout(t(lang, 'newCardTitle'), body, 'cards', lang);
 }
 
 async function handleNewCardForm(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -1183,7 +1459,7 @@ async function handleNewCardForm(req: http.IncomingMessage, res: http.ServerResp
 // ---------------------------------------------------------------------------
 // Route: POST /cards — validate, persist, redirect
 // ---------------------------------------------------------------------------
-async function handleCreateCard(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+async function handleCreateCard(req: http.IncomingMessage, res: http.ServerResponse, merchant: Merchant): Promise<void> {
   const lang = resolveLang(req);
   let fields: querystring.ParsedUrlQuery;
   try {
@@ -1233,7 +1509,6 @@ async function handleCreateCard(req: http.IncomingMessage, res: http.ServerRespo
   const stampActive = active.startsWith('#') ? active : `#${active}`;
   const stampInactive = inactive.startsWith('#') ? inactive : `#${inactive}`;
 
-  const merchant = await getOrCreateMerchant();
   const maxSlot = await prisma.card.aggregate({
     where: { merchantId: merchant.id },
     _max: { slot: true },
@@ -1300,9 +1575,9 @@ function lockedFieldChips(lang: Lang): string {
   return labels.map((label) => `<span class="chip locked">${escapeHtml(label)}</span>`).join(' ');
 }
 
-async function handleCardDetail(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
+async function handleCardDetail(req: http.IncomingMessage, res: http.ServerResponse, id: string, merchant: Merchant): Promise<void> {
   const lang = resolveLang(req);
-  const card = await prisma.card.findUnique({ where: { id } });
+  const card = await findOwnedCard(id, merchant.id);
   if (!card) {
     sendNotFound(res, `No card with id "${id}".`);
     return;
@@ -1375,7 +1650,7 @@ async function handleCardDetail(req: http.IncomingMessage, res: http.ServerRespo
       }</p>
     </div>
   `;
-  sendHtml(res, 200, layout(card.name, authBanner(lang) + body, 'cards', lang));
+  sendHtml(res, 200, layout(card.name, body, 'cards', lang));
 }
 
 // ---------------------------------------------------------------------------
@@ -1387,9 +1662,9 @@ async function handleCardDetail(req: http.IncomingMessage, res: http.ServerRespo
 // under @media print — printing the dark UI verbatim would waste a
 // cartridge of ink on a background nobody wants on a counter poster.
 // ---------------------------------------------------------------------------
-async function handleCardPrint(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
+async function handleCardPrint(req: http.IncomingMessage, res: http.ServerResponse, id: string, merchant: Merchant): Promise<void> {
   const lang = resolveLang(req);
-  const card = await prisma.card.findUnique({ where: { id } });
+  const card = await findOwnedCard(id, merchant.id);
   if (!card) {
     sendNotFound(res, `No card with id "${id}".`);
     return;
@@ -1495,9 +1770,9 @@ async function handleCardPrint(req: http.IncomingMessage, res: http.ServerRespon
 // enforces the freeze — this confirmation step is a courtesy, not the
 // enforcement (BUILD.md §8.7: "enforce server-side, not just in the UI").
 // ---------------------------------------------------------------------------
-async function handleActivateConfirm(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
+async function handleActivateConfirm(req: http.IncomingMessage, res: http.ServerResponse, id: string, merchant: Merchant): Promise<void> {
   const lang = resolveLang(req);
-  const card = await prisma.card.findUnique({ where: { id } });
+  const card = await findOwnedCard(id, merchant.id);
   if (!card) {
     sendNotFound(res, `No card with id "${id}".`);
     return;
@@ -1525,9 +1800,9 @@ async function handleActivateConfirm(req: http.IncomingMessage, res: http.Server
   sendHtml(res, 200, layout(t(lang, 'activateTitle'), body, 'cards', lang));
 }
 
-async function handleActivateCard(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
+async function handleActivateCard(req: http.IncomingMessage, res: http.ServerResponse, id: string, merchant: Merchant): Promise<void> {
   const lang = resolveLang(req);
-  const result = await activateCard(id);
+  const result = await activateCard(id, merchant.id);
   if (!result.ok) {
     sendNotFound(res, `No card with id "${id}".`);
     return;
@@ -2041,9 +2316,9 @@ function renderEditCardForm(
   return layout(t(lang, 'editTitle'), body, 'cards', lang);
 }
 
-async function handleEditCardForm(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
+async function handleEditCardForm(req: http.IncomingMessage, res: http.ServerResponse, id: string, merchant: Merchant): Promise<void> {
   const lang = resolveLang(req);
-  const card = await prisma.card.findUnique({ where: { id } });
+  const card = await findOwnedCard(id, merchant.id);
   if (!card) {
     sendNotFound(res, `No card with id "${id}".`);
     return;
@@ -2081,7 +2356,7 @@ async function handleEditCardForm(req: http.IncomingMessage, res: http.ServerRes
   );
 }
 
-async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
+async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerResponse, id: string, merchant: Merchant): Promise<void> {
   const lang = resolveLang(req);
   let fields: querystring.ParsedUrlQuery;
   try {
@@ -2093,7 +2368,7 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
     return;
   }
 
-  const card = await prisma.card.findUnique({ where: { id } });
+  const card = await findOwnedCard(id, merchant.id);
   if (!card) {
     sendNotFound(res, `No card with id "${id}".`);
     return;
@@ -2186,7 +2461,7 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
     if ('starterStamps' in fields) patch.starterStamps = clampInt(fields.starterStamps, 0, MAX_GOAL, card.starterStamps);
   }
 
-  const result = await updateCard(id, patch);
+  const result = await updateCard(id, merchant.id, patch);
   if (!result.ok) {
     if (result.reason === 'not_found') {
       sendNotFound(res, `No card with id "${id}".`);
@@ -2256,10 +2531,9 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
 // ---------------------------------------------------------------------------
 // Route: GET /customers — BUILD.md §8.11. Search by card number, name or
 // phone; filter by card; footer "showing N of N customers"; Export CSV.
-// Single-merchant demo (no auth, see getOrCreateMerchant()'s own comment),
-// so every query below is still explicitly scoped by merchantId — never
-// "every Pass row in the table" — the same discipline BUILD.md §17 asks
-// for once real auth lands.
+// `merchant` comes from requireMerchant() at the router (never a
+// client-supplied id), and every query below is explicitly scoped by
+// merchantId — never "every Pass row in the table" (BUILD.md §17).
 // ---------------------------------------------------------------------------
 interface CustomerFilters {
   q: string;
@@ -2291,9 +2565,8 @@ function formatLastVisit(date: Date | null, lang: Lang): string {
   return arabicDigits(date.toISOString().slice(0, 10), lang);
 }
 
-async function handleCustomersList(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
+async function handleCustomersList(req: http.IncomingMessage, res: http.ServerResponse, url: URL, merchant: Merchant): Promise<void> {
   const lang = resolveLang(req);
-  const merchant = await getOrCreateMerchant();
   const filters = parseCustomerFilters(url);
 
   const [cards, totalCount, rows] = await Promise.all([
@@ -2389,8 +2662,7 @@ async function handleCustomersList(req: http.IncomingMessage, res: http.ServerRe
   sendHtml(res, 200, layout(t(lang, 'customersTitle'), body, 'customers', lang));
 }
 
-async function handleCustomersExport(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
-  const merchant = await getOrCreateMerchant();
+async function handleCustomersExport(req: http.IncomingMessage, res: http.ServerResponse, url: URL, merchant: Merchant): Promise<void> {
   const filters = parseCustomerFilters(url);
   const rows = await fetchCustomerRows(merchant.id, filters);
 
@@ -2449,9 +2721,8 @@ const WEEKDAY_KEYS = [
   'reportsDaySat',
 ] as const;
 
-async function handleReports(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
+async function handleReports(req: http.IncomingMessage, res: http.ServerResponse, url: URL, merchant: Merchant): Promise<void> {
   const lang = resolveLang(req);
-  const merchant = await getOrCreateMerchant();
   const range = parseReportRange(url);
 
   const now = new Date();
@@ -3039,18 +3310,18 @@ async function handleGetImage(res: http.ServerResponse, hash: string): Promise<v
 // (BUILD.md §8.5 step 1 / §8.9 step 2). multipart/form-data with exactly
 // one file part, named "logo", "icon" or "cover" — that name is what
 // decides which Card column gets updated, there is no separate "kind"
-// field to trust or distrust. A public, unauthenticated endpoint (no auth yet — same caveat
-// as every other merchant route in this slice, see getOrCreateMerchant()'s
-// own comment), so every step below is a hard reject, never a best-effort
-// clamp: the Content-Length precheck rejects an oversized body before
+// field to trust or distrust. Guarded by requireMerchant() at the router
+// and scoped to the calling merchant's own card (findOwnedCard) below, so
+// every step past that is a hard reject, never a best-effort clamp: the
+// Content-Length precheck rejects an oversized body before
 // reading any of it, readMultipart() enforces the same cap while streaming
 // (covering a missing/wrong Content-Length), and normalizeUpload() rejects
 // anything that isn't a decodable image within the documented size/pixel
 // limits. Responds JSON — this is called from the designer's own fetch(),
 // never rendered as a full page.
 // ---------------------------------------------------------------------------
-async function handleUploadCardImage(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
-  const card = await prisma.card.findUnique({ where: { id } });
+async function handleUploadCardImage(req: http.IncomingMessage, res: http.ServerResponse, id: string, merchant: Merchant): Promise<void> {
+  const card = await findOwnedCard(id, merchant.id);
   if (!card) {
     sendJson(res, 404, { ok: false, error: 'card not found' });
     return;
@@ -3112,7 +3383,7 @@ async function handleUploadCardImage(req: http.IncomingMessage, res: http.Server
       : kind === 'icon'
         ? { iconHash: result.hash, iconUrl: imageUrl(result.hash) }
         : { coverHash: result.hash, coverUrl: imageUrl(result.hash) };
-  const updateResult = await updateCard(id, patch);
+  const updateResult = await updateCard(id, merchant.id, patch);
   if (!updateResult.ok) {
     // Only reachable if the card was deleted between the lookup above and
     // here — aesthetic fields can't produce a 'locked' result.
@@ -3584,7 +3855,7 @@ function handleStampScreen(req: http.IncomingMessage, res: http.ServerResponse):
 // body — success or error — carries a `message` already translated per the
 // `lang` cookie (BUILD.md §13: server error messages translated too).
 // ---------------------------------------------------------------------------
-async function handleApiStamp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+async function handleApiStamp(req: http.IncomingMessage, res: http.ServerResponse, merchant: Merchant): Promise<void> {
   const lang = resolveLang(req);
 
   let body: unknown;
@@ -3609,7 +3880,7 @@ async function handleApiStamp(req: http.IncomingMessage, res: http.ServerRespons
     return;
   }
 
-  const outcome = await applyStamp(code);
+  const outcome = await applyStamp(code, merchant.id);
 
   if (!outcome.ok) {
     if (outcome.reason === 'not_found') {
@@ -3903,18 +4174,54 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && serveStaticFile(res, pathname)) {
       return;
     }
+    // Sign-up / sign-in / sign-out — public (a session is what every route
+    // below this point exists to require).
+    if (req.method === 'GET' && pathname === '/signin') {
+      handleSignInForm(req, res, url);
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/signin') {
+      await handleSignIn(req, res);
+      return;
+    }
+    if (req.method === 'GET' && pathname === '/signup') {
+      handleSignUpForm(req, res, url);
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/signup') {
+      await handleSignUp(req, res);
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/signout') {
+      await handleSignOut(req, res);
+      return;
+    }
+
+    // Everything from here down through /api/stamp is a merchant-facing
+    // route: requireMerchant() 302s to /signin when there is no valid
+    // session, and every handler below is scoped to the merchant it
+    // resolves — never a bare client-supplied id (BUILD.md job brief).
     if (req.method === 'GET' && pathname === '/app') {
-      await handleCardsList(req, res);
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleCardsList(req, res, merchant);
       return;
     }
     if (req.method === 'GET' && pathname === '/cards/new') {
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
       await handleNewCardForm(req, res);
       return;
     }
     if (req.method === 'POST' && pathname === '/cards') {
-      await handleCreateCard(req, res);
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleCreateCard(req, res, merchant);
       return;
     }
+    // /preview.png, /qr.png, /icon-swatch.png stay fully public — the
+    // customer enrol page and print sheet embed them with no session
+    // (BUILD.md job brief's "what stays public" list).
     if (req.method === 'GET' && pathname === '/preview.png') {
       await handlePreviewPng(res, url.searchParams);
       return;
@@ -3931,15 +4238,21 @@ const server = http.createServer(async (req, res) => {
     // (BUILD.md §8.14) — literal single-segment paths, registered here
     // above the /:code catch-all for the same reason /app and /stamp are.
     if (req.method === 'GET' && pathname === '/customers/export.csv') {
-      await handleCustomersExport(req, res, url);
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleCustomersExport(req, res, url, merchant);
       return;
     }
     if (req.method === 'GET' && pathname === '/customers') {
-      await handleCustomersList(req, res, url);
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleCustomersList(req, res, url, merchant);
       return;
     }
     if (req.method === 'GET' && pathname === '/reports') {
-      await handleReports(req, res, url);
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleReports(req, res, url, merchant);
       return;
     }
     // /cards/:id/print, /cards/:id/activate, /cards/:id/edit — two-segment
@@ -3949,36 +4262,51 @@ const server = http.createServer(async (req, res) => {
     // are above the `GET /:code` catch-all at the bottom of this router.
     const cardPrintMatch = pathname.match(/^\/cards\/([^/]+)\/print$/);
     if (req.method === 'GET' && cardPrintMatch) {
-      await handleCardPrint(req, res, cardPrintMatch[1]!);
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleCardPrint(req, res, cardPrintMatch[1]!, merchant);
       return;
     }
     const cardActivateMatch = pathname.match(/^\/cards\/([^/]+)\/activate$/);
     if (cardActivateMatch) {
       if (req.method === 'GET') {
-        await handleActivateConfirm(req, res, cardActivateMatch[1]!);
+        const merchant = await requireMerchant(req, res);
+        if (!merchant) return;
+        await handleActivateConfirm(req, res, cardActivateMatch[1]!, merchant);
         return;
       }
       if (req.method === 'POST') {
-        await handleActivateCard(req, res, cardActivateMatch[1]!);
+        const merchant = await requireMerchant(req, res);
+        if (!merchant) return;
+        await handleActivateCard(req, res, cardActivateMatch[1]!, merchant);
         return;
       }
     }
     const cardEditMatch = pathname.match(/^\/cards\/([^/]+)\/edit$/);
     if (cardEditMatch) {
       if (req.method === 'GET') {
-        await handleEditCardForm(req, res, cardEditMatch[1]!);
+        const merchant = await requireMerchant(req, res);
+        if (!merchant) return;
+        await handleEditCardForm(req, res, cardEditMatch[1]!, merchant);
         return;
       }
       if (req.method === 'POST') {
-        await handleUpdateCard(req, res, cardEditMatch[1]!);
+        const merchant = await requireMerchant(req, res);
+        if (!merchant) return;
+        await handleUpdateCard(req, res, cardEditMatch[1]!, merchant);
         return;
       }
     }
     const cardImageMatch = pathname.match(/^\/cards\/([^/]+)\/image$/);
     if (req.method === 'POST' && cardImageMatch) {
-      await handleUploadCardImage(req, res, cardImageMatch[1]!);
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleUploadCardImage(req, res, cardImageMatch[1]!, merchant);
       return;
     }
+    // GET /img/:hash stays fully public — content-addressed by a sha256
+    // hash, served to the customer enrol page and the print sheet with no
+    // session (BUILD.md job brief's "what stays public" list).
     const imgMatch = pathname.match(/^\/img\/([0-9a-f]{64})$/);
     if (req.method === 'GET' && imgMatch) {
       await handleGetImage(res, imgMatch[1]!);
@@ -3987,18 +4315,27 @@ const server = http.createServer(async (req, res) => {
     const cardMatch = pathname.match(/^\/cards\/([^/]+)$/);
     const cardId = cardMatch?.[1];
     if (req.method === 'GET' && cardId !== undefined) {
-      await handleCardDetail(req, res, cardId);
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleCardDetail(req, res, cardId, merchant);
       return;
     }
     // /stamp and /api/stamp are literal paths and must be registered here —
     // above the `GET /:code` catch-all below — or the catch-all would
-    // swallow them (BUILD.md §12 / §18 item 10).
+    // swallow them (BUILD.md §12 / §18 item 10). The stamp screen is a
+    // special case (BUILD.md job brief): staff need it without being the
+    // owner, but for now it sits behind the merchant session like every
+    // other route above — a separate staff PIN comes later.
     if (req.method === 'GET' && pathname === '/stamp') {
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
       handleStampScreen(req, res);
       return;
     }
     if (req.method === 'POST' && pathname === '/api/stamp') {
-      await handleApiStamp(req, res);
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleApiStamp(req, res, merchant);
       return;
     }
 

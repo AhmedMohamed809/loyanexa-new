@@ -87,7 +87,7 @@ async function cleanup(fx: Fixture): Promise<void> {
 test('a first stamp increments stamps/totalStamps and writes a STAMP event', async () => {
   const fx = await makeFixture({ stampsGoal: 8, stamps: 2 });
   try {
-    const outcome = await applyStamp(fx.serial);
+    const outcome = await applyStamp(fx.serial, fx.merchantId);
     assert.equal(outcome.ok, true);
     if (!outcome.ok) return;
     assert.equal(outcome.stamps, 3);
@@ -112,10 +112,10 @@ test('a first stamp increments stamps/totalStamps and writes a STAMP event', asy
 test('a second stamp within 24 hours is rejected (too_soon) and does not change stamps', async () => {
   const fx = await makeFixture({ stampsGoal: 8, stamps: 1 });
   try {
-    const first = await applyStamp(fx.serial);
+    const first = await applyStamp(fx.serial, fx.merchantId);
     assert.equal(first.ok, true);
 
-    const second = await applyStamp(fx.serial);
+    const second = await applyStamp(fx.serial, fx.merchantId);
     assert.equal(second.ok, false);
     if (second.ok) return;
     assert.equal(second.reason, 'too_soon');
@@ -137,7 +137,7 @@ test('a stamp after 24 hours have passed succeeds', async () => {
   const twentyFiveHoursAgo = new Date(Date.now() - 25 * 60 * 60 * 1000);
   const fx = await makeFixture({ stampsGoal: 8, stamps: 3, lastStampAt: twentyFiveHoursAgo });
   try {
-    const outcome = await applyStamp(fx.serial);
+    const outcome = await applyStamp(fx.serial, fx.merchantId);
     assert.equal(outcome.ok, true);
     if (!outcome.ok) return;
     assert.equal(outcome.stamps, 4);
@@ -154,7 +154,7 @@ test('a stamp after 24 hours have passed succeeds', async () => {
 test('reaching the goal increments rewards, resets stamps to 0, and writes a REWARD event', async () => {
   const fx = await makeFixture({ stampsGoal: 5, stamps: 4 });
   try {
-    const outcome = await applyStamp(fx.serial);
+    const outcome = await applyStamp(fx.serial, fx.merchantId);
     assert.equal(outcome.ok, true);
     if (!outcome.ok) return;
     assert.equal(outcome.stamps, 0);
@@ -177,22 +177,49 @@ test('reaching the goal increments rewards, resets stamps to 0, and writes a REW
 });
 
 test('an unknown serial or short code 404s (not_found), with no side effects', async () => {
-  const bogus = `NOPE${randomHex(8)}`.toUpperCase();
-  const outcome = await applyStamp(bogus);
-  assert.equal(outcome.ok, false);
-  if (outcome.ok) return;
-  assert.equal(outcome.reason, 'not_found');
+  const fx = await makeFixture();
+  try {
+    const bogus = `NOPE${randomHex(8)}`.toUpperCase();
+    const outcome = await applyStamp(bogus, fx.merchantId);
+    assert.equal(outcome.ok, false);
+    if (outcome.ok) return;
+    assert.equal(outcome.reason, 'not_found');
+  } finally {
+    await cleanup(fx);
+  }
 });
 
 test('the manual-entry shortCode resolves the same pass as the QR-encoded serial', async () => {
   const fx = await makeFixture({ stampsGoal: 8, stamps: 0 });
   try {
-    const outcome = await applyStamp(fx.shortCode);
+    const outcome = await applyStamp(fx.shortCode, fx.merchantId);
     assert.equal(outcome.ok, true);
     if (!outcome.ok) return;
     assert.equal(outcome.serial, fx.serial);
     assert.equal(outcome.stamps, 1);
   } finally {
     await cleanup(fx);
+  }
+});
+
+test('a pass belonging to a different merchant is not_found — a merchant cannot stamp another merchant\'s pass, by serial or by short code', async () => {
+  const owner = await makeFixture({ stampsGoal: 8, stamps: 2 });
+  const intruder = await makeFixture({ stampsGoal: 8, stamps: 0 });
+  try {
+    const bySerial = await applyStamp(owner.serial, intruder.merchantId);
+    assert.equal(bySerial.ok, false);
+    if (!bySerial.ok) assert.equal(bySerial.reason, 'not_found');
+
+    const byShortCode = await applyStamp(owner.shortCode, intruder.merchantId);
+    assert.equal(byShortCode.ok, false);
+    if (!byShortCode.ok) assert.equal(byShortCode.reason, 'not_found');
+
+    // Nothing about the owner's pass changed as a side effect of the attempts.
+    const pass = await prisma.pass.findUniqueOrThrow({ where: { serial: owner.serial } });
+    assert.equal(pass.stamps, 2);
+    assert.equal(pass.totalStamps, 0);
+  } finally {
+    await cleanup(owner);
+    await cleanup(intruder);
   }
 });

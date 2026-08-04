@@ -15,7 +15,8 @@
     "test:i18n": "node scripts/check-i18n.ts",
     "bench": "node packages/image/bench/strip.bench.ts",
     "serve:pass": "node scripts/serve-pass.ts",
-    "demo": "node apps/demo/server.ts"
+    "demo": "node apps/demo/server.ts",
+    "create-merchant": "node scripts/create-merchant.ts"
   },
   "devDependencies": {
     "@types/node": "^25",

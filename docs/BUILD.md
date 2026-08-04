@@ -55,6 +55,27 @@ server handles this **provided the strip cache exists** (§10).
 | Layer | Choice | Why |
 |---|---|---|
 | Auth | **Firebase Auth** | Google sign-in, magic link, verification, reset — free at 10k merchants |
+
+> **Deviation, 2026-08-04.** The app shipped to production with **no authentication at
+> all** — any visitor could create cards, edit another merchant's cards, and read
+> customer names and phone numbers. That is the highest-priority gap this note fixes, and
+> it shipped as **self-contained session auth**, not Firebase Auth as this section
+> specifies: standing up a real Firebase project needs console access the owner cannot do
+> right now, and shipping the fix could not wait on that. What's live instead —
+> `apps/demo/auth.ts`: email + password hashed with **scrypt** (`node:crypto`, a random
+> per-user salt, `N=16384/r=8/p=1`, `crypto.timingSafeEqual` for comparison — never a
+> plain hash, never a fast one), sessions as opaque random ids in a Postgres `Session`
+> table (deleting the row is what makes sign-out and expiry invalidate a session
+> **server-side**, not just clear a cookie), and an `HttpOnly`/`Secure`/`SameSite=Lax`
+> cookie rotated on every sign-in. No new npm dependency — `node:crypto` covers both
+> hashing and session-id generation. Every merchant route now resolves its merchant from
+> that session and filters every `Card`/`Pass`/`StampEvent`/`CardImage` query by it; a
+> card id belonging to another merchant 404s, never 403s, so a request can never confirm
+> someone else's id is real. **Firebase remains the intended migration path** for what
+> this cannot do on its own — Google sign-in and magic-link email — and nothing here
+> forecloses it: `Merchant.firebaseUid` stays in the schema, nullable and unused, for
+> exactly that later migration. See `apps/demo/auth.ts` for the implementation and
+> `apps/demo/test/auth.test.ts` / the scoping test suite for what it's verified against.
 | Database | **Postgres** (Neon or Supabase) + Prisma | Queries are relational |
 | API | **Node + TypeScript + Fastify** | Persistent process, 2–3× faster than Express |
 | Cache | **Redis** (Upstash) | Strip images + sessions |

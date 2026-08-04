@@ -147,11 +147,34 @@ export const en = {
   designerUploadingLabel: 'Uploading…',
   designerUploadErrorGeneric: 'Upload failed. Please try again.',
 
-  // Local-demo auth banner (shown on every merchant page until Firebase
-  // sign-in lands, sub-project 4)
-  authBannerTitle: 'Local demo — no authentication.',
-  authBannerBody:
-    'Anyone who can reach this machine on the network can view and create cards. Firebase sign-in arrives in a later sub-project.',
+  // Sign in / sign up / sign out — self-contained session auth (BUILD.md
+  // §8.1/§8.2; see BUILD.md §2's 2026-08-04 note on why this ships instead
+  // of Firebase Auth).
+  signInTitle: 'Sign in',
+  signInEmailLabel: 'Email',
+  signInPasswordLabel: 'Password',
+  signInShowPassword: 'Show password',
+  signInHidePassword: 'Hide password',
+  signInSubmitButton: 'Sign in',
+  signInNoAccountText: "Don't have an account?",
+  signInSignUpLink: 'Sign up',
+  signInInvalidCredentials: 'Incorrect email or password.',
+  signInRateLimited: 'Too many sign-in attempts. Please wait a few minutes and try again.',
+  signUpTitle: 'Create your account',
+  signUpBusinessNameLabel: 'Business name',
+  signUpBusinessNamePlaceholder: 'e.g. Shami Bakery',
+  signUpEmailLabel: 'Email',
+  signUpPasswordLabel: 'Password',
+  signUpPasswordHint: 'At least 10 characters.',
+  signUpSubmitButton: 'Create account',
+  signUpHaveAccountText: 'Already have an account?',
+  signUpSignInLink: 'Sign in',
+  signUpBusinessNameRequired: 'Business name is required.',
+  signUpEmailInvalid: 'Enter a valid email address.',
+  signUpEmailTaken: 'An account with that email already exists.',
+  signUpPasswordTooShort: 'Password must be at least 10 characters.',
+  signUpPasswordTooCommon: 'That password is too common. Please choose a different one.',
+  navSignOut: 'Sign out',
 
   // Cards list (GET /app)
   cardsListTitle: 'Your cards',
@@ -203,7 +226,7 @@ export const en = {
   stampScreenTitle: 'Stamp a card',
   stampScreenSub: "Scan the QR inside the customer's wallet pass, or type their code below.",
   stampScreenNotice:
-    'No staff PIN yet in this local demo — anyone who can reach this screen can stamp a card. PIN lock arrives with Firebase auth (sub-project 4).',
+    "You're signed in as the merchant. A dedicated staff PIN, so staff don't need the owner's own login, is coming soon.",
   stampScreenCameraHeading: 'Camera',
   stampScreenCameraStarting: 'Starting camera…',
   stampScreenManualHeading: 'Manual entry',

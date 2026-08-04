@@ -150,10 +150,32 @@ export const ar: Record<keyof typeof en, string> = {
   designerUploadingLabel: 'جارٍ الرفع…',
   designerUploadErrorGeneric: 'فشل الرفع. حاول مرة أخرى.',
 
-  // Local-demo auth banner
-  authBannerTitle: 'نسخة تجريبية محلية — بلا مصادقة.',
-  authBannerBody:
-    'يمكن لأي شخص يصل إلى هذا الجهاز عبر الشبكة عرض البطاقات وإنشاؤها. سيتوفر تسجيل الدخول عبر Firebase في مرحلة لاحقة.',
+  // تسجيل الدخول / إنشاء حساب / تسجيل الخروج — مصادقة جلسات ذاتية الاكتفاء
+  signInTitle: 'تسجيل الدخول',
+  signInEmailLabel: 'البريد الإلكتروني',
+  signInPasswordLabel: 'كلمة المرور',
+  signInShowPassword: 'إظهار كلمة المرور',
+  signInHidePassword: 'إخفاء كلمة المرور',
+  signInSubmitButton: 'تسجيل الدخول',
+  signInNoAccountText: 'ليس لديك حساب؟',
+  signInSignUpLink: 'إنشاء حساب',
+  signInInvalidCredentials: 'البريد الإلكتروني أو كلمة المرور غير صحيحة.',
+  signInRateLimited: 'محاولات تسجيل دخول كثيرة جدًا. يرجى الانتظار بضع دقائق ثم المحاولة مرة أخرى.',
+  signUpTitle: 'إنشاء حسابك',
+  signUpBusinessNameLabel: 'اسم النشاط التجاري',
+  signUpBusinessNamePlaceholder: 'مثال: مخبز الشامي',
+  signUpEmailLabel: 'البريد الإلكتروني',
+  signUpPasswordLabel: 'كلمة المرور',
+  signUpPasswordHint: '10 أحرف على الأقل.',
+  signUpSubmitButton: 'إنشاء الحساب',
+  signUpHaveAccountText: 'لديك حساب بالفعل؟',
+  signUpSignInLink: 'تسجيل الدخول',
+  signUpBusinessNameRequired: 'اسم النشاط التجاري مطلوب.',
+  signUpEmailInvalid: 'أدخل بريدًا إلكترونيًا صالحًا.',
+  signUpEmailTaken: 'يوجد حساب بهذا البريد الإلكتروني بالفعل.',
+  signUpPasswordTooShort: 'يجب ألا تقل كلمة المرور عن 10 أحرف.',
+  signUpPasswordTooCommon: 'كلمة المرور هذه شائعة جدًا. يرجى اختيار كلمة مرور مختلفة.',
+  navSignOut: 'تسجيل الخروج',
 
   // Cards list (GET /app)
   cardsListTitle: 'بطاقاتك',
@@ -204,8 +226,7 @@ export const ar: Record<keyof typeof en, string> = {
   // Stamp screen (BUILD.md §8.15)
   stampScreenTitle: 'ختم بطاقة',
   stampScreenSub: 'امسح رمز QR داخل بطاقة العميل، أو اكتب الرمز أدناه.',
-  stampScreenNotice:
-    'لا يوجد رمز PIN للموظفين بعد في هذه النسخة التجريبية المحلية — يمكن لأي شخص يصل إلى هذه الشاشة ختم بطاقة. سيتوفر قفل PIN مع تسجيل الدخول عبر Firebase.',
+  stampScreenNotice: 'أنت مسجّل الدخول كتاجر. رمز PIN مخصّص للموظفين، حتى لا يحتاجوا حساب المالك نفسه، قادم قريبًا.',
   stampScreenCameraHeading: 'الكاميرا',
   stampScreenCameraStarting: 'جارٍ تشغيل الكاميرا…',
   stampScreenManualHeading: 'إدخال يدوي',

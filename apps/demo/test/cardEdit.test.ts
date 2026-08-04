@@ -82,7 +82,7 @@ test('before any customer joins, an economic edit is allowed', async () => {
   const fx = await makeFixture();
   try {
     assert.equal(await passCountForCard(fx.cardId), 0);
-    const result = await updateCard(fx.cardId, { stampsGoal: 12 });
+    const result = await updateCard(fx.cardId, fx.merchantId, { stampsGoal: 12 });
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.equal(result.card.stampsGoal, 12);
@@ -100,7 +100,7 @@ test('once a pass exists, an economic edit is rejected and the database value is
     const before = await prisma.card.findUniqueOrThrow({ where: { id: fx.cardId } });
     assert.equal(before.stampsGoal, 8);
 
-    const result = await updateCard(fx.cardId, { stampsGoal: 20 });
+    const result = await updateCard(fx.cardId, fx.merchantId, { stampsGoal: 20 });
     assert.equal(result.ok, false);
     if (result.ok) return;
     assert.equal(result.reason, 'locked');
@@ -119,7 +119,7 @@ test('every economic field is locked once a pass exists: starterStamps, rewardTe
   try {
     await addPass(fx);
 
-    const attempts: Array<[string, Parameters<typeof updateCard>[1]]> = [
+    const attempts: Array<[string, Parameters<typeof updateCard>[2]]> = [
       ['starterStamps', { starterStamps: 3 }],
       ['rewardText', { rewardText: 'Free cake instead' }],
       ['expiryType', { expiryType: 'duration' }],
@@ -127,7 +127,7 @@ test('every economic field is locked once a pass exists: starterStamps, rewardTe
       ['expiryDate', { expiryDate: new Date('2027-01-01') }],
     ];
     for (const [label, patch] of attempts) {
-      const result = await updateCard(fx.cardId, patch);
+      const result = await updateCard(fx.cardId, fx.merchantId, patch);
       assert.equal(result.ok, false, `${label} should be locked`);
       if (result.ok) continue;
       assert.equal(result.reason, 'locked');
@@ -149,7 +149,7 @@ test('once a pass exists, a cosmetic edit still succeeds', async () => {
   try {
     await addPass(fx);
 
-    const result = await updateCard(fx.cardId, {
+    const result = await updateCard(fx.cardId, fx.merchantId, {
       name: 'Renamed Bakery',
       bgColor: '#111111',
       stampActive: '#00FF00',
@@ -174,7 +174,7 @@ test('editing images on a card that already has passes succeeds (they are cosmet
   try {
     await addPass(fx);
 
-    const imageResult = await updateCard(fx.cardId, {
+    const imageResult = await updateCard(fx.cardId, fx.merchantId, {
       iconHash: 'a'.repeat(64),
       iconUrl: `/img/${'a'.repeat(64)}`,
       coverHash: 'b'.repeat(64),
@@ -191,7 +191,7 @@ test('editing images on a card that already has passes succeeds (they are cosmet
     assert.equal(imageResult.card.stampShape, 'square');
     assert.equal(imageResult.card.bgOpacity, 0.5);
 
-    const goalResult = await updateCard(fx.cardId, { stampsGoal: 15 });
+    const goalResult = await updateCard(fx.cardId, fx.merchantId, { stampsGoal: 15 });
     assert.equal(goalResult.ok, false, 'stampsGoal must still be locked on the very same card');
     if (goalResult.ok) return;
     assert.equal(goalResult.reason, 'locked');
@@ -209,7 +209,7 @@ test('a mixed patch (cosmetic + economic) is rejected wholesale once a pass exis
   try {
     await addPass(fx);
 
-    const result = await updateCard(fx.cardId, { name: 'Should not apply', stampsGoal: 99 });
+    const result = await updateCard(fx.cardId, fx.merchantId, { name: 'Should not apply', stampsGoal: 99 });
     assert.equal(result.ok, false);
 
     const after = await prisma.card.findUniqueOrThrow({ where: { id: fx.cardId } });
@@ -224,7 +224,7 @@ test('re-submitting the same economic value a card already has is not an "attemp
   const fx = await makeFixture();
   try {
     await addPass(fx);
-    const result = await updateCard(fx.cardId, { stampsGoal: 8, name: 'Same Goal Renamed' });
+    const result = await updateCard(fx.cardId, fx.merchantId, { stampsGoal: 8, name: 'Same Goal Renamed' });
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.equal(result.card.stampsGoal, 8);
@@ -244,7 +244,7 @@ test("editing a card's colours bumps Card.updatedAt — this is what lets the .p
     // pass.
     await new Promise((r) => setTimeout(r, 5));
 
-    const result = await updateCard(fx.cardId, { bgColor: '#ABCDEF' });
+    const result = await updateCard(fx.cardId, fx.merchantId, { bgColor: '#ABCDEF' });
     assert.equal(result.ok, true);
     if (!result.ok) return;
 
@@ -266,7 +266,7 @@ test('activateCard sets active = true', async () => {
     const before = await prisma.card.findUniqueOrThrow({ where: { id: fx.cardId } });
     assert.equal(before.active, false);
 
-    const result = await activateCard(fx.cardId);
+    const result = await activateCard(fx.cardId, fx.merchantId);
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.equal(result.card.active, true);
@@ -279,15 +279,46 @@ test('activateCard sets active = true', async () => {
 });
 
 test('updateCard on an unknown card id returns not_found', async () => {
-  const result = await updateCard('nonexistent-card-id', { name: 'X' });
-  assert.equal(result.ok, false);
-  if (result.ok) return;
-  assert.equal(result.reason, 'not_found');
+  const fx = await makeFixture();
+  try {
+    const result = await updateCard('nonexistent-card-id', fx.merchantId, { name: 'X' });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.reason, 'not_found');
+  } finally {
+    await cleanup(fx);
+  }
 });
 
 test('activateCard on an unknown card id returns not_found', async () => {
-  const result = await activateCard('nonexistent-card-id');
-  assert.equal(result.ok, false);
-  if (result.ok) return;
-  assert.equal(result.reason, 'not_found');
+  const fx = await makeFixture();
+  try {
+    const result = await activateCard('nonexistent-card-id', fx.merchantId);
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.reason, 'not_found');
+  } finally {
+    await cleanup(fx);
+  }
+});
+
+test('updateCard and activateCard return not_found (never the real card) for a card id that belongs to a different merchant', async () => {
+  const owner = await makeFixture();
+  const intruder = await makeFixture();
+  try {
+    const updateResult = await updateCard(owner.cardId, intruder.merchantId, { name: 'Hijacked' });
+    assert.equal(updateResult.ok, false);
+    if (!updateResult.ok) assert.equal(updateResult.reason, 'not_found');
+
+    const activateResult = await activateCard(owner.cardId, intruder.merchantId);
+    assert.equal(activateResult.ok, false);
+    if (!activateResult.ok) assert.equal(activateResult.reason, 'not_found');
+
+    const after = await prisma.card.findUniqueOrThrow({ where: { id: owner.cardId } });
+    assert.equal(after.name, 'Card Edit Test Card', 'the owner\'s card must be completely untouched by another merchant\'s attempt');
+    assert.equal(after.active, false);
+  } finally {
+    await cleanup(owner);
+    await cleanup(intruder);
+  }
 });
