@@ -344,6 +344,76 @@ test('sign-in is rate-limited per email: repeated wrong attempts against the sam
   }
 });
 
+// Regression guard for the final whole-branch review's finding #1: POST
+// /signup had no rate limit at all, unlike every other credential path
+// (sign-in, staff PIN, pass issuance, broadcasts) — an unbounded loop from
+// one host could both fill the Merchant table and pin the one always-on
+// Fly machine via hashPassword's blocking scrypt cost. signupLimiterByIp
+// caps this at 5 per IP per 15 minutes.
+test('sign-up is rate-limited per IP: the 6th sign-up attempt from one IP within the window is refused and creates no Merchant row', async () => {
+  // A dedicated server, same reasoning as the sign-in rate-limit test above
+  // — this test's IP-keyed counter must never be polluted by (or pollute)
+  // any other test sharing the default server's own /signup traffic.
+  const isolated = await spawnServer();
+  const emails: string[] = [];
+  try {
+    const statuses: number[] = [];
+    for (let i = 0; i < 6; i++) {
+      const email = `signup-ratelimit-${randomHex(8)}@example.test`;
+      emails.push(email);
+      const res = await fetch(`${isolated.baseUrl}/signup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ businessName: 'Rate Limit Bakery', email, password: 'a genuinely strong passphrase' }).toString(),
+        redirect: 'manual',
+      });
+      statuses.push(res.status);
+    }
+    assert.ok(statuses.slice(0, 5).every((s) => s === 303), `expected the first 5 sign-ups from one IP to succeed, got ${statuses.slice(0, 5)}`);
+    assert.equal(statuses[5], 429, `expected the 6th sign-up attempt within the window to be rate-limited, got ${statuses[5]}`);
+
+    const sixthEmail = emails[5]!;
+    const rateLimitedRow = await prisma.merchant.findUnique({ where: { email: sixthEmail } });
+    assert.equal(rateLimitedRow, null, 'the rate-limited 6th attempt must not have created a Merchant row');
+  } finally {
+    for (const email of emails.slice(0, 5)) {
+      const merchant = await prisma.merchant.findUnique({ where: { email } });
+      if (merchant) await cleanupMerchant(merchant.id);
+    }
+    await isolated.close();
+  }
+});
+
+// Regression guard for finding #2: the auth migration adds
+// Merchant.passwordHash as nullable (the pre-existing demo Merchant row has
+// no password yet), and handleSignIn must tell a real, known account with
+// no password set apart from a wrong-password/no-such-account attempt —
+// silently folding it into the generic message would be a permanent,
+// unexplained lockout for anyone in that state.
+test('sign-in shows a specific "needs a password set" message, not the generic one, for a Merchant row with a null passwordHash', async () => {
+  const email = `nullhash-${randomHex(8)}@example.test`;
+  // No passwordHash at all — exactly the shape the auth migration leaves
+  // a pre-existing Merchant row in.
+  const merchant = await prisma.merchant.create({ data: { email, name: 'Null Password Hash Test' } });
+  try {
+    assert.equal(merchant.passwordHash, null);
+    const res = await fetch(`${server.baseUrl}/signin`, {
+      method: 'POST',
+      // lnx-lang=en so the response is asserted in a known language — with
+      // no cookie at all resolveLang() defaults to Arabic (BUILD.md §13),
+      // same convention as httpIntegration.test.ts's own lang tests.
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: 'lnx-lang=en' },
+      body: new URLSearchParams({ email, password: 'whatever-the-attempted-password-is' }).toString(),
+    });
+    assert.equal(res.status, 401);
+    const html = await res.text();
+    assert.ok(html.includes('needs a password set'), 'expected the specific null-password-hash message');
+    assert.ok(!html.includes('Incorrect email or password'), 'must not show the generic wrong-credentials message for this specific, known case');
+  } finally {
+    await cleanupMerchant(merchant.id);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Public routes — must keep working with no session at all (BUILD.md job
 // brief's explicit list).

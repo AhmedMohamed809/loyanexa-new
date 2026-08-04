@@ -1164,6 +1164,22 @@ const loginLimiterByEmail = new RateLimiter({ limit: 8, windowMs: 15 * 60 * 1000
 const loginLimiterByIp = new RateLimiter({ limit: 30, windowMs: 15 * 60 * 1000 });
 
 /**
+ * POST /signup had no rate limit at all (final whole-branch review):
+ * `hashPassword` runs `crypto.scryptSync` — tens of milliseconds locally,
+ * measured 100-200ms on the shared-cpu-1x/512MB Fly machine this runs on —
+ * which blocks the single-threaded event loop, and every request that
+ * passes validation also inserts an unbounded `Merchant` row. A trivial
+ * loop from one host can both pin the one always-on machine (there is no
+ * second thread and no autoscaling headroom — see docs/DEPLOY.md) and fill
+ * the table, taking down enrol, pass issuance and stamping for everyone
+ * else along with it. Only IP-keyed (unlike sign-in's email+IP pair):
+ * there is no existing account to key a per-email limit against before the
+ * account exists, and one always-on machine behind one public form is
+ * exactly the shape loginLimiterByIp already exists to defend.
+ */
+const signupLimiterByIp = new RateLimiter({ limit: 5, windowMs: 15 * 60 * 1000 });
+
+/**
  * A fixed, valid-shaped scrypt hash that no real password will ever match,
  * computed once at module load. handleSignIn() always runs a verifyPassword
  * call against *some* hash — this one when there's no real merchant/password
@@ -1306,11 +1322,32 @@ async function handleSignIn(req: http.IncomingMessage, res: http.ServerResponse)
   }
 
   const merchant = await prisma.merchant.findUnique({ where: { email } });
+
+  // A merchant row can exist with passwordHash === null — this branch's own
+  // migration (packages/db/prisma/migrations/…_add_auth_sessions) added the
+  // column nullable, precisely because the pre-auth demo Merchant row
+  // already existed with none. That is not "wrong password" or "no such
+  // account" — it's a real, known account this deploy simply hasn't been
+  // given a password for yet (docs/DEPLOY.md's "First deploy after auth"
+  // section is the fix: scripts/create-merchant.ts sets one). Collapsing it
+  // into the generic invalid-credentials message would be a *silent*
+  // permanent lockout — the owner (or anyone migrating an old row the same
+  // way) would see "wrong password" forever with no way to tell that no
+  // password was ever set to get wrong. Still pays the same scrypt cost as
+  // every other path below (against DUMMY_PASSWORD_HASH) so this more
+  // informative message differs only in content, never in timing, from the
+  // no-such-account case.
+  if (merchant && merchant.passwordHash === null) {
+    verifyPassword(password, DUMMY_PASSWORD_HASH);
+    sendHtml(res, 401, renderSignInForm({ email: emailRaw, next, error: t(lang, 'signInPasswordNotSet') }, lang));
+    return;
+  }
+
   // Always call verifyPassword — against the real hash when there is one,
-  // against DUMMY_PASSWORD_HASH otherwise (no such merchant, or a merchant
-  // row with no password set yet) — so a missing account and a wrong
-  // password cost the same scrypt work and are not just message-identical
-  // but time-identical (see DUMMY_PASSWORD_HASH's own doc comment).
+  // against DUMMY_PASSWORD_HASH otherwise (no such merchant) — so a missing
+  // account and a wrong password cost the same scrypt work and are not just
+  // message-identical but time-identical (see DUMMY_PASSWORD_HASH's own doc
+  // comment).
   const ok = verifyPassword(password, merchant?.passwordHash ?? DUMMY_PASSWORD_HASH);
   if (!merchant || !ok) {
     invalid();
@@ -1342,10 +1379,10 @@ async function handleSignUp(req: http.IncomingMessage, res: http.ServerResponse)
   const password = String(fields.password ?? '');
   const next = safeNextPath(typeof fields.next === 'string' ? fields.next : null);
 
-  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
   const fail = (error: string, status = 400) =>
     sendHtml(res, status, renderSignUpForm({ businessName, email: emailRaw, next, error }, lang));
+
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
   if (!businessName) {
     fail(t(lang, 'signUpBusinessNameRequired'));
@@ -1361,6 +1398,32 @@ async function handleSignUp(req: http.IncomingMessage, res: http.ServerResponse)
     return;
   }
 
+  // Checked here — after the cheap, synchronous field checks above (which
+  // already cost nothing worth rate-limiting on their own) but *before*
+  // the existing-account lookup, the 409 email-taken check, and above all
+  // hashPassword below: everything from here on is the expensive/
+  // informative part of this request (a DB round-trip, an "email taken or
+  // not" answer, and — the main threat — a blocking scrypt hash), and
+  // this is the last point before any of it runs. See signupLimiterByIp's
+  // own doc comment for why this route needs a limiter at all.
+  const ip = resolveClientIp(req.headers, req.socket.remoteAddress);
+  if (!signupLimiterByIp.check(ip)) {
+    fail(t(lang, 'signUpRateLimited'), 429);
+    return;
+  }
+
+  // Deliberately kept as a distinct 409 rather than folded into the same
+  // generic message sign-in uses (final whole-branch review raised this:
+  // without a limiter, this response makes the registered-merchant email
+  // list enumerable). Decision: keep it distinct. signupLimiterByIp above
+  // now caps this at 5 checks per IP per 15 minutes — the same order of
+  // magnitude slower an attacker already accepts against loginLimiterByIp
+  // for the identical "which emails exist" question — and a plain, honest
+  // "that email is taken" is real UX value for someone who has simply
+  // forgotten they already signed up. Sign-in's oracle-proofing exists
+  // because that form is hit far more often, by both real users and
+  // attackers, all day, every day; sign-up's is a one-time action the rate
+  // limit above already makes an unattractive enumeration channel.
   const existing = await prisma.merchant.findUnique({ where: { email } });
   if (existing) {
     fail(t(lang, 'signUpEmailTaken'), 409);
@@ -2816,20 +2879,32 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
   // treats a present-but-empty patch value the same as any other explicit
   // write, so this clears the column rather than leaving it alone (which is
   // what an *absent* key would do instead).
+  // isValidHash() gate matches every other consumer of a card image hash
+  // (cardImages.ts's isStoredLogoWide, server.ts's own loadImageRef) — a
+  // hidden field's value is only ever supposed to be a sha256 hex hash this
+  // same request cycle's own upload handler produced, but nothing stops a
+  // tampered request from sending something else. An invalid value is
+  // treated exactly like an empty one (the "remove the image" case) rather
+  // than stored as-is: the same graceful-degrade-to-"no image" rule
+  // loadImageRef's own comment describes, applied at write time instead of
+  // read time, so a bad hash never reaches the database in the first place.
   if ('logoHash' in fields) {
     const hash = String(fields.logoHash ?? '').trim();
-    patch.logoHash = hash || null;
-    patch.logoUrl = hash ? imageUrl(hash) : null;
+    const valid = isValidHash(hash);
+    patch.logoHash = valid ? hash : null;
+    patch.logoUrl = valid ? imageUrl(hash) : null;
   }
   if ('iconHash' in fields) {
     const hash = String(fields.iconHash ?? '').trim();
-    patch.iconHash = hash || null;
-    patch.iconUrl = hash ? imageUrl(hash) : null;
+    const valid = isValidHash(hash);
+    patch.iconHash = valid ? hash : null;
+    patch.iconUrl = valid ? imageUrl(hash) : null;
   }
   if ('coverHash' in fields) {
     const hash = String(fields.coverHash ?? '').trim();
-    patch.coverHash = hash || null;
-    patch.coverUrl = hash ? imageUrl(hash) : null;
+    const valid = isValidHash(hash);
+    patch.coverHash = valid ? hash : null;
+    patch.coverUrl = valid ? imageUrl(hash) : null;
   }
 
   // Economic fields: a locked card's form renders these inputs `disabled`,

@@ -379,6 +379,71 @@ test('a stale claimed-but-never-finished recipient (simulating a crashed worker)
 });
 
 // ---------------------------------------------------------------------------
+// Out-of-order retries across *different* broadcasts to the same pass — the
+// scenario the final whole-branch review flagged: job 1's push fails and
+// backs off (up to 5 minutes) while job 2 is enqueued and lands cleanly;
+// job 1's retry must not then resurrect its older text over job 2's newer
+// one on the customer's pass.
+// ---------------------------------------------------------------------------
+
+test("an out-of-order retry of an older broadcast never overwrites a newer broadcast's message on the same pass", async () => {
+  const fx = await makeMerchantAndCard();
+  try {
+    const serial = await addPassWithDevices(fx.cardId, fx.merchantId, 1);
+    const card = await prisma.card.findUniqueOrThrow({ where: { id: fx.cardId } });
+
+    // Job 1 (older): its first attempt fails and would normally back off
+    // for 5 minutes before retrying.
+    const job1 = await enqueueBroadcast(card, 'Old broadcast', 'manual');
+    const failingSend = async (): Promise<SendPushOutcome> => ({ ok: false, error: 'simulated failure' });
+    const worker1 = new BroadcastWorker({ sendOne: failingSend, maxAttempts: 5, backoffBaseMs: 5 * 60_000, batchSize: 50, pushIntervalMs: 0 });
+    await worker1.runOnce();
+
+    const recipient1 = await prisma.broadcastRecipient.findFirstOrThrow({ where: { jobId: job1.id } });
+    assert.equal(recipient1.status, 'pending', "job 1's failed first attempt must be pending its retry, not terminal");
+    assert.equal(recipient1.attempts, 1);
+
+    const passAfterJob1FirstAttempt = await prisma.pass.findUniqueOrThrow({ where: { serial } });
+    assert.equal(
+      passAfterJob1FirstAttempt.message,
+      job1.pushMessage,
+      "job 1's own first attempt writes its own message, as normal — nothing has raced it yet"
+    );
+
+    // Job 2 (newer): enqueued and fully delivered while job 1 is still
+    // sitting out its backoff.
+    const job2 = await enqueueBroadcast(card, 'New broadcast', 'manual');
+    assert.ok(job2.createdAt.getTime() >= job1.createdAt.getTime(), 'job 2 must genuinely be the newer job for this test to mean anything');
+    const { sendOne: succeedingSend } = makeRecordingSender();
+    const worker2 = new BroadcastWorker({ sendOne: succeedingSend, batchSize: 50, pushIntervalMs: 0 });
+    await drainAll(worker2);
+
+    const passAfterJob2 = await prisma.pass.findUniqueOrThrow({ where: { serial } });
+    assert.equal(passAfterJob2.message, job2.pushMessage, 'job 2 must win — it is the newer broadcast and it completed cleanly');
+
+    // Force job 1's retry to be immediately claimable, bypassing its real
+    // 5-minute backoff — simulating that backoff having now elapsed,
+    // *after* job 2 already completed. This is the out-of-order landing
+    // the review describes.
+    await prisma.broadcastRecipient.update({ where: { id: recipient1.id }, data: { nextAttemptAt: new Date(0) } });
+    const worker1Retry = new BroadcastWorker({ sendOne: succeedingSend, maxAttempts: 5, backoffBaseMs: 5 * 60_000, batchSize: 50, pushIntervalMs: 0 });
+    await worker1Retry.runOnce();
+
+    const recipient1After = await prisma.broadcastRecipient.findUniqueOrThrow({ where: { id: recipient1.id } });
+    assert.equal(recipient1After.status, 'sent', "job 1's retry itself still succeeds and reaches a terminal state — only the message write is guarded, not the push");
+
+    const passAfterJob1Retry = await prisma.pass.findUniqueOrThrow({ where: { serial } });
+    assert.equal(
+      passAfterJob1Retry.message,
+      job2.pushMessage,
+      "job 1's out-of-order retry must NOT resurrect its older message over job 2's newer one"
+    );
+  } finally {
+    await cleanup(fx);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // 410 Gone
 // ---------------------------------------------------------------------------
 

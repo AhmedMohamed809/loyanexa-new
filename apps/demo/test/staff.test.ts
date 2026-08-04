@@ -223,3 +223,63 @@ test('findStaffByPin distinguishes between multiple staff on the same merchant b
     await cleanupMerchant(merchant.id);
   }
 });
+
+// ---------------------------------------------------------------------------
+// findStaffByPin response time must not scale with staff count. Regression
+// guard for a real fix (final whole-branch review): findStaffByPin used to
+// verify each active staff member's PIN one at a time with the blocking
+// crypto.scryptSync, so a business with N staff configured paid N times the
+// scrypt cost of one — both freezing the event loop for that long and
+// leaking headcount by timing (an 8-staff business answered ~8x slower than
+// an unknown one). The fix checks every candidate concurrently
+// (verifyPinAsync + Promise.all), so wall-clock cost should stay close to
+// one scrypt op's cost regardless of how many staff there are, not scale
+// linearly with the count.
+// ---------------------------------------------------------------------------
+
+test('findStaffByPin response time does not scale with staff count (concurrent, non-blocking verification)', async () => {
+  const fewStaffMerchant = await makeMerchant();
+  const manyStaffMerchant = await makeMerchant();
+  try {
+    await createStaff(fewStaffMerchant.id, 'Solo', '1111');
+
+    const MANY = 12;
+    for (let i = 0; i < MANY; i++) {
+      await createStaff(manyStaffMerchant.id, `Staff ${i}`, String(1000 + i));
+    }
+
+    const time = async (merchantEmail: string): Promise<number> => {
+      const start = performance.now();
+      // A PIN that matches nothing on either merchant — every candidate on
+      // the many-staff merchant must actually be checked, the worst case
+      // the old sequential loop paid in full.
+      await findStaffByPin(merchantEmail, '999999');
+      return performance.now() - start;
+    };
+
+    // A few samples each, averaged, to smooth out single-call noise.
+    const fewTimes: number[] = [];
+    const manyTimes: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      fewTimes.push(await time(fewStaffMerchant.email));
+      manyTimes.push(await time(manyStaffMerchant.email));
+    }
+    const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+    const fewAvg = avg(fewTimes);
+    const manyAvg = avg(manyTimes);
+
+    // The old sequential/blocking code would put this ratio at roughly
+    // MANY (12x) — every extra staff member added one full scrypt op in
+    // series. A generous threshold (well under 12x, floor 20ms) stays
+    // robust under CI/local load noise while still catching a regression
+    // back to the sequential form.
+    const ratio = Math.max(fewAvg, manyAvg) / Math.max(20, Math.min(fewAvg, manyAvg));
+    assert.ok(
+      ratio < 6,
+      `expected a ${MANY}-staff merchant to answer roughly as fast as a 1-staff merchant, not scale with headcount; got ${fewAvg.toFixed(1)}ms vs ${manyAvg.toFixed(1)}ms (ratio ${ratio.toFixed(1)}x)`
+    );
+  } finally {
+    await cleanupMerchant(fewStaffMerchant.id);
+    await cleanupMerchant(manyStaffMerchant.id);
+  }
+});

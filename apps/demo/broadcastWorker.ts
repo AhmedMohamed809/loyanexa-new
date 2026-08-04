@@ -201,15 +201,30 @@ export class BroadcastWorker {
   private async processRecipient(row: ClaimedRow, job: BroadcastJob): Promise<void> {
     const devices = await prisma.device.findMany({ where: { passSerial: row.passSerial } });
 
-    // Written on *every* attempt, deliberately — but always the exact same
-    // value (job.pushMessage was computed once, at enqueue time; see
-    // enqueueBroadcast's own comment). Re-setting a column to the value it
-    // already holds is a no-op as far as any device is concerned: no new
-    // diff, no repeat banner. What this guards against is the crash
-    // between "claimed" and "wrote the message" — a stale reclaim must
-    // still be able to (re)write it, which a "only on attempts === 1"
-    // guard would not survive.
-    await prisma.pass.updateMany({ where: { serial: row.passSerial }, data: { message: job.pushMessage } });
+    // Written on *every* attempt, deliberately — including a stale reclaim
+    // after a crash between "claimed" and "wrote the message", which is
+    // exactly why this isn't guarded by `attempts === 1`. What it *is*
+    // guarded on is `messageJobCreatedAt`: a job only gets to write
+    // `message` when its own `createdAt` is >= whatever job last wrote it.
+    // Without that guard, two jobs against the same pass can complete out
+    // of order — job 1's push fails and backs off (up to 5 minutes,
+    // BroadcastWorker's own backoffMaxMs), job 2 lands and writes first,
+    // then job 1's retry fires later and, with no ordering check, would
+    // unconditionally clobber `message` back to job 1's *older* text,
+    // re-banging a stale banner on a customer's lock screen over a message
+    // they've already moved past. The `OR messageJobCreatedAt IS NULL` arm
+    // is just "first broadcast ever reaches this pass"; `lte` (not `lt`)
+    // deliberately lets a job rewrite its own already-stored value on a
+    // later retry of *itself* — a no-op in content, since job.pushMessage
+    // is fixed at enqueue time (enqueueBroadcast's own comment) — while
+    // still refusing to move backwards for a strictly older job.
+    await prisma.pass.updateMany({
+      where: {
+        serial: row.passSerial,
+        OR: [{ messageJobCreatedAt: null }, { messageJobCreatedAt: { lte: job.createdAt } }],
+      },
+      data: { message: job.pushMessage, messageJobCreatedAt: job.createdAt },
+    });
 
     let failed = false;
     let lastError: string | undefined;

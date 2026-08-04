@@ -188,6 +188,7 @@ export const en = {
   signInSignUpLink: 'Sign up',
   signInInvalidCredentials: 'Incorrect email or password.',
   signInRateLimited: 'Too many sign-in attempts. Please wait a few minutes and try again.',
+  signInPasswordNotSet: 'This account needs a password set before you can sign in. Ask your administrator.',
   signUpTitle: 'Create your account',
   signUpBusinessNameLabel: 'Business name',
   signUpBusinessNamePlaceholder: 'e.g. Shami Bakery',
@@ -202,6 +203,7 @@ export const en = {
   signUpEmailTaken: 'An account with that email already exists.',
   signUpPasswordTooShort: 'Password must be at least 10 characters.',
   signUpPasswordTooCommon: 'That password is too common. Please choose a different one.',
+  signUpRateLimited: 'Too many sign-up attempts from this connection. Please wait a few minutes and try again.',
   navSignOut: 'Sign out',
 
   // Settings — staff PINs (BUILD.md §8.13). Business profile, billing and

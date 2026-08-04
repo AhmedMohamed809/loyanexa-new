@@ -212,6 +212,17 @@ model Pass {
   totalStamps  Int       @default(0)
   rewards      Int       @default(0)
   message      String    @default("")
+  /// The `createdAt` of the BroadcastJob that most recently wrote
+  /// `message` — never a raw job id, so it orders directly against a new
+  /// job's own `createdAt` in a plain comparison. `null` until the first
+  /// broadcast ever reaches this pass. apps/demo/broadcastWorker.ts's
+  /// processRecipient() guards its own write on this column: a retried
+  /// job only overwrites `message` when its `createdAt` is >= the value
+  /// already stored here, which is what stops an older broadcast's
+  /// delayed retry (backed off behind a newer broadcast that already
+  /// landed) from resurrecting stale text on a customer's lock screen —
+  /// see that function's own comment for the full scenario.
+  messageJobCreatedAt DateTime?
   platform     String    @default("")
   lastStampAt  DateTime?
   createdAt    DateTime  @default(now())

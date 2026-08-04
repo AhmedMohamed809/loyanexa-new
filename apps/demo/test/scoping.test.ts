@@ -240,6 +240,50 @@ test('POST /cards/:id/edit — merchant A cannot rename/recolour merchant B\'s c
   }
 });
 
+// Not a cross-merchant scoping case — a different hardening item from the
+// same final whole-branch review: POST /cards/:id/edit's logoHash/
+// iconHash/coverHash hidden fields are only ever supposed to carry a
+// sha256 hex hash this same session's own upload endpoint produced, but
+// nothing previously stopped a tampered request from sending anything
+// else straight into the Card row, unlike every other consumer of a card
+// image hash (isValidHash() gates cardImages.ts's isStoredLogoWide and
+// server.ts's own loadImageRef). Placed here because it needs the same
+// real-server-plus-signed-in-merchant fixture this file already has.
+test("POST /cards/:id/edit — a tampered, non-hash logoHash/iconHash/coverHash is rejected, never stored as-is", async () => {
+  const a = await makeMerchantFixture('A4b');
+  try {
+    const body = new URLSearchParams({
+      name: a.card.name,
+      bgColor: a.card.bgColor,
+      stampActive: a.card.stampActive,
+      stampInactive: a.card.stampInactive,
+      stampShape: 'circle',
+      labelStamps: '',
+      labelRewards: '',
+      logoHash: 'not-a-real-sha256-hash; drop table Card;--',
+      iconHash: 'also-not-valid',
+      coverHash: '0'.repeat(63), // one character short of a real 64-hex-char hash
+    });
+    const res = await fetch(`${server.baseUrl}/cards/${a.card.id}/edit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: a.cookie },
+      body: body.toString(),
+      redirect: 'manual',
+    });
+    assert.equal(res.status, 303, 'an otherwise-valid edit must still succeed — only the bad hashes are dropped');
+
+    const after = await prisma.card.findUniqueOrThrow({ where: { id: a.card.id } });
+    assert.equal(after.logoHash, null, 'a syntactically invalid logoHash must never be stored — treated as "no image", same as an empty one');
+    assert.equal(after.logoUrl, null);
+    assert.equal(after.iconHash, null);
+    assert.equal(after.iconUrl, null);
+    assert.equal(after.coverHash, null);
+    assert.equal(after.coverUrl, null);
+  } finally {
+    await cleanupMerchant(a.merchantId);
+  }
+});
+
 test('GET /cards/:id/activate — merchant B\'s card 404s for merchant A', async () => {
   const a = await makeMerchantFixture('A5');
   const b = await makeMerchantFixture('B5');

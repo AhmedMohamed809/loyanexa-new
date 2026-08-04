@@ -17,7 +17,7 @@
 import crypto from 'node:crypto';
 import { prisma } from '../../packages/db/src/index.ts';
 import type { Staff, Merchant } from '@prisma/client';
-import { hashPassword, verifyPassword, normalizeEmail } from './auth.ts';
+import { hashPassword, verifyPassword, verifyPasswordAsync, normalizeEmail } from './auth.ts';
 
 export const MIN_PIN_LENGTH = 4;
 export const MAX_PIN_LENGTH = 6;
@@ -45,6 +45,11 @@ export function hashPin(pin: string): string {
 /** Constant-time PIN check — a thin, PIN-flavoured name for auth.ts's verifyPassword. */
 export function verifyPin(pin: string, hash: string): boolean {
   return verifyPassword(pin, hash);
+}
+
+/** Async, non-blocking counterpart to verifyPin — a thin, PIN-flavoured name for auth.ts's verifyPasswordAsync. Used by findStaffByPin, which may need to check a PIN against every active staff member on the same merchant, concurrently rather than one scryptSync call at a time. */
+export function verifyPinAsync(pin: string, hash: string): Promise<boolean> {
+  return verifyPasswordAsync(pin, hash);
 }
 
 export async function createStaff(merchantId: string, name: string, pin: string): Promise<Staff> {
@@ -97,35 +102,43 @@ const DUMMY_PIN_HASH = hashPassword(crypto.randomBytes(12).toString('hex'));
  * this is a deliberate design choice given Staff has no route of its own to
  * be scoped by, not something the job brief specified directly.
  *
- * Iterates the merchant's *active* staff only (a deactivated staff member's
- * PIN never opens a new session, even if it's still typed correctly) and
- * returns the first row whose PIN matches. Always resolves the merchant
- * first: when no merchant matches `email`, one dummy verifyPassword call
- * still runs (against DUMMY_PIN_HASH) so a wrong business email and a wrong
- * PIN on a real one cost roughly the same — same reasoning as auth.ts's own
+ * Checks the merchant's *active* staff only (a deactivated staff member's
+ * PIN never opens a new session, even if it's still typed correctly) —
+ * every candidate concurrently (Promise.all + verifyPinAsync), not a
+ * sequential loop over verifyPin/scryptSync. Final whole-branch review: the
+ * sequential form was O(active staff) *blocking* scrypt hashes per attempt
+ * — it froze the single Node event loop for the sum of every candidate's
+ * cost, and it leaked headcount by timing (an 8-staff business answered
+ * ~8x slower than an unknown one, since verifyPin only stopped once it hit
+ * a match). Concurrent, async verification fixes both: scrypt work runs on
+ * libuv's threadpool instead of the JS thread, and every candidate's cost
+ * overlaps instead of stacking, so response time no longer scales linearly
+ * with staff count. Always resolves the merchant first: when no merchant
+ * matches `email` (or it matches but has zero active staff), one dummy
+ * verifyPinAsync call still runs (against DUMMY_PIN_HASH) so those cases
+ * cost roughly the same as a real check — same reasoning as auth.ts's own
  * handleSignIn, applied here because rate-limiting alone does not close a
  * timing side channel.
  */
 export async function findStaffByPin(email: string, pin: string): Promise<{ merchant: Merchant; staff: Staff } | null> {
   const merchant = await prisma.merchant.findUnique({ where: { email: normalizeEmail(email) } });
   if (!merchant) {
-    verifyPin(pin, DUMMY_PIN_HASH);
+    await verifyPinAsync(pin, DUMMY_PIN_HASH);
     return null;
   }
   const staffList = await prisma.staff.findMany({ where: { merchantId: merchant.id, active: true } });
-  let match: Staff | undefined;
-  for (const staff of staffList) {
-    if (verifyPin(pin, staff.pinHash)) {
-      match = staff;
-      break;
-    }
-  }
-  if (!match && staffList.length === 0) {
+  if (staffList.length === 0) {
     // No active staff at all for this merchant — still pay the scrypt cost
     // so "a real business with zero staff configured" isn't distinguishable
     // by timing from "a real business whose staff list was just checked".
-    verifyPin(pin, DUMMY_PIN_HASH);
+    await verifyPinAsync(pin, DUMMY_PIN_HASH);
+    return null;
   }
+
+  const results = await Promise.all(
+    staffList.map(async (staff) => ({ staff, ok: await verifyPinAsync(pin, staff.pinHash) }))
+  );
+  const match = results.find((r) => r.ok)?.staff;
   if (!match) return null;
   return { merchant, staff: match };
 }

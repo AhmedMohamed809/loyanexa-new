@@ -15,9 +15,18 @@
 // cardEdit.ts / stamp.ts / enrol.ts.
 
 import crypto from 'node:crypto';
+import { promisify } from 'node:util';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { prisma } from '../../packages/db/src/index.ts';
 import type { Merchant } from '@prisma/client';
+
+/** Promisified crypto.scrypt — the async counterpart to scryptSync used by verifyPasswordAsync below. Runs on libuv's threadpool rather than blocking the single JS event loop thread, and (unlike scryptSync) lets several verifications run concurrently instead of queueing one after another on the one thread that would otherwise also be serving every other request. */
+const scryptAsync = promisify(crypto.scrypt) as (
+  password: crypto.BinaryLike,
+  salt: crypto.BinaryLike,
+  keylen: number,
+  options: crypto.ScryptOptions
+) => Promise<Buffer>;
 
 // ---------------------------------------------------------------------------
 // Password hashing — scrypt, node:crypto, a random salt per user.
@@ -42,6 +51,37 @@ export function hashPassword(password: string): string {
   return `scrypt$${SCRYPT_N}$${SCRYPT_R}$${SCRYPT_P}$${salt.toString('hex')}$${hash.toString('hex')}`;
 }
 
+interface ParsedHash {
+  N: number;
+  r: number;
+  p: number;
+  salt: Buffer;
+  expected: Buffer;
+}
+
+/** Shared by verifyPassword/verifyPasswordAsync — decodes hashPassword's own `scrypt$N$r$p$saltHex$hashHex` encoding, or returns null for anything malformed (wrong shape, bad hex, non-positive cost parameters) so both callers treat a corrupt stored value as "does not match" rather than throwing. */
+function parseStoredHash(stored: string): ParsedHash | null {
+  const parts = stored.split('$');
+  if (parts.length !== 6 || parts[0] !== 'scrypt') return null;
+  const [, nRaw, rRaw, pRaw, saltHex, hashHex] = parts;
+  const N = Number.parseInt(nRaw!, 10);
+  const r = Number.parseInt(rRaw!, 10);
+  const p = Number.parseInt(pRaw!, 10);
+  if (!Number.isInteger(N) || !Number.isInteger(r) || !Number.isInteger(p)) return null;
+  if (N <= 0 || r <= 0 || p <= 0) return null;
+
+  let salt: Buffer;
+  let expected: Buffer;
+  try {
+    salt = Buffer.from(saltHex!, 'hex');
+    expected = Buffer.from(hashHex!, 'hex');
+  } catch {
+    return null;
+  }
+  if (salt.length === 0 || expected.length === 0) return null;
+  return { N, r, p, salt, expected };
+}
+
 /**
  * Verifies `password` against `stored` (hashPassword's own output).
  * Constant-time on the hash comparison (crypto.timingSafeEqual) so a
@@ -50,33 +90,45 @@ export function hashPassword(password: string): string {
  * treated as "does not match" rather than thrown.
  */
 export function verifyPassword(password: string, stored: string): boolean {
-  const parts = stored.split('$');
-  if (parts.length !== 6 || parts[0] !== 'scrypt') return false;
-  const [, nRaw, rRaw, pRaw, saltHex, hashHex] = parts;
-  const N = Number.parseInt(nRaw!, 10);
-  const r = Number.parseInt(rRaw!, 10);
-  const p = Number.parseInt(pRaw!, 10);
-  if (!Number.isInteger(N) || !Number.isInteger(r) || !Number.isInteger(p)) return false;
-  if (N <= 0 || r <= 0 || p <= 0) return false;
-
-  let salt: Buffer;
-  let expected: Buffer;
-  try {
-    salt = Buffer.from(saltHex!, 'hex');
-    expected = Buffer.from(hashHex!, 'hex');
-  } catch {
-    return false;
-  }
-  if (salt.length === 0 || expected.length === 0) return false;
+  const parsed = parseStoredHash(stored);
+  if (!parsed) return false;
 
   let actual: Buffer;
   try {
-    actual = crypto.scryptSync(password, salt, expected.length, { N, r, p });
+    actual = crypto.scryptSync(password, parsed.salt, parsed.expected.length, { N: parsed.N, r: parsed.r, p: parsed.p });
   } catch {
     return false; // e.g. N/r/p combination scrypt refuses (maxmem, non-power-of-two N, ...)
   }
-  if (actual.length !== expected.length) return false;
-  return crypto.timingSafeEqual(actual, expected);
+  if (actual.length !== parsed.expected.length) return false;
+  return crypto.timingSafeEqual(actual, parsed.expected);
+}
+
+/**
+ * Async counterpart to verifyPassword — byte-identical algorithm and
+ * verdict, but scryptAsync (libuv threadpool) instead of scryptSync. Exists
+ * for callers that may need to verify several candidates for one request —
+ * apps/demo/staff.ts's findStaffByPin, checked against every active staff
+ * member's PIN on a shared stamp-screen device — where scryptSync would
+ * both block the single Node event loop for the sum of every candidate's
+ * cost *and* make response time scale with headcount (final whole-branch
+ * review: an 8-staff business answered ~8x slower than an unknown one, a
+ * side channel on top of the blocking). Callers that only ever check one
+ * candidate (handleSignIn, handleStaffPinLogin's own merchant lookup) have
+ * no reason to switch — scryptSync is simpler and this is not a hot path
+ * for them.
+ */
+export async function verifyPasswordAsync(password: string, stored: string): Promise<boolean> {
+  const parsed = parseStoredHash(stored);
+  if (!parsed) return false;
+
+  let actual: Buffer;
+  try {
+    actual = await scryptAsync(password, parsed.salt, parsed.expected.length, { N: parsed.N, r: parsed.r, p: parsed.p });
+  } catch {
+    return false;
+  }
+  if (actual.length !== parsed.expected.length) return false;
+  return crypto.timingSafeEqual(actual, parsed.expected);
 }
 
 // ---------------------------------------------------------------------------

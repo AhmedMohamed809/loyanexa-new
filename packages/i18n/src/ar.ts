@@ -187,6 +187,7 @@ export const ar: Record<keyof typeof en, string> = {
   signInSignUpLink: 'إنشاء حساب',
   signInInvalidCredentials: 'البريد الإلكتروني أو كلمة المرور غير صحيحة.',
   signInRateLimited: 'محاولات تسجيل دخول كثيرة جدًا. يرجى الانتظار بضع دقائق ثم المحاولة مرة أخرى.',
+  signInPasswordNotSet: 'يحتاج هذا الحساب إلى تعيين كلمة مرور قبل تسجيل الدخول. يرجى التواصل مع المسؤول.',
   signUpTitle: 'إنشاء حسابك',
   signUpBusinessNameLabel: 'اسم النشاط التجاري',
   signUpBusinessNamePlaceholder: 'مثال: مخبز الشامي',
@@ -201,6 +202,7 @@ export const ar: Record<keyof typeof en, string> = {
   signUpEmailTaken: 'يوجد حساب بهذا البريد الإلكتروني بالفعل.',
   signUpPasswordTooShort: 'يجب ألا تقل كلمة المرور عن ١٠ أحرف.',
   signUpPasswordTooCommon: 'كلمة المرور هذه شائعة جدًا. يرجى اختيار كلمة مرور مختلفة.',
+  signUpRateLimited: 'محاولات إنشاء حساب كثيرة جدًا من هذا الاتصال. يرجى الانتظار بضع دقائق ثم المحاولة مرة أخرى.',
   navSignOut: 'تسجيل الخروج',
 
   // Settings — رموز PIN للموظفين (BUILD.md §8.13)

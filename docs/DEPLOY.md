@@ -100,6 +100,60 @@ curl https://loyanexa-demo.fly.dev/health
 # => {"status":"ok"}
 ```
 
+## First deploy after auth — set a password for the existing account (added 2026-08-04)
+
+**Do this once, immediately after the first `fly deploy` of the branch that added
+email+password sign-in** (BUILD.md §8.1/§8.2). Skip it and the merchant dashboard —
+`/app`, `/customers`, `/reports`, `/settings`, `/notifications`, the card designer —
+is unreachable for the owner's own account until you do this. Customer-facing routes
+(enrol, pass issuance, stamping, live updates) are unaffected either way; this is a
+dashboard-only outage.
+
+Why: this branch's migration
+(`packages/db/prisma/migrations/20260803233404_add_auth_sessions`) adds
+`Merchant.passwordHash` as **nullable**, specifically because the database already
+has one Merchant row from before auth existed — the live demo account,
+`ahmedabdulalgane@gmail.com`, which owns every card currently live. That row comes
+out of this migration with `passwordHash = NULL`. Sign-in refuses a null hash (it
+never has a password to check the submitted one against) and shows a specific
+message telling you so, rather than the generic "wrong password" — see
+`apps/demo/server.ts`'s `handleSignIn`. Sign-up can't help either: it 409s with
+"an account with that email already exists," because it does. There is no
+self-serve password-reset flow yet, so a real password has to be set once, by hand,
+from the server side.
+
+`scripts/create-merchant.ts` is that escape hatch. It is idempotent by email — since
+`ahmedabdulalgane@gmail.com` already exists, it **updates** that row's password (and
+name) in place rather than inserting a second Merchant, so every Card already
+attached to it stays attached to the same `Merchant.id`; nothing is orphaned.
+
+Run it inside the running machine, over `fly ssh console`, reading the password from
+the `MERCHANT_PASSWORD` environment variable rather than an argv flag — typing the
+password as a command-line argument would land it in that shell's own history:
+
+```bash
+fly ssh console -a loyanexa-new
+# now inside the machine, at /app (the image's WORKDIR — see Dockerfile):
+MERCHANT_PASSWORD='choose a strong passphrase here, at least 10 characters' \
+  node scripts/create-merchant.ts --email ahmedabdulalgane@gmail.com --name "<business name>"
+```
+
+Expect output like:
+
+```
+Updated existing merchant <id> (ahmedabdulalgane@gmail.com) — password set, name set to "<business name>".
+This account already owns N card(s) — they remain attached, nothing was orphaned.
+```
+
+Check that the card count (`N`) matches what you expect before treating this as
+done. Then sign in normally at `/signin` with that email and the password you just
+set — the specific "this account needs a password set" message should not appear
+again for this account.
+
+If a different Merchant (a real new signup, not this pre-existing account) ever ends
+up with `passwordHash = NULL` some other way, the same command — with that
+Merchant's own email — fixes it the same way.
+
 ## Live Wallet updates need a warm machine (added 2026-08-03)
 
 `fly.toml`'s `[http_service]` now sets `min_machines_running = 1` (was `0`). This is not
