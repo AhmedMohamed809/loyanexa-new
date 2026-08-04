@@ -237,6 +237,81 @@ test('buildPassJson omits webServiceURL/authenticationToken and defaults labelCo
   assert.equal('authenticationToken' in json, false);
 });
 
+// ---------------------------------------------------------------------------
+// Location reminders (BUILD.md §9.4/§9.1) — this is the layer §9.1's own
+// sample shape names directly:
+// `"locations":[{"latitude":…,"longitude":…,"relevantText":"You're near <shop>!"}],"maxDistance":100`.
+// ---------------------------------------------------------------------------
+
+test('buildPassJson omits locations/maxDistance when content.locations is absent or empty', () => {
+  const credentials: PassCredentials = {
+    teamId: 'TESTTEAM1234',
+    passTypeId: 'pass.test.loyanexa',
+    certPath: '/dev/null',
+    keyPath: '/dev/null',
+    wwdrPath: '/dev/null',
+  };
+  const baseContent: PassContent = {
+    serialNumber: 'SERIAL',
+    organizationName: 'Test Cafe',
+    description: 'LoyaNexa loyalty card',
+    backgroundColor: '#203757',
+    foregroundColor: '#F96400',
+    barcodeMessage: 'SERIAL',
+  };
+  assert.equal('locations' in buildPassJson(credentials, baseContent), false);
+  assert.equal('maxDistance' in buildPassJson(credentials, baseContent), false);
+  assert.equal('locations' in buildPassJson(credentials, { ...baseContent, locations: [] }), false);
+});
+
+test('buildPassJson emits latitude/longitude/relevantText per entry, and maxDistance, when locations are given', () => {
+  const credentials: PassCredentials = {
+    teamId: 'TESTTEAM1234',
+    passTypeId: 'pass.test.loyanexa',
+    certPath: '/dev/null',
+    keyPath: '/dev/null',
+    wwdrPath: '/dev/null',
+  };
+  const baseContent: PassContent = {
+    serialNumber: 'SERIAL',
+    organizationName: 'Test Cafe',
+    description: 'LoyaNexa loyalty card',
+    backgroundColor: '#203757',
+    foregroundColor: '#F96400',
+    barcodeMessage: 'SERIAL',
+    locations: [{ latitude: 24.7136, longitude: 46.6753, relevantText: "You're near Test Cafe!" }],
+    maxDistance: 100,
+  };
+  const json = buildPassJson(credentials, baseContent);
+  assert.deepEqual(json.locations, [{ latitude: 24.7136, longitude: 46.6753, relevantText: "You're near Test Cafe!" }]);
+  assert.equal(json.maxDistance, 100);
+});
+
+test('buildPassJson caps locations at MAX_PASS_LOCATIONS (10) regardless of how many content.locations carries', () => {
+  const credentials: PassCredentials = {
+    teamId: 'TESTTEAM1234',
+    passTypeId: 'pass.test.loyanexa',
+    certPath: '/dev/null',
+    keyPath: '/dev/null',
+    wwdrPath: '/dev/null',
+  };
+  const locations = Array.from({ length: 14 }, (_, i) => ({ latitude: i, longitude: i }));
+  const baseContent: PassContent = {
+    serialNumber: 'SERIAL',
+    organizationName: 'Test Cafe',
+    description: 'LoyaNexa loyalty card',
+    backgroundColor: '#203757',
+    foregroundColor: '#F96400',
+    barcodeMessage: 'SERIAL',
+    locations,
+    maxDistance: 100,
+  };
+  const json = buildPassJson(credentials, baseContent);
+  assert.equal(json.locations?.length, 10);
+  assert.equal(json.locations?.[0]?.latitude, 0, 'the first 10 (not a random subset) must be kept');
+  assert.equal(json.locations?.[9]?.latitude, 9);
+});
+
 test('buildPassJson includes both webServiceURL and authenticationToken when set, and omits both when not', () => {
   const credentials: PassCredentials = {
     teamId: 'TESTTEAM1234',

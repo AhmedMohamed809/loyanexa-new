@@ -30,9 +30,61 @@ model Merchant {
   trialEndsAt  DateTime?
   cards        Card[]
   sessions     Session[]
+  staff        Staff[]
   createdAt    DateTime  @default(now())
 
   @@index([firebaseUid])
+}
+
+/// A staff PIN account (docs/BUILD.md §8.13: "add staff and give them a PIN
+/// to open the stamp screen in a browser — no app"). Scoped to one
+/// `Merchant`; a staff account can only ever open the stamp screen
+/// (GET /stamp, POST /api/stamp) via a `StaffSession` below, never the
+/// merchant's own session-gated routes (/app, /customers, /reports, card
+/// editing, settings) — apps/demo/server.ts's requireMerchant() only ever
+/// reads the `lnx-session` cookie, never `lnx-staff`, so a staff session is
+/// simply invisible to it.
+model Staff {
+  id         String   @id @default(cuid())
+  merchantId String
+  merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  name       String
+  /// scrypt hash of the 4-6 digit PIN, `scrypt$N$r$p$saltHex$hashHex` — the
+  /// exact same encoding and functions (apps/demo/auth.ts's
+  /// hashPassword/verifyPassword) as Merchant.passwordHash. Never a plain or
+  /// reversibly-encrypted PIN, even though BUILD.md's own job brief is
+  /// explicit that a 4-6 digit PIN is "staff convenience, not strong
+  /// security" — hashing it costs nothing and a leaked database dump should
+  /// never hand out working PINs directly.
+  pinHash    String
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  staffSessions StaffSession[]
+  stampEvents   StampEvent[]
+
+  @@index([merchantId])
+}
+
+/// Server-side session storage for a staff PIN sign-in — the same pattern as
+/// `Session` above (the id itself is the bearer token in the `lnx-staff`
+/// cookie), kept as a fully separate table/cookie so a staff session can
+/// never be mistaken for a merchant one by any code that only checks "is
+/// there a row for this id". Deliberately shorter-lived (see
+/// apps/demo/staffAuth.ts's STAFF_SESSION_TTL_MS) than a merchant session —
+/// a shared/unattended shop device shouldn't stay signed in indefinitely.
+model StaffSession {
+  id         String   @id
+  staffId    String
+  staff      Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  /// Denormalised from Staff.merchantId — lets getStaffForSession() build
+  /// its result without a second query, and gives PIN-attempt rate limiting
+  /// a merchant-scoped key without joining through Staff first.
+  merchantId String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([staffId])
+  @@index([expiresAt])
 }
 
 /// Server-side session storage (docs/BUILD.md §2's 2026-08-04 note) — `id`
@@ -208,10 +260,18 @@ model StampEvent {
   serial     String
   kind       EventKind
   source     String    @default("browser")
+  /// Which staff member recorded this stamp, when the stamp screen was
+  /// opened with a staff PIN — null when the merchant themself was signed
+  /// in (BUILD.md §8.13's fraud story: "who did what"). `onDelete: SetNull`
+  /// so removing a staff account never rewrites or deletes their stamp
+  /// history, just detaches the name from it.
+  staffId    String?
+  staff      Staff?    @relation(fields: [staffId], references: [id], onDelete: SetNull)
   at         DateTime  @default(now())
 
   @@index([merchantId, at])
   @@index([cardId, kind])
+  @@index([staffId])
 }
 
 model LinkCounter {

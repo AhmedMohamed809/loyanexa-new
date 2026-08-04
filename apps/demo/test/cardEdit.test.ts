@@ -260,6 +260,55 @@ test("editing a card's colours bumps Card.updatedAt — this is what lets the .p
   }
 });
 
+// ---------------------------------------------------------------------------
+// Location reminders (BUILD.md §9.4/§9.1) — 'locations' is an
+// AESTHETIC_FIELDS entry: always editable, even once a pass exists, and
+// every write bumps Card.updatedAt exactly like any other design edit —
+// which is what invalidates the .pkpass cache and (server.ts's
+// pushCardUpdate) pushes the new geofence to already-issued passes.
+// ---------------------------------------------------------------------------
+
+test('locations round-trips through updateCard and is never locked, even once a pass exists', async () => {
+  const fx = await makeFixture();
+  try {
+    await addPass(fx);
+
+    const locations = [
+      { name: 'Downtown branch', latitude: 24.7136, longitude: 46.6753 },
+      { name: 'Mall branch', latitude: 21.5433, longitude: 39.1728, relevantText: 'Come say hi at the mall!' },
+    ];
+    const result = await updateCard(fx.cardId, fx.merchantId, { locations });
+    assert.equal(result.ok, true, 'locations must be editable even on a locked (has-passes) card');
+    if (!result.ok) return;
+    assert.deepEqual(result.card.locations, locations);
+
+    const after = await prisma.card.findUniqueOrThrow({ where: { id: fx.cardId } });
+    assert.deepEqual(after.locations, locations, 'the write must persist to Postgres');
+  } finally {
+    await cleanup(fx);
+  }
+});
+
+test('setting locations bumps Card.updatedAt (invalidates the .pkpass cache key, same as any other design edit)', async () => {
+  const fx = await makeFixture();
+  try {
+    const before = await prisma.card.findUniqueOrThrow({ where: { id: fx.cardId } });
+    await new Promise((r) => setTimeout(r, 5));
+
+    const result = await updateCard(fx.cardId, fx.merchantId, {
+      locations: [{ name: 'HQ', latitude: 24.7136, longitude: 46.6753 }],
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.ok(
+      result.card.updatedAt.getTime() > before.updatedAt.getTime(),
+      'a locations-only edit must still bump Card.updatedAt'
+    );
+  } finally {
+    await cleanup(fx);
+  }
+});
+
 test('activateCard sets active = true', async () => {
   const fx = await makeFixture();
   try {

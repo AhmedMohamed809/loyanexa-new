@@ -198,7 +198,8 @@ export function sessionIdFromRequest(req: IncomingMessage): string | undefined {
   return readCookie(req, SESSION_COOKIE_NAME);
 }
 
-function appendSetCookie(res: ServerResponse, cookie: string): void {
+/** Appends a `Set-Cookie` header without clobbering one already set on this response — shared with apps/demo/staffAuth.ts's own cookie helpers, which set a differently-named cookie on the same response in principle (never in practice on the same request, but this is why it appends rather than overwrites). */
+export function appendSetCookie(res: ServerResponse, cookie: string): void {
   const existing = res.getHeader('Set-Cookie');
   if (existing === undefined) {
     res.setHeader('Set-Cookie', cookie);

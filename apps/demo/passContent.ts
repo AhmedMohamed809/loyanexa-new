@@ -10,6 +10,7 @@
 import type { Card, Pass } from '@prisma/client';
 import { invisibleChangeMarker, type PassContent } from '../../packages/pass/src/buildPass.ts';
 import { t, arabicDigits, type Lang } from '../../packages/i18n/src/index.ts';
+import { parseCardLocations, defaultRelevantText, DEFAULT_MAX_DISTANCE_METERS } from './locations.ts';
 
 /** Card.lang is a plain `string` column (Prisma has no enum for it) — this is the one coercion point, same pattern as server.ts's resolveLang(). */
 function cardLang(card: Pick<Card, 'lang'>): Lang {
@@ -62,6 +63,19 @@ export function buildPassContentFor(
 ): PassContent {
   const lang = cardLang(card);
   const stampsRemaining = Math.max(card.stampsGoal - pass.stamps, 0);
+  // Location reminders (BUILD.md §9.4/§9.1) — geofences live inside the
+  // pass itself, so this is the only place they're ever written; there is
+  // no server call involved in surfacing them later. parseCardLocations
+  // already caps at MAX_CARD_LOCATIONS (10, Apple's own per-pass limit) and
+  // drops anything malformed, and buildPassJson caps again defensively — see
+  // that function's own comment for why the same cap is enforced twice.
+  // relevantText falls back to a localised default (never English on an
+  // Arabic card) when the merchant didn't type an override.
+  const locations = parseCardLocations(card.locations).map((loc) => ({
+    latitude: loc.latitude,
+    longitude: loc.longitude,
+    relevantText: loc.relevantText ?? defaultRelevantText(card.name, lang),
+  }));
   return {
     serialNumber: pass.serial,
     organizationName: card.name,
@@ -99,6 +113,7 @@ export function buildPassContentFor(
     ],
     backFields: [{ key: 'terms', label: t(lang, 'passTermsFieldLabel'), value: buildTermsText(card) }],
     barcodeMessage: pass.serial,
+    ...(locations.length > 0 ? { locations, maxDistance: DEFAULT_MAX_DISTANCE_METERS } : {}),
     ...(options.publicBaseUrl
       ? { webServiceURL: `${options.publicBaseUrl}/apple`, authenticationToken: pass.authToken }
       : {}),

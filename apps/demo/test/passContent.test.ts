@@ -152,3 +152,46 @@ test('buildTermsText describes the card\'s own expiry rule, in Arabic, with Arab
   assert.match(duration, /٣٠ يومًا/);
   assert.doesNotMatch(duration, /[0-9]/, 'no Western digits should leak into the Arabic terms text');
 });
+
+// ---------------------------------------------------------------------------
+// Location reminders (BUILD.md §9.4/§9.1) — locations[]/maxDistance
+// emission into pass.json. §9.1's own sample shape:
+// `"locations":[{"latitude":…,"longitude":…,"relevantText":"You're near <shop>!"}],"maxDistance":100`.
+// ---------------------------------------------------------------------------
+
+test('a card with no locations omits locations/maxDistance from pass.json entirely (not an empty array)', () => {
+  const content = buildPassContentFor(makeCard({ locations: [] }), makePass());
+  assert.equal(content.locations, undefined);
+  assert.equal(content.maxDistance, undefined);
+});
+
+test('a card with locations emits latitude/longitude/relevantText and maxDistance: 100 (BUILD.md §9.1\'s own sample)', () => {
+  const locations = [{ name: 'Downtown', latitude: 24.7136, longitude: 46.6753, relevantText: 'Custom banner text' }];
+  const content = buildPassContentFor(makeCard({ lang: 'en', locations }), makePass());
+  assert.equal(content.locations?.length, 1);
+  assert.equal(content.locations?.[0]?.latitude, 24.7136);
+  assert.equal(content.locations?.[0]?.longitude, 46.6753);
+  assert.equal(content.locations?.[0]?.relevantText, 'Custom banner text');
+  assert.equal(content.maxDistance, 100);
+});
+
+test('a location with no merchant-typed relevantText falls back to the localised default, using the card\'s own name', () => {
+  const locations = [{ name: 'Downtown', latitude: 24.7136, longitude: 46.6753 }];
+  const en = buildPassContentFor(makeCard({ lang: 'en', name: 'Shami Bakery', locations }), makePass());
+  assert.equal(en.locations?.[0]?.relevantText, "You're near Shami Bakery!");
+
+  const ar = buildPassContentFor(makeCard({ lang: 'ar', name: 'Shami Bakery', locations }), makePass());
+  assert.equal(ar.locations?.[0]?.relevantText, 'أنت بالقرب من Shami Bakery!', 'the default relevantText must be properly localised Arabic on an Arabic card, not English');
+});
+
+test('locations is capped at 10 even if Card.locations somehow holds more', () => {
+  const locations = Array.from({ length: 14 }, (_, i) => ({ name: `Loc ${i}`, latitude: 1, longitude: 1 }));
+  const content = buildPassContentFor(makeCard({ locations }), makePass());
+  assert.equal(content.locations?.length, 10);
+});
+
+test('a malformed Card.locations value (not an array, or bad entries) never throws — it just yields no locations', () => {
+  assert.doesNotThrow(() => buildPassContentFor(makeCard({ locations: 'not an array' as unknown as [] }), makePass()));
+  const content = buildPassContentFor(makeCard({ locations: 'not an array' as unknown as [] }), makePass());
+  assert.equal(content.locations, undefined);
+});

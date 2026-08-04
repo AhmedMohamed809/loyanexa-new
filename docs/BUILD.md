@@ -369,6 +369,31 @@ Business profile · **Billing & subscription** → Manage billing ·
 browser — no app"* · **Work locations** — *"customers are notified when they come near your
 location"*, counter `0 / 1`, empty state · **Products & services**.
 
+> **Shipped, 2026-08-04.** Staff PINs and location reminders are both live. Two
+> deliberate placement decisions, neither stated explicitly above:
+>
+> 1. **Location reminders live on each card's own edit page** (`/cards/:id/edit`), not
+>    on `GET /settings` — `Card.locations` is a per-card column (§9.1/§9.4), and the
+>    card edit page is already this app's "settings for one card, always editable,
+>    cache-invalidating on save" surface (the same page that owns colours, images,
+>    labels). A merchant with several cards can give each its own geofences. `GET
+>    /settings` carries staff management only, since `Staff` is merchant-scoped, not
+>    per-card.
+> 2. **The staff PIN sign-in screen asks for the business email, not just a PIN** —
+>    there is no per-merchant URL for `/stamp` to identify *whose* staff list a bare
+>    4-6 digit PIN should be checked against, so it asks the same way the owner's own
+>    sign-in form does. Rate-limited both per business email (8/15min) and per IP
+>    (30/15min) — see `apps/demo/staff.ts`'s `findStaffByPin` and
+>    `apps/demo/server.ts`'s `staffPinLimiterByKey`/`staffPinLimiterByIp`.
+>
+> A staff PIN session (`apps/demo/staffAuth.ts`, cookie `lnx-staff`, separate table
+> `StaffSession`, 12-hour TTL) opens only `GET /stamp` and `POST /api/stamp` — every
+> other merchant route's `requireMerchant()` only ever reads the `lnx-session` cookie,
+> so a staff session is simply invisible to it and 302s to `/signin` exactly as if
+> there were no session at all. `StampEvent.staffId` (nullable, `onDelete: SetNull`)
+> records which staff member recorded a stamp; null means the owner did.
+> `apps/demo/test/staffScoping.test.ts` proves the refusal, one test per route.
+
 ### 8.14 Reports
 Range chips 30/60/90 · **Export report**.
 Four KPI tiles: Customers · Stamps today · Rewards this week · Revenue today.

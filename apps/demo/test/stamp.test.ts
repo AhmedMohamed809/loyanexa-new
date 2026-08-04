@@ -109,6 +109,58 @@ test('a first stamp increments stamps/totalStamps and writes a STAMP event', asy
   }
 });
 
+// ---------------------------------------------------------------------------
+// staffId (BUILD.md §8.13's fraud story: "who did what"). Owner-recorded
+// stamps carry staffId: null; staff-recorded ones carry the real id.
+// ---------------------------------------------------------------------------
+
+test('StampEvent.staffId is null when applyStamp is called with no staffId (the owner stamped)', async () => {
+  const fx = await makeFixture({ stampsGoal: 8, stamps: 2 });
+  try {
+    const outcome = await applyStamp(fx.serial, fx.merchantId);
+    assert.equal(outcome.ok, true);
+
+    const event = await prisma.stampEvent.findFirstOrThrow({ where: { cardId: fx.cardId, kind: 'STAMP' } });
+    assert.equal(event.staffId, null);
+  } finally {
+    await cleanup(fx);
+  }
+});
+
+test('StampEvent.staffId is populated when applyStamp is called with a staffId (a staff member stamped)', async () => {
+  const fx = await makeFixture({ stampsGoal: 8, stamps: 2 });
+  const staff = await prisma.staff.create({
+    data: { merchantId: fx.merchantId, name: 'Test Staff', pinHash: 'scrypt$1$1$1$00$00' },
+  });
+  try {
+    const outcome = await applyStamp(fx.serial, fx.merchantId, 'browser', staff.id);
+    assert.equal(outcome.ok, true);
+
+    const event = await prisma.stampEvent.findFirstOrThrow({ where: { cardId: fx.cardId, kind: 'STAMP' } });
+    assert.equal(event.staffId, staff.id);
+  } finally {
+    await cleanup(fx);
+  }
+});
+
+test('the REWARD event also carries staffId when a staff member\'s stamp completes the goal', async () => {
+  const fx = await makeFixture({ stampsGoal: 3, stamps: 2 });
+  const staff = await prisma.staff.create({
+    data: { merchantId: fx.merchantId, name: 'Test Staff', pinHash: 'scrypt$1$1$1$00$00' },
+  });
+  try {
+    const outcome = await applyStamp(fx.serial, fx.merchantId, 'browser', staff.id);
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok) return;
+    assert.equal(outcome.rewardEarned, true);
+
+    const rewardEvent = await prisma.stampEvent.findFirstOrThrow({ where: { cardId: fx.cardId, kind: 'REWARD' } });
+    assert.equal(rewardEvent.staffId, staff.id);
+  } finally {
+    await cleanup(fx);
+  }
+});
+
 test('a second stamp within 24 hours is rejected (too_soon) and does not change stamps', async () => {
   const fx = await makeFixture({ stampsGoal: 8, stamps: 1 });
   try {

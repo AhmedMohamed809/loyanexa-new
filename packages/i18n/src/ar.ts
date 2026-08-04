@@ -21,6 +21,7 @@ export const ar: Record<keyof typeof en, string> = {
   navCustomers: 'العملاء',
   navReports: 'التقارير',
   navStamp: 'شاشة الختم',
+  navSettings: 'الإعدادات',
 
   // The lock rule (BUILD.md §8.7)
   activateTitle: 'تفعيل هذه البطاقة',
@@ -150,6 +151,30 @@ export const ar: Record<keyof typeof en, string> = {
   designerUploadingLabel: 'جارٍ الرفع…',
   designerUploadErrorGeneric: 'فشل الرفع. حاول مرة أخرى.',
 
+  // Location reminders (BUILD.md §9.4/§9.1/§8.13)
+  designerLocationsHeading: 'تذكيرات الموقع',
+  designerLocationsIntro: 'تظهر بطاقتك على شاشة قفل هاتف العميل عندما يمر بالقرب من متجرك — بلا تطبيق، بلا إشعار فوري، ودون أي تكلفة.',
+  designerLocationsCounter: '{count} / {max}',
+  designerLocationsEmpty: 'لم تتم إضافة أي مواقع بعد.',
+  designerLocationsAddButton: 'إضافة موقع',
+  designerLocationsRowTitle: 'الموقع {n}',
+  designerLocationsRemoveButton: 'إزالة',
+  designerLocationsNameLabel: 'اسم الموقع',
+  designerLocationsNamePlaceholder: 'مثال: فرع وسط المدينة',
+  designerLocationsUseCurrentButton: 'استخدام موقعي الحالي',
+  designerLocationsLatLabel: 'خط العرض',
+  designerLocationsLngLabel: 'خط الطول',
+  designerLocationsRelevantTextLabel: 'الرسالة على شاشة القفل (اختياري)',
+  designerLocationsRelevantTextPlaceholder: 'مثال: أنت بالقرب منا — تعال وقل مرحبًا!',
+  designerLocationsMaxReached: 'وصلت إلى الحد الأقصى الذي تسمح به آبل، وهو {max} مواقع لكل بطاقة.',
+  designerLocationsGeoUnsupported: 'لا يمكن لهذا المتصفح مشاركة موقعك. أدخله يدويًا أدناه.',
+  designerLocationsGeoRequesting: 'جارٍ طلب موقعك…',
+  designerLocationsGeoDenied: 'تعذّر الحصول على موقعك. أدخله يدويًا أدناه.',
+  designerLocationsGeoSuccess: 'تم تعبئة الموقع أدناه.',
+  designerLocationsNameRequired: 'الموقع {n} يحتاج إلى اسم.',
+  designerLocationsLatInvalid: 'الموقع {n}: يجب أن يكون خط العرض رقمًا بين -٩٠ و٩٠.',
+  designerLocationsLngInvalid: 'الموقع {n}: يجب أن يكون خط الطول رقمًا بين -١٨٠ و١٨٠.',
+
   // تسجيل الدخول / إنشاء حساب / تسجيل الخروج — مصادقة جلسات ذاتية الاكتفاء
   signInTitle: 'تسجيل الدخول',
   signInEmailLabel: 'البريد الإلكتروني',
@@ -176,6 +201,41 @@ export const ar: Record<keyof typeof en, string> = {
   signUpPasswordTooShort: 'يجب ألا تقل كلمة المرور عن ١٠ أحرف.',
   signUpPasswordTooCommon: 'كلمة المرور هذه شائعة جدًا. يرجى اختيار كلمة مرور مختلفة.',
   navSignOut: 'تسجيل الخروج',
+
+  // Settings — رموز PIN للموظفين (BUILD.md §8.13)
+  settingsTitle: 'الإعدادات',
+  settingsStaffHeading: 'الموظفون',
+  settingsStaffIntro: 'امنح الموظفين رمز PIN لفتح شاشة الختم من المتصفح — بلا تطبيق، ودون مشاركة حساب الدخول الخاص بك.',
+  settingsStaffConvenienceNote: 'رموز PIN مخصّصة لراحة الموظفين، وليست وسيلة حماية قوية — لا تُعِد استخدام أحدها ككلمة مرور حقيقية.',
+  settingsStaffEmptyState: 'لم تتم إضافة أي موظفين بعد.',
+  settingsStaffAddHeading: 'إضافة موظف',
+  settingsStaffNameLabel: 'الاسم',
+  settingsStaffPinLabel: 'رمز PIN (٤-٦ أرقام)',
+  settingsStaffPinPlaceholder: 'اتركه فارغًا لإنشاء رمز تلقائيًا',
+  settingsStaffGeneratePinButton: 'إنشاء رمز PIN',
+  settingsStaffPinHint: 'أرقام فقط، من ٤ إلى ٦ خانات. اتركه فارغًا وسننشئ رمزًا لك.',
+  settingsStaffAddButton: 'إضافة الموظف',
+  settingsStaffNameRequired: 'أدخل اسم هذا الموظف.',
+  settingsStaffPinInvalid: 'يجب أن يتكوّن رمز PIN من ٤ إلى ٦ أرقام.',
+  settingsStaffPinShownOnce: 'رمز PIN الخاص بـ {name} — اكتبه الآن. لن يظهر مرة أخرى.',
+  settingsStaffActiveBadge: 'نشِط',
+  settingsStaffInactiveBadge: 'غير نشِط',
+  settingsStaffDeactivateButton: 'تعطيل',
+  settingsStaffActivateButton: 'تفعيل',
+  settingsStaffRemoveButton: 'إزالة',
+  settingsStaffRemoveConfirm: 'إزالة هذا الموظف؟ سيتوقف رمز PIN الخاص به عن العمل فورًا.',
+
+  // دخول الموظفين برمز PIN لشاشة الختم (BUILD.md §8.13)
+  staffPinLoginTitle: 'دخول الموظفين',
+  staffPinLoginIntro: 'أدخل البريد الإلكتروني لنشاطك التجاري ورمز PIN الخاص بك لفتح شاشة الختم.',
+  staffPinLoginEmailLabel: 'البريد الإلكتروني للنشاط التجاري',
+  staffPinLoginPinLabel: 'رمز PIN',
+  staffPinLoginSubmitButton: 'فتح شاشة الختم',
+  staffPinLoginOwnerText: 'تسجّل الدخول كمالك؟',
+  staffPinLoginOwnerLink: 'تسجيل الدخول',
+  staffPinInvalid: 'البريد الإلكتروني أو رمز PIN غير صحيح.',
+  staffPinRateLimited: 'محاولات كثيرة جدًا. يرجى الانتظار بضع دقائق ثم المحاولة مرة أخرى.',
+  staffPinRequired: 'سجّل الدخول برمز PIN الخاص بك لاستخدام شاشة الختم.',
 
   // Cards list (GET /app)
   cardsListTitle: 'بطاقاتك',
@@ -226,7 +286,9 @@ export const ar: Record<keyof typeof en, string> = {
   // Stamp screen (BUILD.md §8.15)
   stampScreenTitle: 'ختم بطاقة',
   stampScreenSub: 'امسح رمز QR داخل بطاقة العميل، أو اكتب الرمز أدناه.',
-  stampScreenNotice: 'أنت مسجّل الدخول كتاجر. رمز PIN مخصّص للموظفين، حتى لا يحتاجوا حساب المالك نفسه، قادم قريبًا.',
+  stampScreenNoticeMerchant: 'أنت مسجّل الدخول كتاجر. يمكن للموظفين استخدام رمز PIN الخاص بهم بدلاً من ذلك — راجع الإعدادات.',
+  stampScreenStaffBadge: 'الختم باسم {name}.',
+  stampScreenStaffSignOut: 'تسجيل الخروج',
   stampScreenCameraHeading: 'الكاميرا',
   stampScreenCameraStarting: 'جارٍ تشغيل الكاميرا…',
   stampScreenManualHeading: 'إدخال يدوي',
@@ -266,4 +328,5 @@ export const ar: Record<keyof typeof en, string> = {
   passExpiryUnlimited: 'غير محدود',
   passExpiryDays: '{days} يومًا',
   passDescription: 'بطاقة ولاء {name}',
+  passLocationRelevantTextDefault: 'أنت بالقرب من {name}!',
 };

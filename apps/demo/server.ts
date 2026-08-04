@@ -40,7 +40,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import querystring from 'node:querystring';
 import { fileURLToPath } from 'node:url';
-import { Prisma, type Card, type Pass, type Merchant } from '@prisma/client';
+import { Prisma, type Card, type Pass, type Merchant, type Staff } from '@prisma/client';
 import { buildPass, type PassCredentials, type PassImages } from '../../packages/pass/src/buildPass.ts';
 import { buildPassContentFor } from './passContent.ts';
 import {
@@ -83,6 +83,31 @@ import {
   sessionIdFromRequest,
   normalizeEmail,
 } from './auth.ts';
+import {
+  createStaffSession,
+  deleteStaffSession,
+  getStaffForSession,
+  setStaffSessionCookie,
+  clearStaffSessionCookie,
+  staffSessionIdFromRequest,
+} from './staffAuth.ts';
+import {
+  createStaff,
+  listStaff,
+  setStaffActive,
+  deleteStaff,
+  validatePin,
+  generatePin,
+  findStaffByPin,
+  MIN_PIN_LENGTH,
+  MAX_PIN_LENGTH,
+} from './staff.ts';
+import {
+  parseCardLocations,
+  validateCardLocations,
+  MAX_CARD_LOCATIONS,
+  type RawLocationRow,
+} from './locations.ts';
 import {
   normalizeUpload,
   storeCardImage,
@@ -726,6 +751,32 @@ function findOwnedCard(id: string, merchantId: string): Promise<Card | null> {
   return prisma.card.findFirst({ where: { id, merchantId } });
 }
 
+/**
+ * Who is allowed to open the stamp screen (BUILD.md §8.13): the merchant
+ * themself (`staff` absent — an owner-recorded stamp), or a signed-in staff
+ * member (`staff` present — a staff-recorded one). This is the *only*
+ * resolver GET /stamp and POST /api/stamp use — never requireMerchant(),
+ * which would 302 a staff session straight to /signin. Every other
+ * merchant-facing route keeps using requireMerchant() exactly as before, so
+ * a staff session (the `lnx-staff` cookie) is simply invisible to them: it
+ * is never read by anything except this function and staffAuth.ts's own
+ * getStaffForSession.
+ */
+interface StampAuth {
+  merchant: Merchant;
+  staff?: Staff;
+}
+async function resolveStampAuth(req: http.IncomingMessage): Promise<StampAuth | undefined> {
+  const staffSessionId = staffSessionIdFromRequest(req);
+  if (staffSessionId) {
+    const resolved = await getStaffForSession(staffSessionId);
+    if (resolved) return { merchant: resolved.merchant, staff: resolved.staff };
+  }
+  const merchant = await getMerchantForSession(sessionIdFromRequest(req));
+  if (merchant) return { merchant };
+  return undefined;
+}
+
 /** Atomically allocate the next link code from the shared counter (starts at 10000). */
 async function nextLinkCode(): Promise<number> {
   await prisma.linkCounter.upsert({
@@ -751,15 +802,16 @@ function generateShortCode(): string {
 // same token set already used standalone by renderStampScreen() above — one
 // shell for every merchant page from here on, so the two never drift apart.
 // ---------------------------------------------------------------------------
-type NavKey = 'cards' | 'customers' | 'reports' | 'stamp';
+type NavKey = 'cards' | 'customers' | 'reports' | 'stamp' | 'settings';
 
-/** The top nav bar BUILD.md §6 wants reachable from every merchant page: Cards · Customers · Reports · Stamp screen (this build's revision of the historical bottom tab bar list). Shared between layout() below and renderStampScreen(), so the stamp screen — reached *from* this nav — also carries it. */
+/** The top nav bar BUILD.md §6 wants reachable from every merchant page: Cards · Customers · Reports · Stamp screen · Settings (this build's revision of the historical bottom tab bar list; Settings — BUILD.md §8.13 — added alongside staff PINs and location reminders). Shared between layout() below and renderStampScreen() *only when viewed as the merchant* — a staff session gets its own, deliberately shorter header (see renderStampScreen's own doc comment) that omits every link a staff session cannot reach. */
 function navBar(active: NavKey | undefined, lang: Lang = 'en'): string {
   const items: Array<{ key: NavKey; href: string; label: string }> = [
     { key: 'cards', href: '/app', label: t(lang, 'navCards') },
     { key: 'customers', href: '/customers', label: t(lang, 'navCustomers') },
     { key: 'reports', href: '/reports', label: t(lang, 'navReports') },
     { key: 'stamp', href: '/stamp', label: t(lang, 'navStamp') },
+    { key: 'settings', href: '/settings', label: t(lang, 'navSettings') },
   ];
   return `<header class="top">
   <a class="brand" href="/app">LoyaNexa</a>
@@ -1024,6 +1076,34 @@ function layout(title: string, bodyHtml: string, active?: NavKey, lang: Lang = '
   .icon-swatch img { width: 28px; height: 28px; }
   .field-hint { font-size: 12px; color: var(--ink-3); margin-top: 4px; }
   .field-hint.amber { color: var(--amber); }
+
+  /* Location reminders (BUILD.md §9.4/§8.13) — a variable-length list of
+     fieldsets, added/removed entirely client-side (plain JS, no server
+     round trip) until Save is pressed. */
+  .locations-heading-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .locations-counter { font-size: 13px; color: var(--ink-3); white-space: nowrap; }
+  .locations-intro { font-size: 13px; color: var(--ink-2); line-height: 1.5; margin: 4px 0 16px; }
+  .locations-empty { text-align: center; color: var(--ink-3); padding: 20px 12px; font-size: 13px; border: 1px dashed var(--line); border-radius: 12px; margin-bottom: 14px; }
+  .location-row { border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 12px; background: var(--sunk); }
+  .location-row .row-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .location-row .row-title { font-size: 13px; font-weight: 700; color: var(--ink-2); }
+  .location-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .location-grid .field { margin-bottom: 12px; }
+  .location-row .geo-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .location-row .geo-status { font-size: 12px; color: var(--ink-3); }
+  .location-row .geo-status.error { color: var(--red); }
+
+  /* Settings — staff PINs (BUILD.md §8.13). */
+  .staff-pin-reveal { background: rgba(34,197,94,.10); border: 1px solid rgba(34,197,94,.35); border-radius: 12px; padding: 14px 16px; margin-bottom: 18px; }
+  .staff-pin-reveal .pin { font-size: 24px; font-weight: 800; letter-spacing: 0.12em; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .staff-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .staff-row:last-child { border-bottom: none; }
+  .staff-row .name { font-weight: 600; color: var(--ink); }
+  .staff-row .badge { font-size: 11px; padding: 3px 10px; border-radius: 100px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+  .staff-row .badge.active { background: rgba(34,197,94,.14); color: var(--green); }
+  .staff-row .badge.inactive { background: rgba(148,163,184,.14); color: var(--ink-3); }
+  .staff-row .actions { display: flex; gap: 8px; }
+  .settings-note { font-size: 13px; color: var(--ink-3); line-height: 1.5; margin: 6px 0 18px; }
 </style>
 </head>
 <body>
@@ -1896,12 +1976,77 @@ function designerPreviewQs(values: EditCardFormValues, filled: number): URLSearc
   return qs;
 }
 
+/** A saved CardLocation as the all-strings shape the edit form's inputs need — the inverse of parseLocationsFromFields below. Used both for the initial GET render (from Card.locations) and is mirrored by the raw rows a rejected POST redisplays. */
+function locationToRawRow(loc: { name: string; latitude: number; longitude: number; relevantText?: string }): RawLocationRow {
+  return { name: loc.name, latitude: String(loc.latitude), longitude: String(loc.longitude), relevantText: loc.relevantText ?? '' };
+}
+
+/**
+ * Groups `locations[i][name|lat|lng|relevantText]` fields (renderLocationRow's
+ * own field-name pattern) back into an ordered list of raw rows. node's
+ * built-in `querystring.parse` (readUrlencodedBody's own parser) does not
+ * do bracket/array parsing itself — it returns these as literal flat keys —
+ * so this does the grouping by hand. Index gaps (a row removed client-side
+ * before submit) are fine: rows are sorted by their numeric index and
+ * returned in that order, never assumed contiguous.
+ */
+function parseLocationsFromFields(fields: querystring.ParsedUrlQuery): RawLocationRow[] {
+  const byIndex = new Map<number, { name: string; lat: string; lng: string; relevantText: string }>();
+  for (const key of Object.keys(fields)) {
+    const m = key.match(/^locations\[(\d+)\]\[(name|lat|lng|relevantText)\]$/);
+    if (!m) continue;
+    const idx = Number.parseInt(m[1]!, 10);
+    const field = m[2] as 'name' | 'lat' | 'lng' | 'relevantText';
+    const raw = fields[key];
+    const value = Array.isArray(raw) ? (raw[0] ?? '') : (raw ?? '');
+    const entry = byIndex.get(idx) ?? { name: '', lat: '', lng: '', relevantText: '' };
+    entry[field] = value;
+    byIndex.set(idx, entry);
+  }
+  return [...byIndex.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, v]) => ({ name: v.name, latitude: v.lat, longitude: v.lng, relevantText: v.relevantText }));
+}
+
+/** One `<fieldset>`-style row for a saved (or just-submitted, on a validation error) location — shared by the server-rendered initial rows and the client-side "Add location" template (both must stay in sync: `wireLocationRows` below re-derives the field-name pattern `locations[i][...]` this produces). `index` need not be contiguous — server.ts's own parseLocationsFromFields groups by whatever index each field name carries, gaps and all. */
+function renderLocationRow(index: number, row: RawLocationRow, lang: Lang): string {
+  return `<div class="location-row" data-location-row data-index="${index}">
+            <div class="row-head">
+              <span class="row-title">${escapeHtml(t(lang, 'designerLocationsRowTitle', { n: arabicDigits(index + 1, lang) }))}</span>
+              <button type="button" class="btn remove small" data-remove-location>${escapeHtml(t(lang, 'designerLocationsRemoveButton'))}</button>
+            </div>
+            <div class="field">
+              <label>${escapeHtml(t(lang, 'designerLocationsNameLabel'))}</label>
+              <input type="text" name="locations[${index}][name]" maxlength="80" value="${escapeHtml(row.name)}" placeholder="${escapeHtml(t(lang, 'designerLocationsNamePlaceholder'))}">
+            </div>
+            <div class="geo-row">
+              <button type="button" class="btn secondary small" data-use-current-location>${escapeHtml(t(lang, 'designerLocationsUseCurrentButton'))}</button>
+              <span class="geo-status" data-geo-status></span>
+            </div>
+            <div class="location-grid">
+              <div class="field">
+                <label>${escapeHtml(t(lang, 'designerLocationsLatLabel'))}</label>
+                <input type="text" inputmode="decimal" name="locations[${index}][lat]" data-lat value="${escapeHtml(row.latitude)}" placeholder="24.7136">
+              </div>
+              <div class="field">
+                <label>${escapeHtml(t(lang, 'designerLocationsLngLabel'))}</label>
+                <input type="text" inputmode="decimal" name="locations[${index}][lng]" data-lng value="${escapeHtml(row.longitude)}" placeholder="46.6753">
+              </div>
+            </div>
+            <div class="field" style="margin-bottom:0;">
+              <label>${escapeHtml(t(lang, 'designerLocationsRelevantTextLabel'))}</label>
+              <input type="text" name="locations[${index}][relevantText]" maxlength="160" value="${escapeHtml(row.relevantText)}" placeholder="${escapeHtml(t(lang, 'designerLocationsRelevantTextPlaceholder'))}">
+            </div>
+          </div>`;
+}
+
 function renderEditCardForm(
   card: Card,
   passCount: number,
   lang: Lang,
   values: EditCardFormValues,
   wideIcon: boolean,
+  locationRows: RawLocationRow[],
   error?: string
 ): string {
   const locked = passCount > 0;
@@ -2064,6 +2209,18 @@ function renderEditCardForm(
             <label for="labelRewards">${escapeHtml(t(lang, 'designerLabelRewardsLabel'))}</label>
             <input type="text" id="labelRewards" name="labelRewards" maxlength="16" value="${escapeHtml(values.labelRewards)}">
           </div>
+
+          <div class="locations-heading-row">
+            <h2 style="margin:0;">${escapeHtml(t(lang, 'designerLocationsHeading'))}</h2>
+            <span class="locations-counter" id="locationsCounter">${escapeHtml(t(lang, 'designerLocationsCounter', { count: arabicDigits(locationRows.length, lang), max: arabicDigits(MAX_CARD_LOCATIONS, lang) }))}</span>
+          </div>
+          <p class="locations-intro">${escapeHtml(t(lang, 'designerLocationsIntro'))}</p>
+          <div id="locationsList">
+            <p class="locations-empty" id="locationsEmpty" ${locationRows.length > 0 ? 'hidden' : ''}>${escapeHtml(t(lang, 'designerLocationsEmpty'))}</p>
+            ${locationRows.map((row, i) => renderLocationRow(i, row, lang)).join('\n')}
+          </div>
+          <button type="button" class="btn secondary small" id="addLocationBtn" ${locationRows.length >= MAX_CARD_LOCATIONS ? 'disabled' : ''}>${escapeHtml(t(lang, 'designerLocationsAddButton'))}</button>
+          <p class="field-hint amber" id="locationsMaxHint" ${locationRows.length >= MAX_CARD_LOCATIONS ? '' : 'hidden'}>${escapeHtml(t(lang, 'designerLocationsMaxReached', { max: arabicDigits(MAX_CARD_LOCATIONS, lang) }))}</p>
 
           <h2>${escapeHtml(t(lang, 'designerEconomicsHeading'))}${locked ? escapeHtml(t(lang, 'designerLockedSuffix')) : ''}</h2>
           <div class="field"${lockedClass}>
@@ -2310,6 +2467,151 @@ function renderEditCardForm(
         wireUpload('logoFile', 'logoHash', 'logoThumb', 'logoError', 'logoRemoveBtn', 'logo');
         wireUpload('iconFile', 'iconHash', 'iconThumb', 'iconError', 'iconRemoveBtn', 'icon');
         wireUpload('coverFile', 'coverHash', 'coverThumb', 'coverError', 'coverRemoveBtn', 'cover');
+
+        // -------------------------------------------------------------------
+        // Location reminders (BUILD.md §9.4/§8.13) — add/remove rows entirely
+        // client-side, no server round trip, until Save is pressed (the
+        // server re-validates everything on submit regardless — see
+        // handleUpdateCard's parseLocationsFromFields/validateCardLocations).
+        // The row markup here must stay in sync with server.ts's own
+        // renderLocationRow: same field-name pattern locations[i][...].
+        // -------------------------------------------------------------------
+        var MAX_LOCATIONS = ${MAX_CARD_LOCATIONS};
+        var locationsList = document.getElementById('locationsList');
+        var locationsEmpty = document.getElementById('locationsEmpty');
+        var locationsCounter = document.getElementById('locationsCounter');
+        var addLocationBtn = document.getElementById('addLocationBtn');
+        var locationsMaxHint = document.getElementById('locationsMaxHint');
+        var nextLocationIndex = ${locationRows.length};
+        var counterTemplate = ${JSON.stringify(t(lang, 'designerLocationsCounter', { count: '__COUNT__', max: '__MAX__' }))};
+        var geoUnsupported = ${JSON.stringify(t(lang, 'designerLocationsGeoUnsupported'))};
+        var geoRequesting = ${JSON.stringify(t(lang, 'designerLocationsGeoRequesting'))};
+        var geoDenied = ${JSON.stringify(t(lang, 'designerLocationsGeoDenied'))};
+        var geoSuccess = ${JSON.stringify(t(lang, 'designerLocationsGeoSuccess'))};
+        var rowTitleTemplate = ${JSON.stringify(t(lang, 'designerLocationsRowTitle', { n: '__N__' }))};
+
+        // Arabic-Indic digits (docs/COPY.md §3) for every number this
+        // script renders after the initial (server-rendered, already
+        // arabicDigits()-converted) page load — mirrors
+        // packages/i18n/src/index.ts's own arabicDigits(), duplicated here
+        // for the same reason the contrast-ratio math above is duplicated:
+        // this designer script is plain browser JS with no build step and
+        // no access to that module.
+        var LNX_LANG = ${JSON.stringify(lang)};
+        var ARABIC_INDIC_DIGITS = '٠١٢٣٤٥٦٧٨٩';
+        function localizeDigits(n) {
+          var s = String(n);
+          if (LNX_LANG !== 'ar') return s;
+          return s.replace(/[0-9]/g, function (d) { return ARABIC_INDIC_DIGITS[Number(d)]; });
+        }
+
+        function rowCount() {
+          return locationsList.querySelectorAll('[data-location-row]').length;
+        }
+
+        function refreshLocationsChrome() {
+          var count = rowCount();
+          locationsEmpty.hidden = count > 0;
+          locationsCounter.textContent = counterTemplate
+            .replace('__COUNT__', localizeDigits(count))
+            .replace('__MAX__', localizeDigits(MAX_LOCATIONS));
+          var atMax = count >= MAX_LOCATIONS;
+          addLocationBtn.disabled = atMax;
+          locationsMaxHint.hidden = !atMax;
+        }
+
+        function renumberLocationRows() {
+          locationsList.querySelectorAll('[data-location-row]').forEach(function (row, i) {
+            var title = row.querySelector('.row-title');
+            if (title) title.textContent = rowTitleTemplate.replace('__N__', localizeDigits(i + 1));
+          });
+        }
+
+        function buildLocationRow(index) {
+          var row = document.createElement('div');
+          row.className = 'location-row';
+          row.setAttribute('data-location-row', '');
+          row.setAttribute('data-index', String(index));
+          row.innerHTML =
+            '<div class="row-head">' +
+              '<span class="row-title"></span>' +
+              '<button type="button" class="btn remove small" data-remove-location>${escapeHtml(t(lang, 'designerLocationsRemoveButton'))}</button>' +
+            '</div>' +
+            '<div class="field">' +
+              '<label>${escapeHtml(t(lang, 'designerLocationsNameLabel'))}</label>' +
+              '<input type="text" name="locations[' + index + '][name]" maxlength="80" placeholder="${escapeHtml(t(lang, 'designerLocationsNamePlaceholder'))}">' +
+            '</div>' +
+            '<div class="geo-row">' +
+              '<button type="button" class="btn secondary small" data-use-current-location>${escapeHtml(t(lang, 'designerLocationsUseCurrentButton'))}</button>' +
+              '<span class="geo-status" data-geo-status></span>' +
+            '</div>' +
+            '<div class="location-grid">' +
+              '<div class="field">' +
+                '<label>${escapeHtml(t(lang, 'designerLocationsLatLabel'))}</label>' +
+                '<input type="text" inputmode="decimal" name="locations[' + index + '][lat]" data-lat placeholder="24.7136">' +
+              '</div>' +
+              '<div class="field">' +
+                '<label>${escapeHtml(t(lang, 'designerLocationsLngLabel'))}</label>' +
+                '<input type="text" inputmode="decimal" name="locations[' + index + '][lng]" data-lng placeholder="46.6753">' +
+              '</div>' +
+            '</div>' +
+            '<div class="field" style="margin-bottom:0;">' +
+              '<label>${escapeHtml(t(lang, 'designerLocationsRelevantTextLabel'))}</label>' +
+              '<input type="text" name="locations[' + index + '][relevantText]" maxlength="160" placeholder="${escapeHtml(t(lang, 'designerLocationsRelevantTextPlaceholder'))}">' +
+            '</div>';
+          return row;
+        }
+
+        function wireLocationRow(row) {
+          var removeBtn = row.querySelector('[data-remove-location]');
+          removeBtn.addEventListener('click', function () {
+            row.remove();
+            renumberLocationRows();
+            refreshLocationsChrome();
+          });
+
+          var useCurrentBtn = row.querySelector('[data-use-current-location]');
+          var status = row.querySelector('[data-geo-status]');
+          var latInput = row.querySelector('[data-lat]');
+          var lngInput = row.querySelector('[data-lng]');
+          useCurrentBtn.addEventListener('click', function () {
+            status.classList.remove('error');
+            if (!navigator.geolocation) {
+              status.textContent = geoUnsupported;
+              status.classList.add('error');
+              return;
+            }
+            status.textContent = geoRequesting;
+            navigator.geolocation.getCurrentPosition(
+              function (pos) {
+                latInput.value = pos.coords.latitude.toFixed(6);
+                lngInput.value = pos.coords.longitude.toFixed(6);
+                status.textContent = geoSuccess;
+              },
+              function () {
+                status.textContent = geoDenied;
+                status.classList.add('error');
+              },
+              { enableHighAccuracy: false, timeout: 10000 }
+            );
+          });
+        }
+
+        locationsList.querySelectorAll('[data-location-row]').forEach(function (row) {
+          wireLocationRow(row);
+        });
+
+        addLocationBtn.addEventListener('click', function () {
+          if (rowCount() >= MAX_LOCATIONS) return;
+          var row = buildLocationRow(nextLocationIndex);
+          nextLocationIndex += 1;
+          locationsList.appendChild(row);
+          wireLocationRow(row);
+          renumberLocationRows();
+          refreshLocationsChrome();
+        });
+
+        refreshLocationsChrome();
       })();
     </script>
   `;
@@ -2351,7 +2653,8 @@ async function handleEditCardForm(req: http.IncomingMessage, res: http.ServerRes
         iconFit: card.iconFit,
         coverHash: card.coverHash ?? '',
       },
-      wideIcon
+      wideIcon,
+      parseCardLocations(card.locations).map(locationToRawRow)
     )
   );
 }
@@ -2403,6 +2706,59 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
   const iconFitRaw = String(fields.iconFit ?? '').trim();
   const iconFit = iconFitRaw === 'cover' ? 'cover' : iconFitRaw === 'contain' ? 'contain' : card.iconFit;
 
+  // Location reminders (BUILD.md §9.4/§9.1) — always editable (cardEdit.ts's
+  // AESTHETIC_FIELDS), so this runs unconditionally, locked card or not,
+  // same as colours/images above. Validated *before* the economic-lock
+  // rejection path below can fire, so a merchant fixing their location list
+  // on a locked card gets the location-specific error, not a generic one,
+  // when both happen to be wrong at once — locations are simply checked
+  // first.
+  const locationRows = parseLocationsFromFields(fields);
+  const locationsResult = validateCardLocations(locationRows);
+  if (!locationsResult.ok) {
+    const message =
+      locationsResult.reason === 'too_many'
+        ? t(lang, 'designerLocationsMaxReached', { max: arabicDigits(MAX_CARD_LOCATIONS, lang) })
+        : locationsResult.reason === 'name_required'
+          ? t(lang, 'designerLocationsNameRequired', { n: arabicDigits(locationsResult.index + 1, lang) })
+          : locationsResult.reason === 'invalid_latitude'
+            ? t(lang, 'designerLocationsLatInvalid', { n: arabicDigits(locationsResult.index + 1, lang) })
+            : t(lang, 'designerLocationsLngInvalid', { n: arabicDigits(locationsResult.index + 1, lang) });
+    const wideIconForError = await isStoredLogoWide(card.iconHash);
+    sendHtml(
+      res,
+      400,
+      renderEditCardForm(
+        card,
+        passCount,
+        lang,
+        {
+          name,
+          rewardText: card.rewardText,
+          stampsGoal: card.stampsGoal,
+          starterStamps: card.starterStamps,
+          bgColor,
+          bgOpacity,
+          stampActive,
+          stampInactive,
+          stampShape,
+          stampSource,
+          builtinIcon,
+          labelStamps,
+          labelRewards,
+          logoHash: card.logoHash ?? '',
+          iconHash: card.iconHash ?? '',
+          iconFit,
+          coverHash: card.coverHash ?? '',
+        },
+        wideIconForError,
+        locationRows,
+        message
+      )
+    );
+    return;
+  }
+
   const patch: CardEditInput = {
     name: name || card.name,
     bgColor,
@@ -2415,6 +2771,7 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
     labelStamps,
     labelRewards,
     iconFit,
+    locations: locationsResult.locations,
   };
 
   // Images: images/colours/shape/labels never lock (BUILD.md §8.7's green
@@ -2504,6 +2861,7 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
           coverHash: card.coverHash ?? '',
         },
         wideIcon,
+        locationRows,
         t(lang, 'economicFieldLocked')
       )
     );
@@ -2869,6 +3227,253 @@ async function handleReports(req: http.IncomingMessage, res: http.ServerResponse
     </div>
   `;
   sendHtml(res, 200, layout(t(lang, 'reportsTitle'), body, 'reports', lang));
+}
+
+// ---------------------------------------------------------------------------
+// Route: GET /settings — BUILD.md §8.13. This build ships the staff-PIN
+// section (add/deactivate/remove staff who can open the stamp screen); the
+// rest of §8.13 (business profile, billing, products & services) is out of
+// scope here. Location reminders — also part of §8.13's design — live on
+// each card's own edit page instead (handleEditCardForm/handleUpdateCard
+// above), a deliberate choice: Card.locations is a per-card column, so a
+// merchant with several cards can give each one its own geofences, and the
+// existing card-edit page already carries exactly this "settings for one
+// card, always editable, cache-invalidating on save" behaviour — see
+// docs/BUILD.md §9.4's own value proposition and this branch's own report
+// for the reasoning.
+// ---------------------------------------------------------------------------
+
+/** A random-looking but readable label for a just-created staff row when nothing else distinguishes it in a "created" banner — not used anywhere else; kept simple. */
+function renderStaffRow(staff: Staff, lang: Lang): string {
+  const badgeClass = staff.active ? 'active' : 'inactive';
+  const badgeLabel = staff.active ? t(lang, 'settingsStaffActiveBadge') : t(lang, 'settingsStaffInactiveBadge');
+  const toggleAction = staff.active ? 'deactivate' : 'activate';
+  const toggleLabel = staff.active ? t(lang, 'settingsStaffDeactivateButton') : t(lang, 'settingsStaffActivateButton');
+  return `<div class="staff-row">
+    <div>
+      <div class="name">${escapeHtml(staff.name)}</div>
+      <span class="badge ${badgeClass}">${escapeHtml(badgeLabel)}</span>
+    </div>
+    <div class="actions">
+      <form method="POST" action="/staff/${staff.id}/${toggleAction}" style="margin:0;">
+        <button type="submit" class="btn secondary small">${escapeHtml(toggleLabel)}</button>
+      </form>
+      <form method="POST" action="/staff/${staff.id}/delete" style="margin:0;" data-confirm-remove-staff>
+        <button type="submit" class="btn remove small">${escapeHtml(t(lang, 'settingsStaffRemoveButton'))}</button>
+      </form>
+    </div>
+  </div>`;
+}
+
+function renderSettingsPage(
+  staffList: Staff[],
+  lang: Lang,
+  opts: { newStaffName?: string; newStaffPin?: string; error?: string } = {}
+): string {
+  const revealBanner = opts.newStaffPin
+    ? `<div class="staff-pin-reveal">
+        <p style="margin:0 0 6px;">${escapeHtml(t(lang, 'settingsStaffPinShownOnce', { name: opts.newStaffName ?? '' }))}</p>
+        <div class="pin">${escapeHtml(arabicDigits(opts.newStaffPin, lang))}</div>
+      </div>`
+    : '';
+  const body = `
+    <h1>${escapeHtml(t(lang, 'settingsTitle'))}</h1>
+    ${opts.error ? `<div class="error">${escapeHtml(opts.error)}</div>` : ''}
+    <div class="panel">
+      <h2>${escapeHtml(t(lang, 'settingsStaffHeading'))}</h2>
+      <p class="settings-note">${escapeHtml(t(lang, 'settingsStaffIntro'))}</p>
+      <p class="settings-note">${escapeHtml(t(lang, 'settingsStaffConvenienceNote'))}</p>
+      ${revealBanner}
+      ${
+        staffList.length === 0
+          ? `<p class="locations-empty">${escapeHtml(t(lang, 'settingsStaffEmptyState'))}</p>`
+          : staffList.map((s) => renderStaffRow(s, lang)).join('\n')
+      }
+      <h2 style="margin-top:24px;">${escapeHtml(t(lang, 'settingsStaffAddHeading'))}</h2>
+      <form method="POST" action="/staff">
+        <div class="field">
+          <label for="staffName">${escapeHtml(t(lang, 'settingsStaffNameLabel'))}</label>
+          <input type="text" id="staffName" name="name" required maxlength="80" value="${escapeHtml(opts.newStaffName && opts.error ? opts.newStaffName : '')}">
+        </div>
+        <div class="field">
+          <label for="staffPin">${escapeHtml(t(lang, 'settingsStaffPinLabel'))}</label>
+          <div class="hex-row">
+            <input type="text" id="staffPin" name="pin" inputmode="numeric" pattern="[0-9]{4,6}" minlength="${MIN_PIN_LENGTH}" maxlength="${MAX_PIN_LENGTH}" placeholder="${escapeHtml(t(lang, 'settingsStaffPinPlaceholder'))}">
+            <button type="button" class="btn secondary small" id="generatePinBtn">${escapeHtml(t(lang, 'settingsStaffGeneratePinButton'))}</button>
+          </div>
+          <p class="field-hint">${escapeHtml(t(lang, 'settingsStaffPinHint'))}</p>
+        </div>
+        <button class="btn" type="submit">${escapeHtml(t(lang, 'settingsStaffAddButton'))}</button>
+      </form>
+    </div>
+    <script>
+      (function () {
+        var btn = document.getElementById('generatePinBtn');
+        var input = document.getElementById('staffPin');
+        if (!btn || !input) return;
+        btn.addEventListener('click', function () {
+          var digits = '';
+          var bytes = new Uint8Array(6);
+          (window.crypto || window.msCrypto).getRandomValues(bytes);
+          for (var i = 0; i < 6; i++) digits += String(bytes[i] % 10);
+          input.value = digits;
+        });
+        document.querySelectorAll('[data-confirm-remove-staff]').forEach(function (form) {
+          form.addEventListener('submit', function (e) {
+            if (!window.confirm(${JSON.stringify(t(lang, 'settingsStaffRemoveConfirm'))})) e.preventDefault();
+          });
+        });
+      })();
+    </script>
+  `;
+  return layout(t(lang, 'settingsTitle'), body, 'settings', lang);
+}
+
+async function handleSettingsPage(req: http.IncomingMessage, res: http.ServerResponse, merchant: Merchant): Promise<void> {
+  const lang = resolveLang(req);
+  const staffList = await listStaff(merchant.id);
+  sendHtml(res, 200, renderSettingsPage(staffList, lang));
+}
+
+/** POST /staff — creates a staff PIN account. Shows the plaintext PIN exactly once, inline in this response (never via redirect, so it never lands in a URL, a browser history entry, or a server access log) — it is hashed the moment it is generated/typed and cannot be recovered afterward. */
+async function handleCreateStaff(req: http.IncomingMessage, res: http.ServerResponse, merchant: Merchant): Promise<void> {
+  const lang = resolveLang(req);
+  let fields: querystring.ParsedUrlQuery;
+  try {
+    fields = await readUrlencodedBody(req);
+  } catch (err) {
+    const status = isHttpError(err) ? err.statusCode : 400;
+    const message = err instanceof Error ? err.message : String(err);
+    sendHtml(res, status, layout('Error', `<div class="panel"><h1>${status}</h1><p>${escapeHtml(message)}</p></div>`, 'settings', lang));
+    return;
+  }
+
+  const name = String(fields.name ?? '').trim().slice(0, 80);
+  const pinRaw = String(fields.pin ?? '').trim();
+  const pin = pinRaw || generatePin();
+
+  const staffList = await listStaff(merchant.id);
+
+  if (!name) {
+    sendHtml(res, 400, renderSettingsPage(staffList, lang, { error: t(lang, 'settingsStaffNameRequired') }));
+    return;
+  }
+  const pinCheck = validatePin(pin);
+  if (!pinCheck.ok) {
+    sendHtml(res, 400, renderSettingsPage(staffList, lang, { newStaffName: name, error: t(lang, 'settingsStaffPinInvalid') }));
+    return;
+  }
+
+  await createStaff(merchant.id, name, pin);
+  const updatedStaffList = await listStaff(merchant.id);
+  sendHtml(res, 200, renderSettingsPage(updatedStaffList, lang, { newStaffName: name, newStaffPin: pin }));
+}
+
+/** POST /staff/:id/(activate|deactivate|delete) — scoped to `merchant.id` (setStaffActive/deleteStaff both re-check ownership themselves), same not-found-not-403 shape as every other merchant-owned-resource route in this file. An id belonging to another merchant, or that never existed, just redirects back to Settings with nothing changed — there is no separate "staff not found" state worth its own page for an action triggered from a button on a list this merchant already owns. */
+async function handleStaffAction(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  staffId: string,
+  action: 'activate' | 'deactivate' | 'delete',
+  merchant: Merchant
+): Promise<void> {
+  if (action === 'delete') {
+    await deleteStaff(staffId, merchant.id);
+  } else {
+    await setStaffActive(staffId, merchant.id, action === 'activate');
+  }
+  res.writeHead(303, { Location: '/settings' });
+  res.end();
+}
+
+// ---------------------------------------------------------------------------
+// The stamp screen's own sign-in: a staff PIN (BUILD.md §8.13). Reached
+// only when resolveStampAuth() finds neither a merchant session nor a
+// staff session already (see the router's own GET /stamp handling below).
+// There is no per-merchant URL for the stamp screen, so — like the owner's
+// own sign-in form — this asks for the business email too, purely to know
+// *whose* staff list to check the PIN against (apps/demo/staff.ts's
+// findStaffByPin doc comment explains this choice in full).
+// ---------------------------------------------------------------------------
+
+function renderStaffPinForm(opts: { email?: string; error?: string }, lang: Lang): string {
+  const { email = '', error } = opts;
+  const body = `
+    <h1>${escapeHtml(t(lang, 'staffPinLoginTitle'))}</h1>
+    <p class="muted" style="margin-top:0;">${escapeHtml(t(lang, 'staffPinLoginIntro'))}</p>
+    ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
+    <form method="POST" action="/stamp/pin">
+      <div class="field">
+        <label for="pinEmail">${escapeHtml(t(lang, 'staffPinLoginEmailLabel'))}</label>
+        <input type="text" id="pinEmail" name="email" required autocomplete="email" value="${escapeHtml(email)}">
+      </div>
+      <div class="field">
+        <label for="pinCode">${escapeHtml(t(lang, 'staffPinLoginPinLabel'))}</label>
+        <input type="text" id="pinCode" name="pin" required inputmode="numeric" pattern="[0-9]{4,6}" autocomplete="off" maxlength="${MAX_PIN_LENGTH}">
+      </div>
+      <button class="btn" type="submit" style="width:100%;">${escapeHtml(t(lang, 'staffPinLoginSubmitButton'))}</button>
+    </form>
+    <p class="muted" style="margin-top:16px;">${escapeHtml(t(lang, 'staffPinLoginOwnerText'))} <a href="/signin">${escapeHtml(t(lang, 'staffPinLoginOwnerLink'))}</a></p>
+  `;
+  return authPageShell(t(lang, 'staffPinLoginTitle'), body, lang);
+}
+
+function handleStaffPinForm(req: http.IncomingMessage, res: http.ServerResponse): void {
+  const lang = resolveLang(req);
+  sendHtml(res, 200, renderStaffPinForm({}, lang));
+}
+
+/** Rate-limited both per business email/id (a shared shop device brute-forcing its own owner's staff PINs) and per IP (a botnet spraying PIN guesses across many businesses) — same two-limiter shape as auth.ts's own sign-in limiters, and for the same reason: either alone lets an attacker route around the other. A 4-6 digit PIN is only 10,000-1,000,000 combinations, so this lockout is the entire reason a leaked/guessed PIN doesn't just work on the first try eventually — BUILD.md job brief: "rate-limit PIN attempts per merchant and lock out after repeated failures". */
+const staffPinLimiterByKey = new RateLimiter({ limit: 8, windowMs: 15 * 60 * 1000 });
+const staffPinLimiterByIp = new RateLimiter({ limit: 30, windowMs: 15 * 60 * 1000 });
+
+async function handleStaffPinLogin(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const lang = resolveLang(req);
+  let fields: querystring.ParsedUrlQuery;
+  try {
+    fields = await readUrlencodedBody(req);
+  } catch (err) {
+    const status = isHttpError(err) ? err.statusCode : 400;
+    const message = err instanceof Error ? err.message : String(err);
+    sendHtml(res, status, layout('Error', `<div class="panel"><h1>${status}</h1><p>${escapeHtml(message)}</p></div>`, undefined, lang));
+    return;
+  }
+
+  const emailRaw = String(fields.email ?? '').trim();
+  const email = normalizeEmail(emailRaw);
+  const pin = String(fields.pin ?? '').trim();
+  const ip = resolveClientIp(req.headers, req.socket.remoteAddress);
+
+  if (!staffPinLimiterByKey.check(email || `empty:${ip}`) || !staffPinLimiterByIp.check(ip)) {
+    sendHtml(res, 429, renderStaffPinForm({ email: emailRaw, error: t(lang, 'staffPinRateLimited') }, lang));
+    return;
+  }
+
+  const invalid = () => sendHtml(res, 401, renderStaffPinForm({ email: emailRaw, error: t(lang, 'staffPinInvalid') }, lang));
+  if (!email || !pin) {
+    invalid();
+    return;
+  }
+
+  const result = await findStaffByPin(email, pin);
+  if (!result) {
+    invalid();
+    return;
+  }
+
+  const session = await createStaffSession(result.staff.id, result.merchant.id);
+  setStaffSessionCookie(res, session);
+  res.writeHead(303, { Location: '/stamp' });
+  res.end();
+}
+
+/** POST /stamp/signout — the staff-session counterpart to POST /signout, on its own path so it can never be reached without a staff cookie doing anything meaningful (and so it never needs a merchant session, which a staff-only browser doesn't have). */
+async function handleStaffSignOut(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const id = staffSessionIdFromRequest(req);
+  if (id) await deleteStaffSession(id);
+  clearStaffSessionCookie(res);
+  res.writeHead(303, { Location: '/stamp' });
+  res.end();
 }
 
 // ---------------------------------------------------------------------------
@@ -3545,7 +4150,27 @@ function handleQrPng(res: http.ServerResponse, query: URLSearchParams): void {
 // per BUILD.md §3 (2026-08-03 revision):
 // canvas #0F172A, paper #1C2A42, accent #F28C38, Alexandria typeface.
 // ---------------------------------------------------------------------------
-function renderStampScreen(lang: Lang = 'en'): string {
+/** Who is viewing the stamp screen — mirrors StampAuth above, minus the full Merchant/Staff rows (renderStampScreen only ever needs a name to display). */
+type StampScreenViewer = { kind: 'merchant' } | { kind: 'staff'; staffName: string };
+
+/**
+ * The header a *staff* session sees on the stamp screen — deliberately not
+ * navBar(): every link navBar renders (Cards, Customers, Reports, Settings)
+ * 302s a staff session straight to /signin (requireMerchant() never
+ * recognises the `lnx-staff` cookie), so showing them here would just be a
+ * row of dead ends. Brand plus a sign-out button is everything a staff
+ * session can actually do besides stamp.
+ */
+function staffHeader(lang: Lang): string {
+  return `<header class="top">
+  <a class="brand" href="/stamp">LoyaNexa</a>
+  <form method="POST" action="/stamp/signout" style="margin-inline-start:auto;">
+    <button type="submit" class="btn secondary small">${escapeHtml(t(lang, 'stampScreenStaffSignOut'))}</button>
+  </form>
+</header>`;
+}
+
+function renderStampScreen(lang: Lang = 'en', viewer: StampScreenViewer = { kind: 'merchant' }): string {
   return `<!doctype html>
 <html lang="${lang}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
 <head>
@@ -3626,11 +4251,15 @@ function renderStampScreen(lang: Lang = 'en'): string {
 </style>
 </head>
 <body>
-${navBar('stamp', lang)}
+${viewer.kind === 'staff' ? staffHeader(lang) : navBar('stamp', lang)}
 <main>
   <h1>${escapeHtml(t(lang, 'stampScreenTitle'))}</h1>
   <p class="sub">${escapeHtml(t(lang, 'stampScreenSub'))}</p>
-  <div class="notice">${escapeHtml(t(lang, 'stampScreenNotice'))}</div>
+  <div class="notice">${escapeHtml(
+    viewer.kind === 'staff'
+      ? t(lang, 'stampScreenStaffBadge', { name: viewer.staffName })
+      : t(lang, 'stampScreenNoticeMerchant')
+  )}</div>
 
   <div id="result" role="status" aria-live="polite"></div>
 
@@ -3860,8 +4489,9 @@ ${navBar('stamp', lang)}
 </html>`;
 }
 
-function handleStampScreen(req: http.IncomingMessage, res: http.ServerResponse): void {
-  sendHtml(res, 200, renderStampScreen(resolveLang(req)));
+function handleStampScreen(req: http.IncomingMessage, res: http.ServerResponse, auth: StampAuth): void {
+  const viewer: StampScreenViewer = auth.staff ? { kind: 'staff', staffName: auth.staff.name } : { kind: 'merchant' };
+  sendHtml(res, 200, renderStampScreen(resolveLang(req), viewer));
 }
 
 // ---------------------------------------------------------------------------
@@ -3873,7 +4503,7 @@ function handleStampScreen(req: http.IncomingMessage, res: http.ServerResponse):
 // body — success or error — carries a `message` already translated per the
 // `lang` cookie (BUILD.md §13: server error messages translated too).
 // ---------------------------------------------------------------------------
-async function handleApiStamp(req: http.IncomingMessage, res: http.ServerResponse, merchant: Merchant): Promise<void> {
+async function handleApiStamp(req: http.IncomingMessage, res: http.ServerResponse, merchant: Merchant, staff?: Staff): Promise<void> {
   const lang = resolveLang(req);
 
   let body: unknown;
@@ -3898,7 +4528,7 @@ async function handleApiStamp(req: http.IncomingMessage, res: http.ServerRespons
     return;
   }
 
-  const outcome = await applyStamp(code, merchant.id);
+  const outcome = await applyStamp(code, merchant.id, 'browser', staff?.id);
 
   if (!outcome.ok) {
     if (outcome.reason === 'not_found') {
@@ -4273,6 +4903,29 @@ const server = http.createServer(async (req, res) => {
       await handleReports(req, res, url, merchant);
       return;
     }
+    // GET /settings and its staff-PIN management actions (BUILD.md §8.13) —
+    // literal/regex paths registered here for the same reason /customers and
+    // /reports are: above the `GET /:code` catch-all, and never colliding
+    // with the /cards/... group below regardless.
+    if (req.method === 'GET' && pathname === '/settings') {
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleSettingsPage(req, res, merchant);
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/staff') {
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleCreateStaff(req, res, merchant);
+      return;
+    }
+    const staffActionMatch = pathname.match(/^\/staff\/([^/]+)\/(activate|deactivate|delete)$/);
+    if (req.method === 'POST' && staffActionMatch) {
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleStaffAction(req, res, staffActionMatch[1]!, staffActionMatch[2] as 'activate' | 'deactivate' | 'delete', merchant);
+      return;
+    }
     // /cards/:id/print, /cards/:id/activate, /cards/:id/edit — two-segment
     // paths under /cards/, so the single-segment `/^\/cards\/([^/]+)$/`
     // match just below (anchored with `$`) can never shadow them, and vice
@@ -4341,19 +4994,36 @@ const server = http.createServer(async (req, res) => {
     // /stamp and /api/stamp are literal paths and must be registered here —
     // above the `GET /:code` catch-all below — or the catch-all would
     // swallow them (BUILD.md §12 / §18 item 10). The stamp screen is a
-    // special case (BUILD.md job brief): staff need it without being the
-    // owner, but for now it sits behind the merchant session like every
-    // other route above — a separate staff PIN comes later.
+    // special case (BUILD.md §8.13): staff need it without being the owner,
+    // so these two use resolveStampAuth() — merchant session OR staff
+    // session — never requireMerchant(), which would 302 a staff-only
+    // browser to /signin (a page it has no credentials for and must never
+    // reach). GET /stamp with neither shows the staff PIN entry screen
+    // instead of redirecting.
     if (req.method === 'GET' && pathname === '/stamp') {
-      const merchant = await requireMerchant(req, res);
-      if (!merchant) return;
-      handleStampScreen(req, res);
+      const auth = await resolveStampAuth(req);
+      if (!auth) {
+        handleStaffPinForm(req, res);
+        return;
+      }
+      handleStampScreen(req, res, auth);
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/stamp/pin') {
+      await handleStaffPinLogin(req, res);
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/stamp/signout') {
+      await handleStaffSignOut(req, res);
       return;
     }
     if (req.method === 'POST' && pathname === '/api/stamp') {
-      const merchant = await requireMerchant(req, res);
-      if (!merchant) return;
-      await handleApiStamp(req, res, merchant);
+      const auth = await resolveStampAuth(req);
+      if (!auth) {
+        sendJson(res, 401, { ok: false, message: t(resolveLang(req), 'staffPinRequired') });
+        return;
+      }
+      await handleApiStamp(req, res, auth.merchant, auth.staff);
       return;
     }
 

@@ -159,10 +159,10 @@ test('/ and an existing short link are 200 with no session at all (public routes
   }
 });
 
-test('/app, /customers, /reports, /stamp all redirect to /signin with no session, and 200 with a valid one', async () => {
+test('/app, /customers, /reports all redirect to /signin with no session, and 200 with a valid one', async () => {
   const fx = await makeActiveCard();
   try {
-    for (const p of ['/app', '/customers', '/reports', '/stamp']) {
+    for (const p of ['/app', '/customers', '/reports']) {
       const noSession = await fetch(`${server.baseUrl}${p}`, { redirect: 'manual' });
       assert.equal(noSession.status, 302, `GET ${p} with no session should redirect, got ${noSession.status}`);
       assert.match(noSession.headers.get('location') ?? '', /^\/signin/, `GET ${p} should redirect to /signin`);
@@ -170,6 +170,29 @@ test('/app, /customers, /reports, /stamp all redirect to /signin with no session
       const withSession = await fetch(`${server.baseUrl}${p}`, { headers: { Cookie: fx.cookie } });
       assert.equal(withSession.status, 200, `GET ${p} with a valid session should be 200, got ${withSession.status}`);
     }
+  } finally {
+    await cleanupMerchant(fx.merchantId);
+  }
+});
+
+// /stamp is a deliberate exception to the redirect-to-/signin rule above
+// (BUILD.md §8.13): with no session at all it shows the staff PIN entry
+// screen (200), not a redirect — staff need to reach it without the
+// owner's own credentials. A valid *merchant* session still reaches the
+// stamp screen itself, 200, same as before.
+test('/stamp shows the staff PIN screen (200, no merchant chrome) with no session, and the stamp screen itself with a valid merchant session', async () => {
+  const fx = await makeActiveCard();
+  try {
+    const noSession = await fetch(`${server.baseUrl}/stamp`, { redirect: 'manual' });
+    assert.equal(noSession.status, 200, 'GET /stamp with no session should show the PIN form, not redirect');
+    const pinHtml = await noSession.text();
+    assert.ok(pinHtml.includes('name="pin"'), 'the PIN entry form should be shown');
+    assert.ok(!pinHtml.includes('id="video"'), 'the actual camera-scanning stamp screen must not render for an unauthenticated visitor');
+
+    const withSession = await fetch(`${server.baseUrl}/stamp`, { headers: { Cookie: fx.cookie } });
+    assert.equal(withSession.status, 200, 'GET /stamp with a valid merchant session should be 200');
+    const html = await withSession.text();
+    assert.ok(!html.includes('name="pin"'), 'a signed-in merchant should see the stamp screen, not the PIN form');
   } finally {
     await cleanupMerchant(fx.merchantId);
   }

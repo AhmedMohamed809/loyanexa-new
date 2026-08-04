@@ -15,6 +15,7 @@
 
 import { prisma } from '../../packages/db/src/index.ts';
 import type { Card, Prisma } from '@prisma/client';
+import type { CardLocation } from './locations.ts';
 
 /**
  * The database fields the lock rule protects once any Pass exists for a
@@ -63,6 +64,15 @@ export const AESTHETIC_FIELDS = [
   'iconFit',
   'coverUrl',
   'coverHash',
+  /// Location reminders (BUILD.md §9.4/§9.1) — geofences the pass carries,
+  /// not a rule about how a customer earns anything, so they're aesthetic
+  /// (always editable) in exactly the sense this file means it: a merchant
+  /// can add/remove/relocate them at any time, even after customers have
+  /// joined. A write here still bumps Card.updatedAt (Prisma's @updatedAt),
+  /// which is exactly what invalidates the .pkpass cache and (via
+  /// server.ts's pushCardUpdate, fired the same way any other design edit
+  /// fires it) pushes the change to already-issued passes.
+  'locations',
 ] as const;
 export type AestheticField = (typeof AESTHETIC_FIELDS)[number];
 
@@ -91,6 +101,7 @@ export interface CardEditInput {
   iconFit?: string;
   coverUrl?: string | null;
   coverHash?: string | null;
+  locations?: CardLocation[];
   stampsGoal?: number;
   starterStamps?: number;
   rewardText?: string;

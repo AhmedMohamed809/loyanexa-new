@@ -16,6 +16,7 @@ export const en = {
   navCustomers: 'Customers',
   navReports: 'Reports',
   navStamp: 'Stamp screen',
+  navSettings: 'Settings',
 
   // The lock rule (BUILD.md §8.7) — activation confirmation, the locked-fields
   // banner on the edit page, and the field labels shared by both.
@@ -147,6 +148,32 @@ export const en = {
   designerUploadingLabel: 'Uploading…',
   designerUploadErrorGeneric: 'Upload failed. Please try again.',
 
+  // Location reminders (BUILD.md §9.4/§9.1/§8.13) — on the card edit page,
+  // since Card.locations is a per-card column.
+  designerLocationsHeading: 'Location reminders',
+  designerLocationsIntro:
+    "Your card appears on the customer's lock screen when they walk past — no app, no push notification, and it costs nothing.",
+  designerLocationsCounter: '{count} / {max}',
+  designerLocationsEmpty: 'No locations added yet.',
+  designerLocationsAddButton: 'Add location',
+  designerLocationsRowTitle: 'Location {n}',
+  designerLocationsRemoveButton: 'Remove',
+  designerLocationsNameLabel: 'Location name',
+  designerLocationsNamePlaceholder: 'e.g. Downtown branch',
+  designerLocationsUseCurrentButton: 'Use my current location',
+  designerLocationsLatLabel: 'Latitude',
+  designerLocationsLngLabel: 'Longitude',
+  designerLocationsRelevantTextLabel: 'Message on the lock screen (optional)',
+  designerLocationsRelevantTextPlaceholder: "e.g. You're near us — come say hi!",
+  designerLocationsMaxReached: "You've reached Apple's limit of {max} locations per card.",
+  designerLocationsGeoUnsupported: 'This browser cannot share your location. Enter it manually below.',
+  designerLocationsGeoRequesting: 'Requesting your location…',
+  designerLocationsGeoDenied: "Couldn't get your location. Enter it manually below.",
+  designerLocationsGeoSuccess: 'Location filled in below.',
+  designerLocationsNameRequired: 'Location {n} needs a name.',
+  designerLocationsLatInvalid: 'Location {n}: latitude must be a number between -90 and 90.',
+  designerLocationsLngInvalid: 'Location {n}: longitude must be a number between -180 and 180.',
+
   // Sign in / sign up / sign out — self-contained session auth (BUILD.md
   // §8.1/§8.2; see BUILD.md §2's 2026-08-04 note on why this ships instead
   // of Firebase Auth).
@@ -175,6 +202,44 @@ export const en = {
   signUpPasswordTooShort: 'Password must be at least 10 characters.',
   signUpPasswordTooCommon: 'That password is too common. Please choose a different one.',
   navSignOut: 'Sign out',
+
+  // Settings — staff PINs (BUILD.md §8.13). Business profile, billing and
+  // products & services are out of scope for this build; only staff
+  // management ships on GET /settings.
+  settingsTitle: 'Settings',
+  settingsStaffHeading: 'Staff',
+  settingsStaffIntro: 'Give staff a PIN to open the stamp screen in a browser — no app, and no need to share your own login.',
+  settingsStaffConvenienceNote: "PINs are for staff convenience, not strong security — don't reuse one as a real password.",
+  settingsStaffEmptyState: 'No staff added yet.',
+  settingsStaffAddHeading: 'Add staff',
+  settingsStaffNameLabel: 'Name',
+  settingsStaffPinLabel: 'PIN (4-6 digits)',
+  settingsStaffPinPlaceholder: 'Leave blank to generate one',
+  settingsStaffGeneratePinButton: 'Generate PIN',
+  settingsStaffPinHint: 'Digits only, 4 to 6 characters. Leave blank and we will generate one for you.',
+  settingsStaffAddButton: 'Add staff member',
+  settingsStaffNameRequired: 'Enter a name for this staff member.',
+  settingsStaffPinInvalid: 'PIN must be 4 to 6 digits.',
+  settingsStaffPinShownOnce: "{name}'s PIN — write it down now. It will not be shown again.",
+  settingsStaffActiveBadge: 'Active',
+  settingsStaffInactiveBadge: 'Inactive',
+  settingsStaffDeactivateButton: 'Deactivate',
+  settingsStaffActivateButton: 'Activate',
+  settingsStaffRemoveButton: 'Remove',
+  settingsStaffRemoveConfirm: 'Remove this staff member? Their PIN will stop working immediately.',
+
+  // Staff PIN sign-in for the stamp screen (BUILD.md §8.13) — shown at
+  // GET /stamp when neither a merchant nor a staff session is present.
+  staffPinLoginTitle: 'Staff sign-in',
+  staffPinLoginIntro: 'Enter your business email and your staff PIN to open the stamp screen.',
+  staffPinLoginEmailLabel: 'Business email',
+  staffPinLoginPinLabel: 'PIN',
+  staffPinLoginSubmitButton: 'Open stamp screen',
+  staffPinLoginOwnerText: 'Signing in as the owner?',
+  staffPinLoginOwnerLink: 'Sign in',
+  staffPinInvalid: 'Incorrect email or PIN.',
+  staffPinRateLimited: 'Too many attempts. Please wait a few minutes and try again.',
+  staffPinRequired: 'Sign in with your staff PIN to use the stamp screen.',
 
   // Cards list (GET /app)
   cardsListTitle: 'Your cards',
@@ -225,8 +290,9 @@ export const en = {
   // Stamp screen (BUILD.md §8.15)
   stampScreenTitle: 'Stamp a card',
   stampScreenSub: "Scan the QR inside the customer's wallet pass, or type their code below.",
-  stampScreenNotice:
-    "You're signed in as the merchant. A dedicated staff PIN, so staff don't need the owner's own login, is coming soon.",
+  stampScreenNoticeMerchant: "You're signed in as the merchant. Staff can use their own PIN instead — see Settings.",
+  stampScreenStaffBadge: 'Stamping as {name}.',
+  stampScreenStaffSignOut: 'Sign out',
   stampScreenCameraHeading: 'Camera',
   stampScreenCameraStarting: 'Starting camera…',
   stampScreenManualHeading: 'Manual entry',
@@ -271,4 +337,6 @@ export const en = {
   passExpiryUnlimited: 'unlimited',
   passExpiryDays: '{days} days',
   passDescription: '{name} loyalty card',
+  /** The lock-screen banner text for a location reminder (BUILD.md §9.1's own sample) when the merchant didn't type an override. `{name}` is the card's own (merchant-authored) name, interpolated verbatim — never translated (docs/COPY.md §1). */
+  passLocationRelevantTextDefault: "You're near {name}!",
 } as const;

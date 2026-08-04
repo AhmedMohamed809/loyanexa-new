@@ -415,14 +415,18 @@ test('GET /app — merchant A\'s card list never includes merchant B\'s cards', 
 test('unauthenticated requests to every merchant route redirect (302) to /signin, never 200 or 500', async () => {
   const b = await makeMerchantFixture('B13');
   try {
+    // /stamp is deliberately excluded here — BUILD.md §8.13: with no
+    // session at all it shows the staff PIN entry screen (200), not a
+    // redirect. See apps/demo/test/staffScoping.test.ts for its own
+    // coverage, and httpIntegration.test.ts's dedicated /stamp test.
     const routes: Array<[string, string]> = [
       ['GET', '/app'],
       ['GET', '/cards/new'],
       ['GET', '/customers'],
       ['GET', '/customers/export.csv'],
       ['GET', '/reports'],
-      ['GET', '/stamp'],
-      ['GET', `/cards/${b.card.id}`],
+      ['GET', '/settings'],
+      [`GET`, `/cards/${b.card.id}`],
       ['GET', `/cards/${b.card.id}/print`],
       ['GET', `/cards/${b.card.id}/edit`],
       ['GET', `/cards/${b.card.id}/activate`],
@@ -437,13 +441,20 @@ test('unauthenticated requests to every merchant route redirect (302) to /signin
     assert.equal(postCards.status, 302);
     assert.match(postCards.headers.get('location') ?? '', /^\/signin/);
 
+    // POST /api/stamp is a JSON API, not a browsable page — with no
+    // merchant session and no staff PIN session (BUILD.md §8.13), it 401s
+    // with a JSON body rather than redirecting, which would be meaningless
+    // for a fetch() caller. See staffScoping.test.ts for the staff-PIN side
+    // of this route.
     const apiStamp = await fetch(`${server.baseUrl}/api/stamp`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code: b.pass.serial }),
       redirect: 'manual',
     });
-    assert.equal(apiStamp.status, 302);
+    assert.equal(apiStamp.status, 401);
+    const apiStampJson = (await apiStamp.json()) as { ok: boolean };
+    assert.equal(apiStampJson.ok, false);
   } finally {
     await cleanupMerchant(b.merchantId);
   }
