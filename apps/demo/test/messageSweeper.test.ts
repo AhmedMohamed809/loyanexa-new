@@ -120,6 +120,30 @@ test('runOnce() clears message/messageExpiresAt on an expired Pass and pushes ev
   }
 });
 
+test('runOnce() sweeps a legacy Pass that has a message but NO expiry — a NULL expiry means expired, not eternal', async () => {
+  const fx = await makeMerchantAndCard();
+  try {
+    // Exactly the shape of a row written before ephemeral notifications
+    // existed: a real message, no expiry, because nothing stamped one. The
+    // sweeper originally skipped these (WHERE "messageExpiresAt" IS NOT
+    // NULL), which left every pre-existing customer pinned to a months-old
+    // broadcast forever — the owner's original report.
+    const serial = await addExpiringPass(fx, null, 1, 'A months-old broadcast');
+    const { sendOne, calls } = makeRecordingSender();
+    const sweeper = new MessageSweeper({ sendOne, pushIntervalMs: 0 });
+
+    const cleared = await sweeper.runOnce();
+    assert.ok(cleared >= 1, 'the legacy row must be swept, not skipped');
+    assert.ok(calls.length >= 1, 'and its device pushed, so the phone drops the stale field');
+
+    const pass = await prisma.pass.findUniqueOrThrow({ where: { serial } });
+    assert.equal(pass.message, '', 'the stale message is gone from the row');
+    assert.equal(pass.messageExpiresAt, null);
+  } finally {
+    await cleanup(fx);
+  }
+});
+
 test('runOnce() leaves a Pass whose messageExpiresAt is still in the future untouched, and pushes nothing for it', async () => {
   const fx = await makeMerchantAndCard();
   try {
