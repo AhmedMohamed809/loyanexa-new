@@ -50,6 +50,9 @@ function makeCard(overrides: Partial<Card> = {}): Card {
   } as Card;
 }
 
+/** Far enough ahead that these fixtures always read as a live, unexpired message. */
+const FUTURE = new Date('2099-01-01T00:00:00.000Z');
+
 function makePass(overrides: Partial<Pass> = {}): Pass {
   return {
     id: 'pass1',
@@ -110,12 +113,12 @@ test('secondaryFields carries the reward and stamps-remaining, in that order, in
 // ---------------------------------------------------------------------------
 
 test('the pass no longer has any auxiliaryFields — the card face carries only headerFields/secondaryFields', () => {
-  const content = buildPassContentFor(makeCard({ lang: 'en' }), makePass({ message: 'Half price today!' }));
+  const content = buildPassContentFor(makeCard({ lang: 'en' }), makePass({ message: 'Half price today!', messageExpiresAt: FUTURE }));
   assert.equal(content.auxiliaryFields, undefined);
 });
 
 test('backFields\' first entry is the "msg" field, sourced verbatim from pass.message, with changeMessage set for the broadcast banner (BUILD.md §9.1/§8.12/§9.3)', () => {
-  const withMessage = buildPassContentFor(makeCard({ lang: 'en' }), makePass({ message: 'Half price today!​‌' }));
+  const withMessage = buildPassContentFor(makeCard({ lang: 'en' }), makePass({ message: 'Half price today!​‌', messageExpiresAt: FUTURE }));
   assert.equal(withMessage.backFields?.[0]?.key, 'msg');
   assert.equal(withMessage.backFields?.[0]?.label, 'NEWS');
   assert.equal(withMessage.backFields?.[0]?.value, 'Half price today!​‌', 'must be pass.message verbatim — the marker was already baked in by whoever wrote it, never re-added here');
@@ -138,10 +141,17 @@ test('the "msg" back field is omitted entirely — not rendered blank — on a b
   assert.equal(content.backFields?.[0]?.key, 'terms');
 });
 
-test('the "msg" back field is present when a message has no expiry set (messageExpiresAt === null)', () => {
+// Reversed 2026-08-04. This test previously asserted the opposite — that a
+// NULL expiry meant "never expires", so the field stayed. That is the bug,
+// written down: `message` has exactly one writer (broadcastWorker.ts) and it
+// stamps an expiry alongside every write, so a non-empty message with a NULL
+// expiry can only be a row written before the migration. Reading it as
+// "never expires" exempted every pre-existing pass from the whole feature —
+// 9 of the 12 messages on the live database, each pinned to display a
+// months-old broadcast permanently, which is the owner's original report.
+test('the "msg" back field is OMITTED when a message has no expiry set (messageExpiresAt === null) — a NULL expiry means expired, not eternal', () => {
   const content = buildPassContentFor(makeCard({ lang: 'en' }), makePass({ message: 'Sale!', messageExpiresAt: null }));
-  assert.equal(content.backFields?.[0]?.key, 'msg');
-  assert.equal(content.backFields?.[0]?.value, 'Sale!');
+  assert.equal(content.backFields?.some((f) => f.key === 'msg'), false);
 });
 
 test('the "msg" back field is present while messageExpiresAt is still in the future', () => {
@@ -166,8 +176,8 @@ test('the "msg" back field is omitted once messageExpiresAt has passed, even tho
 });
 
 test('the "msg" field label is localised (NEWS in English, translated in Arabic)', () => {
-  const en = buildPassContentFor(makeCard({ lang: 'en' }), makePass({ message: 'Sale!' }));
-  const ar = buildPassContentFor(makeCard({ lang: 'ar' }), makePass({ message: 'Sale!' }));
+  const en = buildPassContentFor(makeCard({ lang: 'en' }), makePass({ message: 'Sale!', messageExpiresAt: FUTURE }));
+  const ar = buildPassContentFor(makeCard({ lang: 'ar' }), makePass({ message: 'Sale!', messageExpiresAt: FUTURE }));
   assert.equal(en.backFields?.[0]?.label, 'NEWS');
   assert.notEqual(ar.backFields?.[0]?.label, 'NEWS');
   assert.ok((ar.backFields?.[0]?.label.length ?? 0) > 0);
@@ -176,7 +186,7 @@ test('the "msg" field label is localised (NEWS in English, translated in Arabic)
 });
 
 test('backFields carries the message before the terms text, in that order', () => {
-  const content = buildPassContentFor(makeCard({ lang: 'en' }), makePass({ message: 'Sale!' }));
+  const content = buildPassContentFor(makeCard({ lang: 'en' }), makePass({ message: 'Sale!', messageExpiresAt: FUTURE }));
   assert.equal(content.backFields?.length, 2);
   assert.equal(content.backFields?.[0]?.key, 'msg');
   assert.equal(content.backFields?.[1]?.key, 'terms');
@@ -213,7 +223,7 @@ test('buildTermsText describes the card\'s own expiry rule, in English', () => {
 // ---------------------------------------------------------------------------
 
 test('headerFields, secondaryFields and backFields labels are Arabic on an Arabic card (the Card/Prisma default)', () => {
-  const content = buildPassContentFor(makeCard({ lang: 'ar', stampsGoal: 8 }), makePass({ stamps: 3, message: 'تخفيض!' }));
+  const content = buildPassContentFor(makeCard({ lang: 'ar', stampsGoal: 8 }), makePass({ stamps: 3, message: 'تخفيض!', messageExpiresAt: FUTURE }));
   assert.equal(content.headerFields?.[0]?.label, 'الأختام');
   assert.equal(content.headerFields?.[0]?.value, '٣ من ٨', 'stamp counts render in Arabic-Indic digits (BUILD.md §13)');
   assert.equal(content.secondaryFields?.[0]?.label, 'المكافأة');

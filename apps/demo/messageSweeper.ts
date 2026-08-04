@@ -112,8 +112,16 @@ export class MessageSweeper {
       SET message = '', "messageExpiresAt" = NULL
       FROM (
         SELECT id FROM "Pass"
-        WHERE "messageExpiresAt" IS NOT NULL AND "messageExpiresAt" <= ${now}
-        ORDER BY "messageExpiresAt"
+        -- A NULL expiry is EXPIRED, not "never expires" — see the long note
+        -- in apps/demo/passContent.ts. The message column has one writer and
+        -- it stamps an expiry alongside every write, so a non-empty message
+        -- with a NULL expiry is a pre-migration leftover: a pass
+        -- displaying an old broadcast permanently. Sweeping those is what
+        -- retires them from passes already on customers' phones, rather than
+        -- only hiding them from passes that happen to be rebuilt later.
+        WHERE message <> ''
+          AND ("messageExpiresAt" IS NULL OR "messageExpiresAt" <= ${now})
+        ORDER BY "messageExpiresAt" NULLS FIRST
         LIMIT ${this.batchSize}
         FOR UPDATE SKIP LOCKED
       ) AS c

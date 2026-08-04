@@ -103,7 +103,26 @@ export function buildPassContentFor(
 ): PassContent {
   const lang = cardLang(card);
   const now = options.now ?? new Date();
-  const messageActive = pass.message !== '' && (!pass.messageExpiresAt || pass.messageExpiresAt.getTime() > now.getTime());
+  // A NULL `messageExpiresAt` means EXPIRED, not "never expires".
+  //
+  // `Pass.message` has exactly one writer — apps/demo/broadcastWorker.ts —
+  // and it has stamped an expiry alongside every write since this migration
+  // landed. (The welcome message is no exception: it goes through
+  // enqueueBroadcast with `onlySerial`.) So a non-empty message with no
+  // expiry can only be a row written *before* the migration — stale by
+  // definition, and exactly the rows the owner was complaining about.
+  //
+  // Reading NULL as "never expires" was the original spelling here and it
+  // silently exempted every pre-existing pass from the whole feature: on the
+  // live database that was 9 of the 12 passes carrying a message, each one
+  // set to display a months-old broadcast permanently. Those rows are
+  // backfilled to '' by the same migration, and the sweeper now clears any
+  // that reappear, but the predicate is the real guarantee: it means a
+  // half-written row (a rolled-back deploy, a manual DB edit) fails closed.
+  const messageActive =
+    pass.message !== '' &&
+    pass.messageExpiresAt !== null &&
+    pass.messageExpiresAt.getTime() > now.getTime();
   const stampsRemaining = Math.max(card.stampsGoal - pass.stamps, 0);
   // Location reminders (BUILD.md §9.4/§9.1) — geofences live inside the
   // pass itself, so this is the only place they're ever written; there is
