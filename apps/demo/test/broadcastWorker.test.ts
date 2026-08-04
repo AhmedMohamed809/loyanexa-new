@@ -116,7 +116,7 @@ test('the worker sends to every recipient exactly once, and marks the job sent w
     const job = await enqueueBroadcast(card, 'Half price today!', 'manual');
 
     const { sendOne, calls } = makeRecordingSender();
-    const worker = new BroadcastWorker({ sendOne, batchSize: 10, pushIntervalMs: 0 });
+    const worker = new BroadcastWorker({ onlyJobIds: [job.id], sendOne, batchSize: 10, pushIntervalMs: 0 });
     await drainAll(worker);
 
     assert.equal(calls.length, 3, 'exactly one push per recipient (one device each)');
@@ -155,7 +155,7 @@ test('processRecipient stamps Pass.messageExpiresAt to now + ttlMinutes when it 
 
     const fixedNow = new Date('2026-08-04T12:00:00.000Z');
     const { sendOne } = makeRecordingSender();
-    const worker = new BroadcastWorker({ sendOne, batchSize: 10, pushIntervalMs: 0, ttlMinutes: 20, now: () => fixedNow });
+    const worker = new BroadcastWorker({ onlyJobIds: [job.id], sendOne, batchSize: 10, pushIntervalMs: 0, ttlMinutes: 20, now: () => fixedNow });
     await drainAll(worker);
 
     const pass = await prisma.pass.findUniqueOrThrow({ where: { serial } });
@@ -172,11 +172,11 @@ test('processRecipient defaults ttlMinutes to resolveBroadcastMessageTtlMinutes(
   try {
     const serial = await addPassWithDevices(fx.cardId, fx.merchantId);
     const card = await prisma.card.findUniqueOrThrow({ where: { id: fx.cardId } });
-    await enqueueBroadcast(card, 'Half price today!', 'manual');
+    const job = await enqueueBroadcast(card, 'Half price today!', 'manual');
 
     const before = Date.now();
     const { sendOne } = makeRecordingSender();
-    const worker = new BroadcastWorker({ sendOne, batchSize: 10, pushIntervalMs: 0 });
+    const worker = new BroadcastWorker({ onlyJobIds: [job.id], sendOne, batchSize: 10, pushIntervalMs: 0 });
     await drainAll(worker);
     const after = Date.now();
 
@@ -200,7 +200,7 @@ test('a recipient with no registered devices yet is still marked sent (message s
     const job = await enqueueBroadcast(card, 'No devices yet', 'manual');
 
     const { sendOne, calls } = makeRecordingSender();
-    const worker = new BroadcastWorker({ sendOne, pushIntervalMs: 0 });
+    const worker = new BroadcastWorker({ onlyJobIds: [job.id], sendOne, pushIntervalMs: 0 });
     await drainAll(worker);
 
     assert.equal(calls.length, 0);
@@ -242,8 +242,8 @@ test('two BroadcastWorker instances running concurrently against the same queue 
       return { ok: true };
     }
 
-    const workerA = new BroadcastWorker({ sendOne, batchSize: 6, pushIntervalMs: 0 });
-    const workerB = new BroadcastWorker({ sendOne, batchSize: 6, pushIntervalMs: 0 });
+    const workerA = new BroadcastWorker({ onlyJobIds: [job.id], sendOne, batchSize: 6, pushIntervalMs: 0 });
+    const workerB = new BroadcastWorker({ onlyJobIds: [job.id], sendOne, batchSize: 6, pushIntervalMs: 0 });
 
     // Drive both workers' cycles concurrently until the queue is
     // DB-confirmed empty — exactly the scenario two machines running this
@@ -309,7 +309,7 @@ test('a failing push is retried up to maxAttempts, then the recipient is marked 
     // <= now with no real wait) — this test is about the *count* of
     // attempts and the terminal state, not real backoff timing (covered by
     // the next test).
-    const worker = new BroadcastWorker({ sendOne, maxAttempts: 3, backoffBaseMs: 0, pushIntervalMs: 0 });
+    const worker = new BroadcastWorker({ onlyJobIds: [job.id], sendOne, maxAttempts: 3, backoffBaseMs: 0, pushIntervalMs: 0 });
     await drainAll(worker, 20);
 
     assert.equal(callCount, 3, 'must retry exactly up to maxAttempts, not indefinitely');
@@ -352,7 +352,7 @@ test('a failed attempt schedules the retry in the future via backoff — it is n
     // claimed once and then not reclaimed before its own backoff — is
     // checked directly against that row by id below, which is unaffected
     // by whatever else may or may not have been claimed alongside it.
-    const worker = new BroadcastWorker({ sendOne, maxAttempts: 5, backoffBaseMs: 60_000, pushIntervalMs: 0 });
+    const worker = new BroadcastWorker({ onlyJobIds: [job.id], sendOne, maxAttempts: 5, backoffBaseMs: 60_000, pushIntervalMs: 0 });
     const firstClaim = await worker.runOnce();
     assert.ok(firstClaim >= 1);
     assert.equal(callCount, 1, 'exactly one push attempt for our one device — device-scoped, so unaffected by any other test\'s concurrently-running fixture');
@@ -402,7 +402,7 @@ test('a stale claimed-but-never-finished recipient (simulating a crashed worker)
     await prisma.pass.update({ where: { serial }, data: { message: job.pushMessage } });
 
     const { sendOne, calls } = makeRecordingSender();
-    const worker = new BroadcastWorker({ sendOne, staleClaimMs: 1_000, pushIntervalMs: 0 });
+    const worker = new BroadcastWorker({ onlyJobIds: [job.id], sendOne, staleClaimMs: 1_000, pushIntervalMs: 0 });
     // Asserted loosely (>= 1), not strictly 1: runOnce() claims globally
     // across the whole queue (correct, real production behaviour), and
     // this suite runs many test files concurrently against one shared
@@ -445,7 +445,7 @@ test("an out-of-order retry of an older broadcast never overwrites a newer broad
     // for 5 minutes before retrying.
     const job1 = await enqueueBroadcast(card, 'Old broadcast', 'manual');
     const failingSend = async (): Promise<SendPushOutcome> => ({ ok: false, error: 'simulated failure' });
-    const worker1 = new BroadcastWorker({ sendOne: failingSend, maxAttempts: 5, backoffBaseMs: 5 * 60_000, batchSize: 50, pushIntervalMs: 0 });
+    const worker1 = new BroadcastWorker({ onlyJobIds: [job1.id], sendOne: failingSend, maxAttempts: 5, backoffBaseMs: 5 * 60_000, batchSize: 50, pushIntervalMs: 0 });
     await worker1.runOnce();
 
     const recipient1 = await prisma.broadcastRecipient.findFirstOrThrow({ where: { jobId: job1.id } });
@@ -464,7 +464,7 @@ test("an out-of-order retry of an older broadcast never overwrites a newer broad
     const job2 = await enqueueBroadcast(card, 'New broadcast', 'manual');
     assert.ok(job2.createdAt.getTime() >= job1.createdAt.getTime(), 'job 2 must genuinely be the newer job for this test to mean anything');
     const { sendOne: succeedingSend } = makeRecordingSender();
-    const worker2 = new BroadcastWorker({ sendOne: succeedingSend, batchSize: 50, pushIntervalMs: 0 });
+    const worker2 = new BroadcastWorker({ onlyJobIds: [job1.id, job2.id], sendOne: succeedingSend, batchSize: 50, pushIntervalMs: 0 });
     await drainAll(worker2);
 
     const passAfterJob2 = await prisma.pass.findUniqueOrThrow({ where: { serial } });
@@ -475,7 +475,7 @@ test("an out-of-order retry of an older broadcast never overwrites a newer broad
     // *after* job 2 already completed. This is the out-of-order landing
     // the review describes.
     await prisma.broadcastRecipient.update({ where: { id: recipient1.id }, data: { nextAttemptAt: new Date(0) } });
-    const worker1Retry = new BroadcastWorker({ sendOne: succeedingSend, maxAttempts: 5, backoffBaseMs: 5 * 60_000, batchSize: 50, pushIntervalMs: 0 });
+    const worker1Retry = new BroadcastWorker({ onlyJobIds: [job1.id, job2.id], sendOne: succeedingSend, maxAttempts: 5, backoffBaseMs: 5 * 60_000, batchSize: 50, pushIntervalMs: 0 });
     await worker1Retry.runOnce();
 
     const recipient1After = await prisma.broadcastRecipient.findUniqueOrThrow({ where: { id: recipient1.id } });
@@ -504,7 +504,7 @@ test('a 410 Gone result deletes the Device row and still marks the recipient sen
     const job = await enqueueBroadcast(card, 'Gone device test', 'manual');
 
     const sendOne = async (): Promise<SendPushOutcome> => ({ ok: false, gone: true });
-    const worker = new BroadcastWorker({ sendOne, pushIntervalMs: 0 });
+    const worker = new BroadcastWorker({ onlyJobIds: [job.id], sendOne, pushIntervalMs: 0 });
     await drainAll(worker);
 
     const devices = await prisma.device.findMany({ where: { passSerial: serial } });
@@ -531,7 +531,7 @@ test('start() then stop() processes queued work and leaves no dangling timer', a
     const job = await enqueueBroadcast(card, 'start/stop test', 'manual');
 
     const { sendOne } = makeRecordingSender();
-    const worker = new BroadcastWorker({ sendOne, pollIntervalMs: 20, pushIntervalMs: 0 });
+    const worker = new BroadcastWorker({ onlyJobIds: [job.id], sendOne, pollIntervalMs: 20, pushIntervalMs: 0 });
     worker.start();
 
     const deadline = Date.now() + 5_000;

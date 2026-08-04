@@ -98,9 +98,9 @@ test('the owner\'s exact scenario: two broadcasts sent, then a genuinely new cus
     // An existing customer, already on the card before either broadcast.
     const { pass: existingPass } = await createPassForEnrolment(fx.card, 'Existing Customer', '0501111111');
 
-    await enqueueBroadcast(fx.card, 'First notification!');
-    await enqueueBroadcast(fx.card, 'Second notification!!');
-    const worker = new BroadcastWorker({ sendOne: noopSender(), pushIntervalMs: 0 });
+    const job1 = await enqueueBroadcast(fx.card, 'First notification!');
+    const job2 = await enqueueBroadcast(fx.card, 'Second notification!!');
+    const worker = new BroadcastWorker({ onlyJobIds: [job1.id, job2.id], sendOne: noopSender(), pushIntervalMs: 0 });
     await drainAll(worker);
 
     // The existing customer does see the latest broadcast — expected.
@@ -135,7 +135,7 @@ test('a returning customer re-scanning (same phone) gets their existing card bac
     await prisma.pass.update({ where: { id: firstVisit.id }, data: { stamps: 5, totalStamps: 5 } });
 
     const job = await enqueueBroadcast(fx.card, 'Weekend special!');
-    const worker = new BroadcastWorker({ sendOne: noopSender(), pushIntervalMs: 0 });
+    const worker = new BroadcastWorker({ onlyJobIds: [job.id], sendOne: noopSender(), pushIntervalMs: 0 });
     await drainAll(worker);
 
     const afterBroadcast = await prisma.pass.findUniqueOrThrow({ where: { id: firstVisit.id } });
