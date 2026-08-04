@@ -153,7 +153,15 @@ test('processRecipient stamps Pass.messageExpiresAt to now + ttlMinutes when it 
     const card = await prisma.card.findUniqueOrThrow({ where: { id: fx.cardId } });
     const job = await enqueueBroadcast(card, 'Half price today!', 'manual');
 
-    const fixedNow = new Date('2026-08-04T12:00:00.000Z');
+    // Relative to real time, deliberately. A hard-coded wall-clock date here
+    // was a time bomb: it stamped an expiry of 12:20Z, so this test passed
+    // all morning and then failed every run after 12:20 UTC, when the
+    // production MessageSweeper — started globally by whichever test file
+    // boots server.ts — correctly swept the row as expired before the
+    // assertion below could read it. Keeping `now` an hour ahead means the
+    // stamped expiry is always in the future, so nothing sweeps it, while the
+    // exact-arithmetic assertion is unchanged.
+    const fixedNow = new Date(Date.now() + 60 * 60_000);
     const { sendOne } = makeRecordingSender();
     const worker = new BroadcastWorker({ onlyJobIds: [job.id], sendOne, batchSize: 10, pushIntervalMs: 0, ttlMinutes: 20, now: () => fixedNow });
     await drainAll(worker);

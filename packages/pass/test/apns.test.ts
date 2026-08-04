@@ -263,7 +263,7 @@ test('sendPush() reports 410 Gone with reason "gone"', async () => {
   }
 });
 
-test('sendPush() rebuilds the HTTP/2 session after a request-level error, instead of reusing a dead one', async () => {
+test('sendPush() transparently recovers from a dead session: it rebuilds and retries once, so the caller never sees the blip', async () => {
   // The fake server closes the underlying connection mid-stream on the
   // first request (simulating a network blip / idle-timeout reset) and
   // responds normally on the second — forcing ApnsClient down its
@@ -287,17 +287,57 @@ test('sendPush() rebuilds the HTTP/2 session after a request-level error, instea
   });
 
   try {
+    // Revised 2026-08-04. This previously asserted the first push FAILS and
+    // that only a second, caller-driven push succeeds. That was the bug the
+    // owner reported as "sometimes the stamp doesn't show": nothing retried,
+    // so whichever push happened to discover the dead session was simply
+    // lost and that customer's card never updated. sendPush now retries once
+    // on a fresh session when the failure was transport-level.
     const r1 = await client.sendPush('devtoken-one', 'pass.test.loyanexa');
-    assert.equal(r1.ok, false, 'the first push must observe the forced session teardown as a failure');
-
-    const r2 = await client.sendPush('devtoken-two', 'pass.test.loyanexa');
-    assert.deepEqual(r2, { ok: true, status: 200 }, 'the second push must succeed on a freshly rebuilt session');
+    assert.deepEqual(
+      r1,
+      { ok: true, status: 200 },
+      'the caller must not see a transport blip — it is retried on a fresh session'
+    );
 
     assert.equal(
       fake.sessionCount(),
       2,
-      'a torn-down session must be rebuilt, not silently reused, for the next push'
+      'a torn-down session must be rebuilt, not silently reused'
     );
+
+    // The rebuilt session is the one now cached: a follow-up push must not
+    // open a third connection.
+    const r2 = await client.sendPush('devtoken-two', 'pass.test.loyanexa');
+    assert.deepEqual(r2, { ok: true, status: 200 });
+    assert.equal(fake.sessionCount(), 2, 'the healthy rebuilt session must then be reused');
+  } finally {
+    client.close();
+    await fake.close();
+  }
+});
+
+test('sendPush() does NOT retry a real HTTP verdict from Apple — 410 Gone is answered once, not re-pushed', async () => {
+  // Retrying is only safe when Apple never received the push. A 410 means it
+  // did receive it, and is reporting the pass was deleted from that device;
+  // re-sending would push again to a device that is already gone.
+  let requestCount = 0;
+  const fake = await startFakeApnsServer((stream) => {
+    requestCount++;
+    stream.respond({ ':status': 410 });
+    stream.end(JSON.stringify({ reason: 'Unregistered' }));
+  });
+  const { privateKeyPem } = makeEcKeyPair();
+  const client = new ApnsClient({
+    auth: { mode: 'token', keyId: 'TESTKEYID1', teamId: 'TESTTEAM99', privateKeyPem },
+    host: fake.url,
+  });
+
+  try {
+    const r = await client.sendPush('devtoken-gone', 'pass.test.loyanexa');
+    assert.equal(r.ok, false);
+    assert.equal(r.status, 410);
+    assert.equal(requestCount, 1, 'exactly one request — a 410 must never be retried');
   } finally {
     client.close();
     await fake.close();
