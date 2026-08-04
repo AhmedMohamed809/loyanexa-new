@@ -2280,6 +2280,18 @@ async function handleCardDetail(req: http.IncomingMessage, res: http.ServerRespo
 }
 
 // ---------------------------------------------------------------------------
+/**
+ * A generic wallet/card outline for the print sheet's two wallet chips.
+ *
+ * Deliberately a neutral glyph rather than Apple's or Google's official
+ * "Add to Wallet" badge artwork: those are trademarked marks with their own
+ * usage rules, and this poster is printed and displayed publicly by the
+ * merchant. A lookalike badge would be passing our drawing off as theirs.
+ */
+const WALLET_GLYPH =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="5.5" width="19" height="13" rx="2.5"/><path d="M2.5 10h19"/></svg>';
+
+// ---------------------------------------------------------------------------
 // Route: GET /cards/:id/print — BUILD.md §8.8's print sheet. A print-ready
 // A4 poster: reward as the headline, the join QR at least 40mm square when
 // printed, the short code beneath it, four numbered "how it works" steps.
@@ -2319,6 +2331,19 @@ async function handleCardPrint(_req: http.IncomingMessage, res: http.ServerRespo
     t(lang, 'printStep4', { goal: arabicDigits(card.stampsGoal, lang) }),
   ];
 
+  // The poster now wears the card's own design (owner's ask, 2026-08-04:
+  // *"apply the same images and colour of the card"*). Every value below is
+  // merchant-chosen, so it is escaped into a CSS custom property rather than
+  // interpolated into a rule — a colour column is free text as far as the
+  // database is concerned, and a value like `red; } body { ... }` would
+  // otherwise close the declaration and inject arbitrary CSS. validHex()
+  // already whitelists #rgb/#rrggbb for exactly this reason.
+  const sheetBg = validHex(card.bgColor, '#111827');
+  const sheetInk = validHex(card.fgColor, '#FFFFFF');
+  const sheetAccent = validHex(card.stampActive, '#F28C38');
+  const hasCover = Boolean(card.coverHash);
+  const hasLogo = Boolean(card.logoHash);
+
   const html = `<!doctype html>
 <html lang="${lang}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
 <head>
@@ -2339,34 +2364,111 @@ async function handleCardPrint(_req: http.IncomingMessage, res: http.ServerRespo
     background: var(--accent); color: #0F172A; border: none; border-radius: 100px; padding: 10px 20px;
     font-weight: 700; font-size: 14px; cursor: pointer; font-family: inherit;
   }
+  /* -------------------------------------------------------------------
+     The poster wears the card's own design (owner's ask, 2026-08-04).
+     Every colour arrives as a custom property set on .sheet from a
+     validHex()-checked value, so no merchant string is ever interpolated
+     into a rule body.
+     ------------------------------------------------------------------- */
   .sheet-wrap { display: flex; justify-content: center; padding: 32px 16px 56px; }
-  /* On screen: an A4-proportioned dark-on-white card so the merchant can preview it before printing. */
   .sheet {
-    width: 210mm; max-width: 100%; min-height: 297mm; background: #fff; color: #111827;
-    border-radius: 8px; padding: 24mm 18mm; text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,.4);
-    display: flex; flex-direction: column; align-items: center;
+    width: 210mm; max-width: 100%; min-height: 297mm;
+    background: var(--sheet-bg); color: var(--sheet-ink);
+    border-radius: 10px; overflow: hidden; box-shadow: 0 24px 70px rgba(0,0,0,.5);
+    display: flex; flex-direction: column; text-align: center;
+    /* Without this the browser silently drops the background when printing
+       and the poster comes out as black text on white paper — which is the
+       exact "boring" sheet this replaces. */
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
-  .sheet .card-name { font-size: 16px; font-weight: 700; color: #6B7280; letter-spacing: .04em; text-transform: uppercase; margin-bottom: 10px; }
-  .sheet h1 { font-size: 38px; line-height: 1.2; margin: 0 0 28px; color: #111827; max-width: 90%; }
-  .sheet .qr-box { padding: 16px; border: 2px solid #111827; border-radius: 16px; display: inline-block; }
+
+  /* The cover photo, full-bleed across the head of the sheet, with the
+     logo sitting on it — the arrangement from the reference design. */
+  .sheet .hero { position: relative; }
+  .sheet .hero .cover {
+    display: block; width: 100%; height: 74mm; object-fit: cover;
+  }
+  /* No cover uploaded: a band drawn from the card's own two colours, so the
+     sheet still reads as designed rather than as a missing image. */
+  .sheet .hero.no-cover {
+    height: 46mm;
+    background: linear-gradient(135deg, var(--sheet-accent), var(--sheet-bg));
+  }
+  .sheet .logo-plate {
+    position: absolute; inset-inline: 0; top: 50%; transform: translateY(-50%);
+    display: flex; justify-content: center;
+  }
+  .sheet .logo-plate img {
+    max-width: 62mm; max-height: 26mm; width: auto; height: auto;
+    background: rgba(0,0,0,.55); padding: 5mm 7mm; border-radius: 4mm;
+  }
+  /* No logo: the card's name does the job, in the same plate. */
+  .sheet .logo-plate .wordmark {
+    background: rgba(0,0,0,.55); padding: 4mm 7mm; border-radius: 4mm;
+    font-size: 20px; font-weight: 800; color: #fff; letter-spacing: .01em;
+  }
+
+  .sheet .body { padding: 14mm 16mm 12mm; display: flex; flex-direction: column; align-items: center; flex: 1; }
+  .sheet h1 {
+    font-size: 42px; line-height: 1.18; margin: 0 0 6px;
+    color: var(--sheet-accent); max-width: 92%;
+  }
+  .sheet .card-name { font-size: 17px; font-weight: 600; opacity: .82; margin: 0 0 10mm; }
+
+  /* The QR always sits on white, whatever the card's colours are: a scanner
+     needs the quiet zone and the contrast, and a dark-on-dark code simply
+     does not read. This is the one element the card's palette must not
+     touch. */
+  .sheet .qr-box {
+    background: #fff; padding: 6mm; border-radius: 5mm; display: inline-block;
+    box-shadow: 0 8px 24px rgba(0,0,0,.25);
+  }
   .sheet .qr-box img { display: block; width: 45mm; height: 45mm; image-rendering: pixelated; }
-  .sheet .short-code { margin-top: 14px; font-size: 15px; letter-spacing: .08em; color: #374151; }
-  .sheet .short-code code { font-weight: 700; color: #111827; }
-  .sheet .scan-label { margin-top: 22px; font-size: 15px; color: #4B5563; }
-  .sheet .steps { margin-top: 40px; width: 100%; max-width: 480px; text-align: start; display: flex; flex-direction: column; gap: 16px; }
-  .sheet .step { display: flex; gap: 14px; align-items: flex-start; }
-  .sheet .step .num {
-    flex: none; width: 28px; height: 28px; border-radius: 50%; background: #111827; color: #fff;
-    display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700;
+  .sheet .scan-label { margin-top: 6mm; font-size: 16px; font-weight: 600; opacity: .92; }
+  .sheet .short-code { margin-top: 3mm; font-size: 14px; letter-spacing: .06em; opacity: .72; }
+  .sheet .short-code code { font-weight: 700; font-family: inherit; opacity: 1; }
+
+  .sheet .how-title {
+    margin: 12mm 0 5mm; font-size: 18px; font-weight: 700;
+    position: relative; padding-bottom: 3mm;
   }
-  .sheet .step p { margin: 0; font-size: 15px; line-height: 1.4; color: #1F2937; padding-top: 3px; }
-  .sheet .powered { margin-top: auto; padding-top: 40px; font-size: 12px; color: #9CA3AF; }
+  .sheet .how-title::after {
+    content: ''; position: absolute; inset-inline-start: 50%; transform: translateX(-50%);
+    bottom: 0; width: 14mm; height: 2px; background: var(--sheet-accent); opacity: .8;
+  }
+  html[dir="rtl"] .sheet .how-title::after { transform: translateX(50%); }
+  .sheet .steps { width: 100%; max-width: 118mm; text-align: start; display: flex; flex-direction: column; gap: 4mm; }
+  .sheet .step { display: flex; gap: 4mm; align-items: center; }
+  .sheet .step .num {
+    flex: none; width: 8mm; height: 8mm; border-radius: 50%;
+    background: var(--sheet-accent); color: var(--sheet-bg);
+    display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 800;
+  }
+  .sheet .step p { margin: 0; font-size: 15px; line-height: 1.45; }
+
+  /* Wallet chips. Deliberately our own plain chips, not reproductions of
+     Apple's or Google's official "Add to Wallet" badges — those are
+     trademarked artwork with their own usage rules, and a hand-drawn
+     lookalike on a poster a merchant prints and displays publicly is not
+     something to fake. These say the same thing without pretending to be
+     the official mark. */
+  .sheet .wallets { display: flex; gap: 4mm; justify-content: center; margin-top: 10mm; flex-wrap: wrap; }
+  .sheet .wallet-chip {
+    display: inline-flex; align-items: center; gap: 2.5mm;
+    border: 1px solid currentColor; border-radius: 100px;
+    padding: 2.5mm 5mm; font-size: 12.5px; font-weight: 600; opacity: .85;
+  }
+  .sheet .wallet-chip svg { width: 4.5mm; height: 4.5mm; flex: none; }
+  .sheet .powered { margin-top: auto; padding-top: 8mm; font-size: 11px; opacity: .55; }
+
   @media print {
     @page { size: A4; margin: 0; }
     .toolbar { display: none; }
     .sheet-wrap { padding: 0; }
     body { background: #fff; }
     .sheet { box-shadow: none; border-radius: 0; width: 210mm; height: 297mm; page-break-after: avoid; }
+    .sheet .qr-box { box-shadow: none; border: 1px solid rgba(0,0,0,.15); }
   }
 </style>
 </head>
@@ -2376,20 +2478,37 @@ async function handleCardPrint(_req: http.IncomingMessage, res: http.ServerRespo
   <button type="button" onclick="window.print()">${escapeHtml(t(lang, 'printButton'))}</button>
 </div>
 <div class="sheet-wrap">
-  <div class="sheet">
-    <div class="card-name">${escapeHtml(card.name)}</div>
-    <h1>${escapeHtml(card.rewardText)}</h1>
-    <div class="qr-box">
-      <img src="/qr.png?${qrQs.toString()}" alt="QR code for ${escapeHtml(enrolUrl)}" width="450" height="450">
+  <div class="sheet" style="--sheet-bg:${sheetBg};--sheet-ink:${sheetInk};--sheet-accent:${sheetAccent};">
+    <div class="hero${hasCover ? '' : ' no-cover'}">
+      ${hasCover ? `<img class="cover" src="${escapeHtml(imageUrl(card.coverHash!))}" alt="">` : ''}
+      <div class="logo-plate">
+        ${
+          hasLogo
+            ? `<img src="${escapeHtml(imageUrl(card.logoHash!))}" alt="${escapeHtml(card.name)}">`
+            : `<span class="wordmark">${escapeHtml(card.name)}</span>`
+        }
+      </div>
     </div>
-    <div class="short-code">${escapeHtml(t(lang, 'printShortCodeLabel'))}: <code>${escapeHtml(card.shortCode)}</code></div>
-    <div class="scan-label">${escapeHtml(t(lang, 'printScanToJoin'))}</div>
-    <div class="steps">
-      ${steps
-        .map((step, i) => `<div class="step"><span class="num">${i + 1}</span><p>${escapeHtml(step)}</p></div>`)
-        .join('\n      ')}
+    <div class="body">
+      <h1>${escapeHtml(card.rewardText)}</h1>
+      <p class="card-name">${escapeHtml(card.name)}</p>
+      <div class="qr-box">
+        <img src="/qr.png?${qrQs.toString()}" alt="QR code for ${escapeHtml(enrolUrl)}" width="450" height="450">
+      </div>
+      <div class="scan-label">${escapeHtml(t(lang, 'printScanToJoin'))}</div>
+      <div class="short-code">${escapeHtml(t(lang, 'printShortCodeLabel'))}: <code>${escapeHtml(card.shortCode)}</code></div>
+      <h2 class="how-title">${escapeHtml(t(lang, 'printHowItWorksTitle'))}</h2>
+      <div class="steps">
+        ${steps
+          .map((step, i) => `<div class="step"><span class="num">${arabicDigits(i + 1, lang)}</span><p>${escapeHtml(step)}</p></div>`)
+          .join('\n        ')}
+      </div>
+      <div class="wallets">
+        <span class="wallet-chip">${WALLET_GLYPH}${escapeHtml(t(lang, 'walletAddApple'))}</span>
+        <span class="wallet-chip">${WALLET_GLYPH}${escapeHtml(t(lang, 'walletAddGoogle'))}</span>
+      </div>
+      <div class="powered">Powered by LoyaNexa</div>
     </div>
-    <div class="powered">Powered by LoyaNexa</div>
   </div>
 </div>
 </body>
