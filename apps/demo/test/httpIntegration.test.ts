@@ -22,6 +22,13 @@ const ROOT = path.resolve(__dirname, '../../..');
 loadEnvFile(path.join(ROOT, '.env'));
 
 const { prisma } = await import('../../../packages/db/src/index.ts');
+const { createSession, SESSION_COOKIE_NAME } = await import('../auth.ts');
+
+/** Mints a real Session row for `merchantId` (bypassing the HTTP sign-in flow itself — that round trip is covered by auth.test.ts / authHttp.test.ts) and returns the `Cookie` header value every merchant-scoped request in this file needs to carry. */
+async function sessionCookieFor(merchantId: string): Promise<string> {
+  const session = await createSession(merchantId);
+  return `${SESSION_COOKIE_NAME}=${session.id}`;
+}
 
 function randomHex(bytes: number): string {
   return crypto.randomBytes(bytes).toString('hex');
@@ -46,7 +53,7 @@ async function spawnServer(envOverrides: Record<string, string> = {}): Promise<S
   const port = randomPort();
   const proc = spawn(process.execPath, ['apps/demo/server.ts'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(port), ...envOverrides },
+    env: { ...process.env, PORT: String(port), DISABLE_BROADCAST_WORKER: '1', ...envOverrides },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdout = '';
@@ -90,7 +97,11 @@ function closeProc(proc: ChildProcessByStdio<null, Readable, Readable>): Promise
   });
 }
 
-async function makeActiveCard(): Promise<{ merchantId: string; card: Awaited<ReturnType<typeof prisma.card.create>> }> {
+async function makeActiveCard(): Promise<{
+  merchantId: string;
+  card: Awaited<ReturnType<typeof prisma.card.create>>;
+  cookie: string;
+}> {
   const merchant = await prisma.merchant.create({
     data: {
       firebaseUid: `http-test-${randomHex(8)}`,
@@ -114,7 +125,8 @@ async function makeActiveCard(): Promise<{ merchantId: string; card: Awaited<Ret
       active: true,
     },
   });
-  return { merchantId: merchant.id, card };
+  const cookie = await sessionCookieFor(merchant.id);
+  return { merchantId: merchant.id, card, cookie };
 }
 
 async function cleanupMerchant(merchantId: string): Promise<void> {
@@ -135,10 +147,10 @@ after(async () => {
   await server.close();
 });
 
-test('/, /app, /customers, /reports, /stamp and an existing short link all still 200', async () => {
+test('/ and an existing short link are 200 with no session at all (public routes)', async () => {
   const fx = await makeActiveCard();
   try {
-    for (const p of ['/', '/app', '/customers', '/reports', '/stamp', `/${fx.card.linkCode}`]) {
+    for (const p of ['/', `/${fx.card.linkCode}`]) {
       const res = await fetch(`${server.baseUrl}${p}`);
       assert.equal(res.status, 200, `GET ${p} should be 200, got ${res.status}`);
     }
@@ -147,58 +159,103 @@ test('/, /app, /customers, /reports, /stamp and an existing short link all still
   }
 });
 
+test('/app, /customers, /reports all redirect to /signin with no session, and 200 with a valid one', async () => {
+  const fx = await makeActiveCard();
+  try {
+    for (const p of ['/app', '/customers', '/reports']) {
+      const noSession = await fetch(`${server.baseUrl}${p}`, { redirect: 'manual' });
+      assert.equal(noSession.status, 302, `GET ${p} with no session should redirect, got ${noSession.status}`);
+      assert.match(noSession.headers.get('location') ?? '', /^\/signin/, `GET ${p} should redirect to /signin`);
+
+      const withSession = await fetch(`${server.baseUrl}${p}`, { headers: { Cookie: fx.cookie } });
+      assert.equal(withSession.status, 200, `GET ${p} with a valid session should be 200, got ${withSession.status}`);
+    }
+  } finally {
+    await cleanupMerchant(fx.merchantId);
+  }
+});
+
+// /stamp is a deliberate exception to the redirect-to-/signin rule above
+// (BUILD.md §8.13): with no session at all it shows the staff PIN entry
+// screen (200), not a redirect — staff need to reach it without the
+// owner's own credentials. A valid *merchant* session still reaches the
+// stamp screen itself, 200, same as before.
+test('/stamp shows the staff PIN screen (200, no merchant chrome) with no session, and the stamp screen itself with a valid merchant session', async () => {
+  const fx = await makeActiveCard();
+  try {
+    const noSession = await fetch(`${server.baseUrl}/stamp`, { redirect: 'manual' });
+    assert.equal(noSession.status, 200, 'GET /stamp with no session should show the PIN form, not redirect');
+    const pinHtml = await noSession.text();
+    assert.ok(pinHtml.includes('name="pin"'), 'the PIN entry form should be shown');
+    assert.ok(!pinHtml.includes('id="video"'), 'the actual camera-scanning stamp screen must not render for an unauthenticated visitor');
+
+    const withSession = await fetch(`${server.baseUrl}/stamp`, { headers: { Cookie: fx.cookie } });
+    assert.equal(withSession.status, 200, 'GET /stamp with a valid merchant session should be 200');
+    const html = await withSession.text();
+    assert.ok(!html.includes('name="pin"'), 'a signed-in merchant should see the stamp screen, not the PIN form');
+  } finally {
+    await cleanupMerchant(fx.merchantId);
+  }
+});
+
 test('a script payload posted as a colour comes back escaped, not as live markup', async () => {
-  const payload = '"><script>alert(1)</script>';
-  const body = new URLSearchParams({
-    name: 'XSS Test Card',
-    rewardText: 'Free coffee',
-    goal: '8',
-    bg: payload, // fails HEX_RE -> re-renders the form with the raw rejected value
-    active: '#F96400',
-    inactive: '#8794A5',
-  });
-  const res = await fetch(`${server.baseUrl}/cards`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
-  });
-  assert.equal(res.status, 400);
-  const html = await res.text();
-  assert.ok(!html.includes('"><script>alert(1)</script>'), 'the raw payload must never appear unescaped in the response');
-  assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'), 'the payload must appear HTML-escaped');
+  const fx = await makeActiveCard();
+  try {
+    const payload = '"><script>alert(1)</script>';
+    const body = new URLSearchParams({
+      name: 'XSS Test Card',
+      rewardText: 'Free coffee',
+      goal: '8',
+      bg: payload, // fails HEX_RE -> re-renders the form with the raw rejected value
+      active: '#F96400',
+      inactive: '#8794A5',
+    });
+    const res = await fetch(`${server.baseUrl}/cards`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: fx.cookie },
+      body: body.toString(),
+    });
+    assert.equal(res.status, 400);
+    const html = await res.text();
+    assert.ok(!html.includes('"><script>alert(1)</script>'), 'the raw payload must never appear unescaped in the response');
+    assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'), 'the payload must appear HTML-escaped');
+  } finally {
+    await cleanupMerchant(fx.merchantId);
+  }
 });
 
 test('lnx-lang=en renders lang="en" dir="ltr"; lnx-lang=ar renders lang="ar" dir="rtl"; no cookie defaults to ar', async () => {
-  const en = await fetch(`${server.baseUrl}/app`, { headers: { Cookie: 'lnx-lang=en' } });
-  const enHtml = await en.text();
-  assert.match(enHtml, /<html lang="en" dir="ltr">/);
+  const fx = await makeActiveCard();
+  try {
+    const en = await fetch(`${server.baseUrl}/app`, { headers: { Cookie: `lnx-lang=en; ${fx.cookie}` } });
+    const enHtml = await en.text();
+    assert.match(enHtml, /<html lang="en" dir="ltr">/);
 
-  const ar = await fetch(`${server.baseUrl}/app`, { headers: { Cookie: 'lnx-lang=ar' } });
-  const arHtml = await ar.text();
-  assert.match(arHtml, /<html lang="ar" dir="rtl">/);
+    const ar = await fetch(`${server.baseUrl}/app`, { headers: { Cookie: `lnx-lang=ar; ${fx.cookie}` } });
+    const arHtml = await ar.text();
+    assert.match(arHtml, /<html lang="ar" dir="rtl">/);
 
-  // The old, never-written cookie name must no longer be read.
-  const staleName = await fetch(`${server.baseUrl}/app`, { headers: { Cookie: 'lang=en' } });
-  const staleHtml = await staleName.text();
-  assert.match(staleHtml, /<html lang="ar" dir="rtl">/, 'a `lang=en` cookie (the old, wrong name) must not switch to English');
+    // The old, never-written cookie name must no longer be read.
+    const staleName = await fetch(`${server.baseUrl}/app`, { headers: { Cookie: `lang=en; ${fx.cookie}` } });
+    const staleHtml = await staleName.text();
+    assert.match(staleHtml, /<html lang="ar" dir="rtl">/, 'a `lang=en` cookie (the old, wrong name) must not switch to English');
 
-  const none = await fetch(`${server.baseUrl}/app`);
-  assert.match(await none.text(), /<html lang="ar" dir="rtl">/);
+    const none = await fetch(`${server.baseUrl}/app`, { headers: { Cookie: fx.cookie } });
+    assert.match(await none.text(), /<html lang="ar" dir="rtl">/);
+  } finally {
+    await cleanupMerchant(fx.merchantId);
+  }
 });
 
 test('a customer name/phone beginning with "=" is neutralised in the CSV export, not shipped as a live formula', async () => {
-  // GET /customers/export.csv exports for getOrCreateMerchant()'s merchant
-  // — this build's single-merchant demo (server.ts's own TODO on that
-  // function) — not whichever merchant a test happens to create, so the
-  // fixture pass must be attached to that same existing merchant. Only the
-  // pass and its own throwaway card are cleaned up afterward; the
-  // long-lived demo merchant itself is never touched.
-  const merchant = await prisma.merchant.findFirst({ orderBy: { createdAt: 'asc' } });
-  assert.ok(merchant, 'expected an existing merchant row (created by getOrCreateMerchant on first use)');
+  const merchant = await prisma.merchant.create({
+    data: { firebaseUid: `csv-test-${randomHex(8)}`, email: `csv-test-${randomHex(8)}@example.test`, name: 'CSV Test Merchant' },
+  });
+  const cookie = await sessionCookieFor(merchant.id);
   const card = await prisma.card.create({
     data: {
-      merchantId: merchant!.id,
-      slot: 9_000_000 + Math.floor(Math.random() * 1000),
+      merchantId: merchant.id,
+      slot: 1,
       linkCode: randomLinkCode(),
       shortCode: `C${randomHex(4)}`.toUpperCase(),
       name: 'CSV Injection Test Card',
@@ -217,21 +274,19 @@ test('a customer name/phone beginning with "=" is neutralised in the CSV export,
         serial: `SER${randomHex(8)}`.toUpperCase(),
         shortCode: `P${randomHex(4)}`.toUpperCase(),
         cardId: card.id,
-        merchantId: merchant!.id,
+        merchantId: merchant.id,
         authToken: randomHex(12),
         custName: '=HYPERLINK("https://evil/?x=1","Refund pending")',
         custPhone: '0551234567',
       },
     });
-    const res = await fetch(`${server.baseUrl}/customers/export.csv`);
+    const res = await fetch(`${server.baseUrl}/customers/export.csv`, { headers: { Cookie: cookie } });
     assert.equal(res.status, 200);
     const csv = await res.text();
     assert.ok(!csv.includes(',=HYPERLINK'), 'a bare "=..." must never appear as a live formula in the CSV');
     assert.ok(csv.includes("'=HYPERLINK"), 'the neutralising leading quote must be present');
   } finally {
-    await prisma.stampEvent.deleteMany({ where: { cardId: card.id } });
-    await prisma.pass.deleteMany({ where: { cardId: card.id } });
-    await prisma.card.delete({ where: { id: card.id } }).catch(() => {});
+    await cleanupMerchant(merchant.id);
   }
 });
 

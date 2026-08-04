@@ -29,17 +29,35 @@ export type StampOutcome =
   | { ok: false; reason: 'too_soon'; lastStampAt: Date; retryAt: Date };
 
 /**
- * Applies one stamp for the pass identified by `codeOrSerial`. Callers are
- * expected to have already trimmed/validated that it is non-empty — an
- * empty or garbage code simply resolves to `not_found`, since neither
- * `serial` nor `shortCode` can ever be blank in the database.
+ * Applies one stamp for the pass identified by `codeOrSerial`, scoped to
+ * `merchantId` — the stamp screen is opened by a signed-in merchant's own
+ * staff (BUILD.md §8.15), and a pass belonging to a different merchant must
+ * be exactly as unstampable as one that doesn't exist: `reason: 'not_found'`
+ * either way, never a distinguishable "found, but not yours" response that
+ * would let one merchant probe another's serials/short codes. Callers are
+ * expected to have already trimmed/validated that `codeOrSerial` is
+ * non-empty — an empty or garbage code simply resolves to `not_found`,
+ * since neither `serial` nor `shortCode` can ever be blank in the database.
+ *
+ * `staffId`, when given, is recorded on every StampEvent this call writes
+ * (BUILD.md §8.13's fraud story: "who did what") — undefined when the
+ * merchant themself is signed in, so the column reads null for an
+ * owner-recorded stamp and a real id for a staff-recorded one. Not
+ * validated here — server.ts's resolveStampAuth only ever supplies an id it
+ * already resolved from a live StaffSession, so by the time it reaches this
+ * function it is known-good.
  */
-export async function applyStamp(codeOrSerial: string, source = 'browser'): Promise<StampOutcome> {
+export async function applyStamp(
+  codeOrSerial: string,
+  merchantId: string,
+  source = 'browser',
+  staffId?: string
+): Promise<StampOutcome> {
   const trimmed = codeOrSerial.trim();
 
   return prisma.$transaction(async (tx): Promise<StampOutcome> => {
     const pass = await tx.pass.findFirst({
-      where: { OR: [{ serial: trimmed }, { shortCode: trimmed }] },
+      where: { merchantId, OR: [{ serial: trimmed }, { shortCode: trimmed }] },
       include: { card: true },
     });
     if (!pass) return { ok: false, reason: 'not_found' };
@@ -91,11 +109,11 @@ export async function applyStamp(codeOrSerial: string, source = 'browser'): Prom
     }
 
     await tx.stampEvent.create({
-      data: { merchantId: pass.merchantId, cardId: pass.cardId, serial: pass.serial, kind: 'STAMP', source },
+      data: { merchantId: pass.merchantId, cardId: pass.cardId, serial: pass.serial, kind: 'STAMP', source, staffId: staffId ?? null },
     });
     if (rewardEarned) {
       await tx.stampEvent.create({
-        data: { merchantId: pass.merchantId, cardId: pass.cardId, serial: pass.serial, kind: 'REWARD', source },
+        data: { merchantId: pass.merchantId, cardId: pass.cardId, serial: pass.serial, kind: 'REWARD', source, staffId: staffId ?? null },
       });
     }
 

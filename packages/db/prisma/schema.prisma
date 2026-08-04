@@ -8,19 +8,102 @@ datasource db {
 }
 
 model Merchant {
-  id           String    @id @default(cuid())
-  firebaseUid  String    @unique
-  email        String    @unique
-  name         String
+  id          String @id @default(cuid())
+  /// Firebase Auth's own user id — unused by the shipped self-contained
+  /// session auth (see docs/BUILD.md §2's 2026-08-04 note), kept nullable
+  /// and unique so a future Firebase migration can populate it per merchant
+  /// without a schema change. Never read or written by apps/demo/auth.ts.
+  firebaseUid String? @unique
+  email       String @unique
+  name        String
+  /// scrypt password hash, `scrypt$N$r$p$saltHex$hashHex` (apps/demo/auth.ts's
+  /// hashPassword/verifyPassword) — never a plain hash, never a fast one.
+  /// Nullable so a Merchant row can exist before a password is set (e.g. the
+  /// pre-auth demo row this migration preserves — see its own migration.sql
+  /// comment); apps/demo/auth.ts treats a null hash exactly like a wrong
+  /// password on sign-in, never as a distinguishable case.
+  passwordHash String?
   locale       String    @default("ar")
   plan         Plan      @default(STARTER)
   stripeCustId String?
   subStatus    String    @default("trialing")
   trialEndsAt  DateTime?
   cards        Card[]
+  sessions     Session[]
+  staff        Staff[]
+  broadcastJobs BroadcastJob[]
   createdAt    DateTime  @default(now())
 
   @@index([firebaseUid])
+}
+
+/// A staff PIN account (docs/BUILD.md §8.13: "add staff and give them a PIN
+/// to open the stamp screen in a browser — no app"). Scoped to one
+/// `Merchant`; a staff account can only ever open the stamp screen
+/// (GET /stamp, POST /api/stamp) via a `StaffSession` below, never the
+/// merchant's own session-gated routes (/app, /customers, /reports, card
+/// editing, settings) — apps/demo/server.ts's requireMerchant() only ever
+/// reads the `lnx-session` cookie, never `lnx-staff`, so a staff session is
+/// simply invisible to it.
+model Staff {
+  id         String   @id @default(cuid())
+  merchantId String
+  merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  name       String
+  /// scrypt hash of the 4-6 digit PIN, `scrypt$N$r$p$saltHex$hashHex` — the
+  /// exact same encoding and functions (apps/demo/auth.ts's
+  /// hashPassword/verifyPassword) as Merchant.passwordHash. Never a plain or
+  /// reversibly-encrypted PIN, even though BUILD.md's own job brief is
+  /// explicit that a 4-6 digit PIN is "staff convenience, not strong
+  /// security" — hashing it costs nothing and a leaked database dump should
+  /// never hand out working PINs directly.
+  pinHash    String
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  staffSessions StaffSession[]
+  stampEvents   StampEvent[]
+
+  @@index([merchantId])
+}
+
+/// Server-side session storage for a staff PIN sign-in — the same pattern as
+/// `Session` above (the id itself is the bearer token in the `lnx-staff`
+/// cookie), kept as a fully separate table/cookie so a staff session can
+/// never be mistaken for a merchant one by any code that only checks "is
+/// there a row for this id". Deliberately shorter-lived (see
+/// apps/demo/staffAuth.ts's STAFF_SESSION_TTL_MS) than a merchant session —
+/// a shared/unattended shop device shouldn't stay signed in indefinitely.
+model StaffSession {
+  id         String   @id
+  staffId    String
+  staff      Staff    @relation(fields: [staffId], references: [id], onDelete: Cascade)
+  /// Denormalised from Staff.merchantId — lets getStaffForSession() build
+  /// its result without a second query, and gives PIN-attempt rate limiting
+  /// a merchant-scoped key without joining through Staff first.
+  merchantId String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([staffId])
+  @@index([expiresAt])
+}
+
+/// Server-side session storage (docs/BUILD.md §2's 2026-08-04 note) — `id`
+/// itself *is* the opaque random session token (32 random bytes,
+/// base64url — apps/demo/auth.ts's createSession), set as the `lnx-session`
+/// cookie's value. Deleting a row here is what makes a sign-out or an
+/// expiry actually invalidate the session server-side, not just clear the
+/// cookie client-side — a stolen/reused cookie value stops working the
+/// moment its row is gone.
+model Session {
+  id         String   @id
+  merchantId String
+  merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([merchantId])
+  @@index([expiresAt])
 }
 
 model Card {
@@ -95,6 +178,7 @@ model Card {
   locations     Json      @default("[]")
   active        Boolean   @default(false)
   passes        Pass[]
+  broadcastJobs BroadcastJob[]
   createdAt     DateTime  @default(now())
   /// Bumped by Prisma on every write to this row — including every
   /// aesthetic card-designer edit (colours, logo, stamp icon, background
@@ -128,6 +212,17 @@ model Pass {
   totalStamps  Int       @default(0)
   rewards      Int       @default(0)
   message      String    @default("")
+  /// The `createdAt` of the BroadcastJob that most recently wrote
+  /// `message` — never a raw job id, so it orders directly against a new
+  /// job's own `createdAt` in a plain comparison. `null` until the first
+  /// broadcast ever reaches this pass. apps/demo/broadcastWorker.ts's
+  /// processRecipient() guards its own write on this column: a retried
+  /// job only overwrites `message` when its `createdAt` is >= the value
+  /// already stored here, which is what stops an older broadcast's
+  /// delayed retry (backed off behind a newer broadcast that already
+  /// landed) from resurrecting stale text on a customer's lock screen —
+  /// see that function's own comment for the full scenario.
+  messageJobCreatedAt DateTime?
   platform     String    @default("")
   lastStampAt  DateTime?
   createdAt    DateTime  @default(now())
@@ -147,6 +242,116 @@ model Device {
 
   @@id([deviceId, passSerial])
   @@index([passSerial])
+}
+
+/// A merchant broadcast (docs/BUILD.md §8.12 / §18 item 6 / §10) — the
+/// Postgres-backed job queue that replaces BullMQ-on-Redis for now (see
+/// §2's 2026-08-04 note). One row per "send" action: either a merchant
+/// tapping Send on the Notifications screen (`kind: "manual"`) or an
+/// automated trigger (`kind: "welcome"`, fired from enrolment — see
+/// apps/demo/server.ts's handleIssuePass/handleIssueGooglePass;
+/// `"birthday"`/`"winback"` are scaffolded in the UI only and no code path
+/// ever creates a job with either kind, deliberately — their triggers are
+/// not yet scheduled). Created synchronously by apps/demo/broadcast.ts's
+/// enqueueBroadcast() — a plain INSERT, so the request handler that calls
+/// it still returns immediately; the actual APNs fan-out happens later,
+/// entirely inside apps/demo/broadcastWorker.ts's BroadcastWorker, never
+/// inside a request handler (BUILD.md §18 item 6).
+///
+/// `message` is the sanitised, length-capped text a merchant typed (or an
+/// automated template produced) — safe to render back into HTML with the
+/// usual escapeHtml(), never rendered unescaped. `pushMessage` is the exact
+/// string written into every recipient's `Pass.message` column: computed
+/// once, at enqueue time, as `message` plus one
+/// `invisibleChangeMarker()` (packages/pass/src/buildPass.ts) call —
+/// **not** recomputed per recipient or per retry. Fixing it once here is
+/// what makes two things true at the same time: (1) a merchant sending the
+/// exact same text twice still gets a lock-screen banner both times (two
+/// jobs, two markers, two distinct `pushMessage` values), and (2) retrying
+/// a single recipient's failed push never re-shows the same banner twice
+/// on a device that already received it (every retry writes the *same*
+/// `pushMessage` — a no-op diff once the device has already caught up).
+model BroadcastJob {
+  id             String    @id @default(cuid())
+  merchantId     String
+  merchant       Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  cardId         String
+  card           Card      @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  kind           String    @default("manual")
+  message        String
+  pushMessage    String
+  /// queued (just enqueued, worker hasn't claimed anything yet) · sending
+  /// (at least one recipient claimed) · sent (every recipient reached a
+  /// terminal state — sent or failed; see BroadcastRecipient.status).
+  /// Never rolled back to an earlier value.
+  status         String    @default("queued")
+  recipientCount Int
+  sentCount      Int       @default(0)
+  failedCount    Int       @default(0)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  completedAt    DateTime?
+  recipients     BroadcastRecipient[]
+
+  @@index([merchantId, createdAt])
+  @@index([status])
+}
+
+/// One target of a BroadcastJob — one row per Pass at the time the job was
+/// enqueued (not per Device: a customer with the same pass on two devices
+/// is one recipient, matching the "recipient count" the merchant sees
+/// before sending). `status`/`attempts`/`nextAttemptAt` are the whole
+/// queue: apps/demo/broadcastWorker.ts's BroadcastWorker#claimBatch()
+/// claims a batch with a single atomic
+/// `UPDATE ... FROM (SELECT ... FOR UPDATE SKIP LOCKED) ...` statement —
+/// the standard Postgres job-queue idiom — which is what lets two worker
+/// processes run against the same table without ever claiming the same
+/// row: Postgres itself arbitrates. `claimedAt` also recovers a row a
+/// worker claimed but never finished (e.g. the process was killed
+/// mid-send): claimBatch() re-claims any `"sending"` row whose
+/// `claimedAt` is older than its `staleClaimMs` option, so a crash never
+/// strands a recipient forever — see BroadcastWorker's own doc comment for
+/// why this cannot be made a *perfect* exactly-once guarantee against a
+/// non-transactional external API (APNs), only a safe, self-healing one.
+model BroadcastRecipient {
+  id            String       @id @default(cuid())
+  jobId         String
+  job           BroadcastJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  passSerial    String
+  /// pending (waiting to be claimed, or waiting out a backoff —
+  /// `nextAttemptAt`) · sending (claimed by a worker right now) · sent ·
+  /// failed (attempts exhausted BroadcastWorker's maxAttempts).
+  status        String       @default("pending")
+  attempts      Int          @default(0)
+  lastError     String?
+  /// @db.Timestamptz, deliberately, unlike every other DateTime column in
+  /// this schema: these two are compared against a JS `Date` parameter
+  /// inside apps/demo/broadcastWorker.ts's raw `$queryRaw` claim query
+  /// (`SELECT … FOR UPDATE SKIP LOCKED`, needed because Prisma's own query
+  /// builder cannot express that clause). node-postgres serialises an
+  /// outgoing `Date` parameter for a plain `timestamp` (no time zone)
+  /// column using its *local* wall-clock reading with the zone offset
+  /// attached — and Postgres, per its own documented behaviour, silently
+  /// discards that offset for a `timestamp` (not `timestamptz`) target.
+  /// On a server whose local zone isn't UTC (BST, UTC+1, is what surfaced
+  /// this — see apps/demo/test/broadcastWorker.test.ts's backoff test),
+  /// that combination systematically stores the wrong instant: a value
+  /// written this way and read back through Prisma's own typed API (which
+  /// treats naive timestamps as UTC, consistently, both ways) comes back
+  /// shifted by the server's UTC offset. `timestamptz` carries the offset
+  /// through to Postgres instead of losing it, so both write paths — raw
+  /// SQL and Prisma's typed client — agree on the same absolute instant
+  /// regardless of the machine's local timezone. Every other DateTime
+  /// column in this schema is only ever read/written through Prisma's own
+  /// typed API, so this correction is scoped to just the two columns that
+  /// actually go through a raw SQL parameter.
+  claimedAt     DateTime? @db.Timestamptz(3)
+  nextAttemptAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime     @updatedAt
+
+  @@unique([jobId, passSerial])
+  @@index([status, nextAttemptAt])
+  @@index([jobId, status])
 }
 
 /// Content-addressed image storage for card logos/covers — interim home for
@@ -178,10 +383,18 @@ model StampEvent {
   serial     String
   kind       EventKind
   source     String    @default("browser")
+  /// Which staff member recorded this stamp, when the stamp screen was
+  /// opened with a staff PIN — null when the merchant themself was signed
+  /// in (BUILD.md §8.13's fraud story: "who did what"). `onDelete: SetNull`
+  /// so removing a staff account never rewrites or deletes their stamp
+  /// history, just detaches the name from it.
+  staffId    String?
+  staff      Staff?    @relation(fields: [staffId], references: [id], onDelete: SetNull)
   at         DateTime  @default(now())
 
   @@index([merchantId, at])
   @@index([cardId, kind])
+  @@index([staffId])
 }
 
 model LinkCounter {

@@ -15,6 +15,7 @@
 
 import { prisma } from '../../packages/db/src/index.ts';
 import type { Card, Prisma } from '@prisma/client';
+import type { CardLocation } from './locations.ts';
 
 /**
  * The database fields the lock rule protects once any Pass exists for a
@@ -63,6 +64,15 @@ export const AESTHETIC_FIELDS = [
   'iconFit',
   'coverUrl',
   'coverHash',
+  /// Location reminders (BUILD.md §9.4/§9.1) — geofences the pass carries,
+  /// not a rule about how a customer earns anything, so they're aesthetic
+  /// (always editable) in exactly the sense this file means it: a merchant
+  /// can add/remove/relocate them at any time, even after customers have
+  /// joined. A write here still bumps Card.updatedAt (Prisma's @updatedAt),
+  /// which is exactly what invalidates the .pkpass cache and (via
+  /// server.ts's pushCardUpdate, fired the same way any other design edit
+  /// fires it) pushes the change to already-issued passes.
+  'locations',
 ] as const;
 export type AestheticField = (typeof AESTHETIC_FIELDS)[number];
 
@@ -91,6 +101,7 @@ export interface CardEditInput {
   iconFit?: string;
   coverUrl?: string | null;
   coverHash?: string | null;
+  locations?: CardLocation[];
   stampsGoal?: number;
   starterStamps?: number;
   rewardText?: string;
@@ -108,7 +119,7 @@ export type ActivateCardResult =
   | { ok: true; card: Card }
   | { ok: false; reason: 'not_found' };
 
-/** How many customers (Pass rows) have joined this card. Freezing kicks in the moment this is > 0. */
+/** How many customers (Pass rows) have joined this card. Freezing kicks in the moment this is > 0. Callers are expected to have already verified `cardId` belongs to the calling merchant (findCardOrThrow / the caller's own scoped lookup) — this count is purely by cardId, since a card id, once known-owned, cannot suddenly belong to someone else's passes. */
 export async function passCountForCard(cardId: string): Promise<number> {
   return prisma.pass.count({ where: { cardId } });
 }
@@ -135,17 +146,21 @@ export function economicFieldsAttempted(current: Card, patch: CardEditInput): Ec
 }
 
 /**
- * Applies `patch` to card `cardId`. Once any Pass exists for the card, any
+ * Applies `patch` to card `cardId`, scoped to `merchantId` — a card id that
+ * exists but belongs to a different merchant is indistinguishable from one
+ * that doesn't exist at all (`reason: 'not_found'`), which the caller
+ * (server.ts) turns into a plain 404, never a 403 that would confirm
+ * someone else's card id is real. Once any Pass exists for the card, any
  * attempt to change an ECONOMIC_FIELDS value is rejected wholesale — the
- * caller (server.ts) turns `reason: 'locked'` into HTTP 409 with a
- * translated message (BUILD.md §8.7: "enforce server-side, not just in the
- * UI"). Aesthetic fields in the same patch are still ignored on a locked
- * rejection — the caller can re-request with only the aesthetic subset, or
- * (as the HTML form does) simply never submit disabled fields in the first
- * place. Nothing is written to the database on a 'locked' result.
+ * caller turns `reason: 'locked'` into HTTP 409 with a translated message
+ * (BUILD.md §8.7: "enforce server-side, not just in the UI"). Aesthetic
+ * fields in the same patch are still ignored on a locked rejection — the
+ * caller can re-request with only the aesthetic subset, or (as the HTML
+ * form does) simply never submit disabled fields in the first place.
+ * Nothing is written to the database on a 'locked' or 'not_found' result.
  */
-export async function updateCard(cardId: string, patch: CardEditInput): Promise<UpdateCardResult> {
-  const card = await prisma.card.findUnique({ where: { id: cardId } });
+export async function updateCard(cardId: string, merchantId: string, patch: CardEditInput): Promise<UpdateCardResult> {
+  const card = await prisma.card.findFirst({ where: { id: cardId, merchantId } });
   if (!card) return { ok: false, reason: 'not_found' };
 
   const passCount = await passCountForCard(cardId);
@@ -171,12 +186,13 @@ export async function updateCard(cardId: string, patch: CardEditInput): Promise<
 
 /**
  * Sets `active = true` (BUILD.md §8.7's activation step, §8.8's
- * post-activation screen). Activation itself does not touch any economic
- * field — it only flips the flag that starts enforcing the lock rule above
- * once the first Pass is created.
+ * post-activation screen), scoped to `merchantId` — same not-found-not-403
+ * reasoning as updateCard above. Activation itself does not touch any
+ * economic field — it only flips the flag that starts enforcing the lock
+ * rule above once the first Pass is created.
  */
-export async function activateCard(cardId: string): Promise<ActivateCardResult> {
-  const card = await prisma.card.findUnique({ where: { id: cardId } });
+export async function activateCard(cardId: string, merchantId: string): Promise<ActivateCardResult> {
+  const card = await prisma.card.findFirst({ where: { id: cardId, merchantId } });
   if (!card) return { ok: false, reason: 'not_found' };
   const updated = await prisma.card.update({ where: { id: cardId }, data: { active: true } });
   return { ok: true, card: updated };

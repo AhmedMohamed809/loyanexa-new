@@ -139,12 +139,11 @@ test('registerDevice returns 201 the first time, 200 the second, and creates exa
   }
 });
 
-test('getUpdatedSerials 404s for an unknown device, 401s on a wrong token, 204s when nothing changed, and returns the serial when it did', async () => {
+test('getUpdatedSerials 404s for an unknown device, needs NO auth header, 204s when nothing changed, and returns the serial when it did', async () => {
   const fx = await makeFixture();
   try {
     const unknownDevice = await getUpdatedSerials({
       deviceId: 'never-registered',
-      authHeader: undefined,
       passesUpdatedSince: undefined,
     });
     assert.deepEqual(unknownDevice, { status: 404 });
@@ -157,17 +156,23 @@ test('getUpdatedSerials 404s for an unknown device, 401s on a wrong token, 204s 
     });
     assert.equal(registered.status, 201);
 
-    const wrongToken = await getUpdatedSerials({
+    // Regression guard. Apple sends NO Authorization header to this endpoint.
+    // Requiring one made every real iPhone receive a 401 and silently stop
+    // updating, which is indistinguishable from the push never arriving.
+    // If this ever starts returning 401 again, live pass updates are broken.
+    const noAuthHeader = await getUpdatedSerials({
       deviceId: 'dev-serials',
-      authHeader: 'ApplePass wrong-token',
       passesUpdatedSince: undefined,
     });
-    assert.deepEqual(wrongToken, { status: 401 });
+    assert.equal(
+      noAuthHeader.status,
+      200,
+      'get-serial-numbers must succeed without an Authorization header'
+    );
 
     // No `passesUpdatedSince` — everything registered for this device counts as "changed".
     const initial = await getUpdatedSerials({
       deviceId: 'dev-serials',
-      authHeader: `ApplePass ${fx.authToken}`,
       passesUpdatedSince: undefined,
     });
     assert.equal(initial.status, 200);
@@ -179,7 +184,6 @@ test('getUpdatedSerials 404s for an unknown device, 401s on a wrong token, 204s 
     const future = new Date(Date.now() + 60_000).toISOString();
     const nothingChanged = await getUpdatedSerials({
       deviceId: 'dev-serials',
-      authHeader: `ApplePass ${fx.authToken}`,
       passesUpdatedSince: future,
     });
     assert.deepEqual(nothingChanged, { status: 204 });
@@ -191,7 +195,6 @@ test('getUpdatedSerials 404s for an unknown device, 401s on a wrong token, 204s 
 
     const changed = await getUpdatedSerials({
       deviceId: 'dev-serials',
-      authHeader: `ApplePass ${fx.authToken}`,
       passesUpdatedSince: justBefore,
     });
     assert.equal(changed.status, 200);

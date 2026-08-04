@@ -55,6 +55,27 @@ server handles this **provided the strip cache exists** (§10).
 | Layer | Choice | Why |
 |---|---|---|
 | Auth | **Firebase Auth** | Google sign-in, magic link, verification, reset — free at 10k merchants |
+
+> **Deviation, 2026-08-04.** The app shipped to production with **no authentication at
+> all** — any visitor could create cards, edit another merchant's cards, and read
+> customer names and phone numbers. That is the highest-priority gap this note fixes, and
+> it shipped as **self-contained session auth**, not Firebase Auth as this section
+> specifies: standing up a real Firebase project needs console access the owner cannot do
+> right now, and shipping the fix could not wait on that. What's live instead —
+> `apps/demo/auth.ts`: email + password hashed with **scrypt** (`node:crypto`, a random
+> per-user salt, `N=16384/r=8/p=1`, `crypto.timingSafeEqual` for comparison — never a
+> plain hash, never a fast one), sessions as opaque random ids in a Postgres `Session`
+> table (deleting the row is what makes sign-out and expiry invalidate a session
+> **server-side**, not just clear a cookie), and an `HttpOnly`/`Secure`/`SameSite=Lax`
+> cookie rotated on every sign-in. No new npm dependency — `node:crypto` covers both
+> hashing and session-id generation. Every merchant route now resolves its merchant from
+> that session and filters every `Card`/`Pass`/`StampEvent`/`CardImage` query by it; a
+> card id belonging to another merchant 404s, never 403s, so a request can never confirm
+> someone else's id is real. **Firebase remains the intended migration path** for what
+> this cannot do on its own — Google sign-in and magic-link email — and nothing here
+> forecloses it: `Merchant.firebaseUid` stays in the schema, nullable and unused, for
+> exactly that later migration. See `apps/demo/auth.ts` for the implementation and
+> `apps/demo/test/auth.test.ts` / the scoping test suite for what it's verified against.
 | Database | **Postgres** (Neon or Supabase) + Prisma | Queries are relational |
 | API | **Node + TypeScript + Fastify** | Persistent process, 2–3× faster than Express |
 | Cache | **Redis** (Upstash) | Strip images + sessions |
@@ -63,6 +84,30 @@ server handles this **provided the strip cache exists** (§10).
 | Hosting | **Fly.io** or Railway | Long-lived container |
 | Frontend | **Next.js** (App Router) | Landing + dashboard |
 | Enrol page | **Plain HTML/CSS/JS** | Must stay ~4 KB |
+
+> **Deviation, 2026-08-04.** Merchant broadcasts (BUILD.md §8.12) shipped on a
+> **Postgres-backed job queue**, not **BullMQ on Redis** as this row specifies:
+> there is no Redis provisioned, and standing one up for this one feature was
+> judged more moving parts than the night warranted, the same trade-off §2's
+> auth note above made for session storage. What's live instead —
+> `packages/db/prisma/schema.prisma`'s `BroadcastJob`/`BroadcastRecipient`
+> tables plus `apps/demo/broadcastWorker.ts`'s in-process `BroadcastWorker`:
+> `enqueueBroadcast()` (`apps/demo/broadcast.ts`) only ever inserts rows, so
+> the request handler that calls it returns immediately (BUILD.md §18 item 6);
+> the worker claims batches with a single atomic
+> `UPDATE … FROM (SELECT … FOR UPDATE SKIP LOCKED) …` statement — the
+> standard Postgres job-queue idiom — which is what lets two machines run
+> this worker at once without ever double-claiming the same recipient row, no
+> distributed lock of its own required. Retries are bounded with exponential
+> backoff, a stale claim (a worker that died mid-send) is reclaimed after a
+> timeout rather than lost, and a `410 Gone` prunes the `Device` row exactly
+> as the existing per-stamp push path already does. **Redis/BullMQ remains
+> the path forward** if throughput ever demands true horizontal fan-out speed
+> a single Postgres table can't give — nothing here forecloses it, the same
+> way `Merchant.firebaseUid` stays reserved for a later Firebase migration.
+> See `apps/demo/broadcastWorker.ts`'s file header for the full design, and
+> `apps/demo/test/broadcastWorker.test.ts` for the two-workers-concurrently
+> proof that no recipient is ever pushed twice.
 
 ### Explicitly rejected
 
@@ -342,11 +387,64 @@ Tabs **Send** · **Automated**. Card selector, live recipient count.
 Message textarea, **150-character cap with a counter**. Send disabled while empty.
 Automated types: **welcome · birthday · win-back**.
 
+> **Shipped, 2026-08-04.** `GET/POST /notifications` — owner session only
+> (`requireMerchant()`, same as every other merchant route; a staff PIN
+> session is simply invisible to it, see `apps/demo/test/notificationsHttp.test.ts`).
+> **Send**: card selector with a live recipient count
+> (`GET /notifications/recipient-count`), a 150-character-capped textarea with
+> a visible counter, and the green advisory above, word for word, in both
+> languages. Submitting enqueues via `apps/demo/broadcast.ts`'s
+> `enqueueBroadcast()` and returns immediately — see §2's 2026-08-04 note for
+> the Postgres-backed queue this rests on — then polls
+> `GET /notifications/jobs/:id` to show queued/sending/sent with live counts.
+> Broadcasts are also rate-limited per merchant (5 / 10 minutes) so a mistake
+> cannot fire fifty in a minute. **Automated**: **welcome** is built end to
+> end — it fires from `handleIssuePass`/`handleIssueGooglePass` on a genuine
+> new enrolment (never a reused pass), through the same queue a manual Send
+> uses. **Birthday** and **win-back** are shown in the UI, clearly marked "not
+> yet scheduled" — no trigger exists for either; `BroadcastJob.kind` reserves
+> the two values but nothing ever creates a job with them.
+>
+> The one part of this easy to get subtly wrong (§18 item 5, §9.3): a Wallet
+> push carries no content, so the banner comes from `Pass`'s new
+> `auxiliaryFields` "msg"/"NEWS" entry (`apps/demo/passContent.ts`) —
+> `changeMessage` on a field whose *value* changed. Re-sending identical text
+> would normally show nothing; `apps/demo/broadcast.ts`'s `enqueueBroadcast()`
+> appends one `invisibleChangeMarker()` call **once per job, at enqueue time**
+> (not per push, not per retry) so a repeated identical broadcast still banks
+> a banner, while a retried push re-writes the *same* already-marked text and
+> never re-shows a banner a device already caught up on.
+
 ### 8.13 Settings
 Business profile · **Billing & subscription** → Manage billing ·
 **Staff management** — *"add staff and give them a PIN to open the stamp screen in a
 browser — no app"* · **Work locations** — *"customers are notified when they come near your
 location"*, counter `0 / 1`, empty state · **Products & services**.
+
+> **Shipped, 2026-08-04.** Staff PINs and location reminders are both live. Two
+> deliberate placement decisions, neither stated explicitly above:
+>
+> 1. **Location reminders live on each card's own edit page** (`/cards/:id/edit`), not
+>    on `GET /settings` — `Card.locations` is a per-card column (§9.1/§9.4), and the
+>    card edit page is already this app's "settings for one card, always editable,
+>    cache-invalidating on save" surface (the same page that owns colours, images,
+>    labels). A merchant with several cards can give each its own geofences. `GET
+>    /settings` carries staff management only, since `Staff` is merchant-scoped, not
+>    per-card.
+> 2. **The staff PIN sign-in screen asks for the business email, not just a PIN** —
+>    there is no per-merchant URL for `/stamp` to identify *whose* staff list a bare
+>    4-6 digit PIN should be checked against, so it asks the same way the owner's own
+>    sign-in form does. Rate-limited both per business email (8/15min) and per IP
+>    (30/15min) — see `apps/demo/staff.ts`'s `findStaffByPin` and
+>    `apps/demo/server.ts`'s `staffPinLimiterByKey`/`staffPinLimiterByIp`.
+>
+> A staff PIN session (`apps/demo/staffAuth.ts`, cookie `lnx-staff`, separate table
+> `StaffSession`, 12-hour TTL) opens only `GET /stamp` and `POST /api/stamp` — every
+> other merchant route's `requireMerchant()` only ever reads the `lnx-session` cookie,
+> so a staff session is simply invisible to it and 302s to `/signin` exactly as if
+> there were no session at all. `StampEvent.staffId` (nullable, `onDelete: SetNull`)
+> records which staff member recorded a stamp; null means the owner did.
+> `apps/demo/test/staffScoping.test.ts` proves the refusal, one test per route.
 
 ### 8.14 Reports
 Range chips 30/60/90 · **Export report**.

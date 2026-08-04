@@ -23,6 +23,13 @@ loadEnvFile(path.join(ROOT, '.env'));
 
 const { prisma } = await import('../../../packages/db/src/index.ts');
 const { encodePNG, decodePNG, opaqueBoundingBox, BASE_WIDTH, BASE_HEIGHT } = await import('../../../packages/image/src/index.ts');
+const { createSession, SESSION_COOKIE_NAME } = await import('../auth.ts');
+
+/** Mints a real Session row for `merchantId` (bypassing the HTTP sign-in flow — covered separately by auth.test.ts / authHttp.test.ts) and returns the `Cookie` header value every merchant-scoped request in this file needs to carry. */
+async function sessionCookieFor(merchantId: string): Promise<string> {
+  const session = await createSession(merchantId);
+  return `${SESSION_COOKIE_NAME}=${session.id}`;
+}
 
 function randomHex(bytes: number): string {
   return crypto.randomBytes(bytes).toString('hex');
@@ -44,7 +51,7 @@ async function spawnServer(): Promise<SpawnedServer> {
   const port = randomPort();
   const proc = spawn(process.execPath, ['apps/demo/server.ts'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(port) },
+    env: { ...process.env, PORT: String(port), DISABLE_BROADCAST_WORKER: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const baseUrl = `http://127.0.0.1:${port}`;
@@ -76,7 +83,11 @@ function closeProc(proc: ChildProcessByStdio<null, Readable, Readable>): Promise
   });
 }
 
-async function makeCard(): Promise<{ merchantId: string; card: Awaited<ReturnType<typeof prisma.card.create>> }> {
+async function makeCard(): Promise<{
+  merchantId: string;
+  card: Awaited<ReturnType<typeof prisma.card.create>>;
+  cookie: string;
+}> {
   const merchant = await prisma.merchant.create({
     data: {
       firebaseUid: `img-test-${randomHex(8)}`,
@@ -100,7 +111,8 @@ async function makeCard(): Promise<{ merchantId: string; card: Awaited<ReturnTyp
       active: true,
     },
   });
-  return { merchantId: merchant.id, card };
+  const cookie = await sessionCookieFor(merchant.id);
+  return { merchantId: merchant.id, card, cookie };
 }
 
 async function cleanupMerchant(merchantId: string): Promise<void> {
@@ -120,13 +132,13 @@ after(async () => {
 });
 
 test('uploading a real logo normalises it, stores one CardImage row, and GET /img/:hash serves it back with the right content type', async () => {
-  const { merchantId, card } = await makeCard();
+  const { merchantId, card, cookie } = await makeCard();
   try {
     const bytes = fs.readFileSync(LOGO_PATH);
     const body = new FormData();
     body.append('logo', new Blob([bytes], { type: 'image/png' }), 'logo.png');
 
-    const res = await fetch(`${server.baseUrl}/cards/${card.id}/image`, { method: 'POST', body });
+    const res = await fetch(`${server.baseUrl}/cards/${card.id}/image`, { method: 'POST', headers: { Cookie: cookie }, body });
     assert.equal(res.status, 200);
     const json = (await res.json()) as {
       ok: boolean; kind: string; hash: string; url: string; width: number; height: number; wideLogo: boolean;
@@ -185,12 +197,12 @@ test('Problem 1: GET /preview.png?...&fit=contain and &fit=cover produce genuine
   // a genuinely non-square image as the "my own icon" stamp source and
   // hitting the exact endpoint/query shape the designer's live preview
   // uses (stampSource=icon&icon=<hash>&fit=<contain|cover>).
-  const { merchantId, card } = await makeCard();
+  const { merchantId, card, cookie } = await makeCard();
   try {
     const bytes = fs.readFileSync(LOGO_PATH); // a real 1485x302 (~4.9:1) image — plenty non-square
     const body = new FormData();
     body.append('icon', new Blob([bytes], { type: 'image/png' }), 'icon.png');
-    const res = await fetch(`${server.baseUrl}/cards/${card.id}/image`, { method: 'POST', body });
+    const res = await fetch(`${server.baseUrl}/cards/${card.id}/image`, { method: 'POST', headers: { Cookie: cookie }, body });
     assert.equal(res.status, 200);
     const json = (await res.json()) as { ok: boolean; kind: string; hash: string };
     assert.equal(json.ok, true);
@@ -223,7 +235,7 @@ test('Problem 1: GET /preview.png?...&fit=contain and &fit=cover produce genuine
 });
 
 test('BUILD.md §8.16: the enrol page shows the merchant logo once uploaded, and shows nothing extra when there is none', async () => {
-  const { merchantId, card } = await makeCard();
+  const { merchantId, card, cookie } = await makeCard();
   try {
     const before = await fetch(`${server.baseUrl}/${card.linkCode}`);
     assert.equal(before.status, 200);
@@ -232,7 +244,7 @@ test('BUILD.md §8.16: the enrol page shows the merchant logo once uploaded, and
 
     const body = new FormData();
     body.append('logo', new Blob([fs.readFileSync(LOGO_PATH)], { type: 'image/png' }), 'logo.png');
-    const uploadRes = await fetch(`${server.baseUrl}/cards/${card.id}/image`, { method: 'POST', body });
+    const uploadRes = await fetch(`${server.baseUrl}/cards/${card.id}/image`, { method: 'POST', headers: { Cookie: cookie }, body });
     assert.equal(uploadRes.status, 200);
     const uploadJson = (await uploadRes.json()) as { url: string };
 
@@ -256,13 +268,13 @@ test('an upload over 2 MB (but under the request-level cap) is rejected with 413
   // Sized so the raw file part alone trips the post-parse "file.data.length
   // > MAX_UPLOAD_BYTES" check in server.ts, i.e. the whole multipart body
   // is read successfully first — the easy case, no draining/closing race.
-  const { merchantId, card } = await makeCard();
+  const { merchantId, card, cookie } = await makeCard();
   try {
     const oversized = Buffer.alloc(2 * 1024 * 1024 + 1024, 7);
     const body = new FormData();
     body.append('cover', new Blob([oversized], { type: 'image/png' }), 'huge.png');
 
-    const res = await fetch(`${server.baseUrl}/cards/${card.id}/image`, { method: 'POST', body });
+    const res = await fetch(`${server.baseUrl}/cards/${card.id}/image`, { method: 'POST', headers: { Cookie: cookie }, body });
     assert.equal(res.status, 413);
     const json = (await res.json()) as { ok: boolean; error: string };
     assert.equal(json.ok, false);
@@ -281,13 +293,13 @@ test('an upload whose *declared* size exceeds the request-level cap gets a real 
   // synchronous with the response write reproduced as a bare `fetch failed`
   // / ECONNRESET here rather than a readable 413, because destroying the
   // shared socket raced the client's read of the response.
-  const { merchantId, card } = await makeCard();
+  const { merchantId, card, cookie } = await makeCard();
   try {
     const huge = Buffer.alloc(5 * 1024 * 1024, 9); // 5 MB, well past MAX_UPLOAD_REQUEST_BYTES (~2.06 MB)
     const body = new FormData();
     body.append('cover', new Blob([huge], { type: 'image/png' }), 'huge.png');
 
-    const res = await fetch(`${server.baseUrl}/cards/${card.id}/image`, { method: 'POST', body });
+    const res = await fetch(`${server.baseUrl}/cards/${card.id}/image`, { method: 'POST', headers: { Cookie: cookie }, body });
     assert.equal(res.status, 413, 'expected a real 413 response, not a thrown/rejected fetch()');
     const json = (await res.json()) as { ok: boolean; error: string };
     assert.equal(json.ok, false);
@@ -302,12 +314,12 @@ test('an upload whose *declared* size exceeds the request-level cap gets a real 
 });
 
 test('an upload that is not a decodable image is rejected with 400 and a clear message', async () => {
-  const { merchantId, card } = await makeCard();
+  const { merchantId, card, cookie } = await makeCard();
   try {
     const body = new FormData();
     body.append('logo', new Blob([Buffer.from('not an image')], { type: 'text/plain' }), 'notes.txt');
 
-    const res = await fetch(`${server.baseUrl}/cards/${card.id}/image`, { method: 'POST', body });
+    const res = await fetch(`${server.baseUrl}/cards/${card.id}/image`, { method: 'POST', headers: { Cookie: cookie }, body });
     assert.equal(res.status, 400);
     const json = (await res.json()) as { ok: boolean; error: string };
     assert.equal(json.ok, false);
@@ -318,14 +330,14 @@ test('an upload that is not a decodable image is rejected with 400 and a clear m
 });
 
 test('an upload whose dimensions exceed 4000x4000 is rejected with 400 and a clear message', async () => {
-  const { merchantId, card } = await makeCard();
+  const { merchantId, card, cookie } = await makeCard();
   try {
     const rgba = new Uint8Array(4001 * 1 * 4).fill(255);
     const png = new Uint8Array(encodePNG(rgba, 4001, 1));
     const body = new FormData();
     body.append('cover', new Blob([png], { type: 'image/png' }), 'wide.png');
 
-    const res = await fetch(`${server.baseUrl}/cards/${card.id}/image`, { method: 'POST', body });
+    const res = await fetch(`${server.baseUrl}/cards/${card.id}/image`, { method: 'POST', headers: { Cookie: cookie }, body });
     assert.equal(res.status, 400);
     const json = (await res.json()) as { ok: boolean; error: string };
     assert.equal(json.ok, false);
@@ -336,11 +348,11 @@ test('an upload whose dimensions exceed 4000x4000 is rejected with 400 and a cle
 });
 
 test('a request with no logo/cover file field is rejected with 400', async () => {
-  const { merchantId, card } = await makeCard();
+  const { merchantId, card, cookie } = await makeCard();
   try {
     const body = new FormData();
     body.append('somethingElse', new Blob([Buffer.from('x')]), 'x.png');
-    const res = await fetch(`${server.baseUrl}/cards/${card.id}/image`, { method: 'POST', body });
+    const res = await fetch(`${server.baseUrl}/cards/${card.id}/image`, { method: 'POST', headers: { Cookie: cookie }, body });
     assert.equal(res.status, 400);
   } finally {
     await cleanupMerchant(merchantId);
@@ -348,14 +360,22 @@ test('a request with no logo/cover file field is rejected with 400', async () =>
 });
 
 test('uploading to an unknown card id is rejected with 404', async () => {
-  const body = new FormData();
-  body.append('logo', new Blob([fs.readFileSync(LOGO_PATH)], { type: 'image/png' }), 'logo.png');
-  const res = await fetch(`${server.baseUrl}/cards/nonexistent-card-id/image`, { method: 'POST', body });
-  assert.equal(res.status, 404);
+  const merchant = await prisma.merchant.create({
+    data: { firebaseUid: `img-test-${randomHex(8)}`, email: `img-test-${randomHex(8)}@example.test`, name: 'Image Test Merchant' },
+  });
+  const cookie = await sessionCookieFor(merchant.id);
+  try {
+    const body = new FormData();
+    body.append('logo', new Blob([fs.readFileSync(LOGO_PATH)], { type: 'image/png' }), 'logo.png');
+    const res = await fetch(`${server.baseUrl}/cards/nonexistent-card-id/image`, { method: 'POST', headers: { Cookie: cookie }, body });
+    assert.equal(res.status, 404);
+  } finally {
+    await cleanupMerchant(merchant.id);
+  }
 });
 
 test('image edits on a card that already has passes succeed (200/303), while an economic edit on the same card still 409s', async () => {
-  const { merchantId, card } = await makeCard();
+  const { merchantId, card, cookie } = await makeCard();
   try {
     await prisma.pass.create({
       data: {
@@ -370,7 +390,7 @@ test('image edits on a card that already has passes succeed (200/303), while an 
     // Uploading a logo — purely cosmetic — succeeds on a locked card.
     const uploadBody = new FormData();
     uploadBody.append('logo', new Blob([fs.readFileSync(LOGO_PATH)], { type: 'image/png' }), 'logo.png');
-    const uploadRes = await fetch(`${server.baseUrl}/cards/${card.id}/image`, { method: 'POST', body: uploadBody });
+    const uploadRes = await fetch(`${server.baseUrl}/cards/${card.id}/image`, { method: 'POST', headers: { Cookie: cookie }, body: uploadBody });
     assert.equal(uploadRes.status, 200);
     const uploadJson = (await uploadRes.json()) as { hash: string };
 
@@ -392,7 +412,7 @@ test('image edits on a card that already has passes succeed (200/303), while an 
     });
     const cosmeticRes = await fetch(`${server.baseUrl}/cards/${card.id}/edit`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: cookie },
       body: cosmeticForm.toString(),
       redirect: 'manual',
     });
@@ -419,7 +439,7 @@ test('image edits on a card that already has passes succeed (200/303), while an 
     });
     const economicRes = await fetch(`${server.baseUrl}/cards/${card.id}/edit`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: cookie },
       body: economicForm.toString(),
       redirect: 'manual',
     });

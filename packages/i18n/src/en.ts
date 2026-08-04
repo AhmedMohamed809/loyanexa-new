@@ -16,6 +16,8 @@ export const en = {
   navCustomers: 'Customers',
   navReports: 'Reports',
   navStamp: 'Stamp screen',
+  navSettings: 'Settings',
+  navNotifications: 'Notifications',
 
   // The lock rule (BUILD.md §8.7) — activation confirmation, the locked-fields
   // banner on the edit page, and the field labels shared by both.
@@ -147,11 +149,100 @@ export const en = {
   designerUploadingLabel: 'Uploading…',
   designerUploadErrorGeneric: 'Upload failed. Please try again.',
 
-  // Local-demo auth banner (shown on every merchant page until Firebase
-  // sign-in lands, sub-project 4)
-  authBannerTitle: 'Local demo — no authentication.',
-  authBannerBody:
-    'Anyone who can reach this machine on the network can view and create cards. Firebase sign-in arrives in a later sub-project.',
+  // Location reminders (BUILD.md §9.4/§9.1/§8.13) — on the card edit page,
+  // since Card.locations is a per-card column.
+  designerLocationsHeading: 'Location reminders',
+  designerLocationsIntro:
+    "Your card appears on the customer's lock screen when they walk past — no app, no push notification, and it costs nothing.",
+  designerLocationsCounter: '{count} / {max}',
+  designerLocationsEmpty: 'No locations added yet.',
+  designerLocationsAddButton: 'Add location',
+  designerLocationsRowTitle: 'Location {n}',
+  designerLocationsRemoveButton: 'Remove',
+  designerLocationsNameLabel: 'Location name',
+  designerLocationsNamePlaceholder: 'e.g. Downtown branch',
+  designerLocationsUseCurrentButton: 'Use my current location',
+  designerLocationsLatLabel: 'Latitude',
+  designerLocationsLngLabel: 'Longitude',
+  designerLocationsRelevantTextLabel: 'Message on the lock screen (optional)',
+  designerLocationsRelevantTextPlaceholder: "e.g. You're near us — come say hi!",
+  designerLocationsMaxReached: "You've reached Apple's limit of {max} locations per card.",
+  designerLocationsGeoUnsupported: 'This browser cannot share your location. Enter it manually below.',
+  designerLocationsGeoRequesting: 'Requesting your location…',
+  designerLocationsGeoDenied: "Couldn't get your location. Enter it manually below.",
+  designerLocationsGeoSuccess: 'Location filled in below.',
+  designerLocationsNameRequired: 'Location {n} needs a name.',
+  designerLocationsLatInvalid: 'Location {n}: latitude must be a number between -90 and 90.',
+  designerLocationsLngInvalid: 'Location {n}: longitude must be a number between -180 and 180.',
+
+  // Sign in / sign up / sign out — self-contained session auth (BUILD.md
+  // §8.1/§8.2; see BUILD.md §2's 2026-08-04 note on why this ships instead
+  // of Firebase Auth).
+  signInTitle: 'Sign in',
+  signInEmailLabel: 'Email',
+  signInPasswordLabel: 'Password',
+  signInShowPassword: 'Show password',
+  signInHidePassword: 'Hide password',
+  signInSubmitButton: 'Sign in',
+  signInNoAccountText: "Don't have an account?",
+  signInSignUpLink: 'Sign up',
+  signInInvalidCredentials: 'Incorrect email or password.',
+  signInRateLimited: 'Too many sign-in attempts. Please wait a few minutes and try again.',
+  signInPasswordNotSet: 'This account needs a password set before you can sign in. Ask your administrator.',
+  signUpTitle: 'Create your account',
+  signUpBusinessNameLabel: 'Business name',
+  signUpBusinessNamePlaceholder: 'e.g. Shami Bakery',
+  signUpEmailLabel: 'Email',
+  signUpPasswordLabel: 'Password',
+  signUpPasswordHint: 'At least 10 characters.',
+  signUpSubmitButton: 'Create account',
+  signUpHaveAccountText: 'Already have an account?',
+  signUpSignInLink: 'Sign in',
+  signUpBusinessNameRequired: 'Business name is required.',
+  signUpEmailInvalid: 'Enter a valid email address.',
+  signUpEmailTaken: 'An account with that email already exists.',
+  signUpPasswordTooShort: 'Password must be at least 10 characters.',
+  signUpPasswordTooCommon: 'That password is too common. Please choose a different one.',
+  signUpRateLimited: 'Too many sign-up attempts from this connection. Please wait a few minutes and try again.',
+  navSignOut: 'Sign out',
+
+  // Settings — staff PINs (BUILD.md §8.13). Business profile, billing and
+  // products & services are out of scope for this build; only staff
+  // management ships on GET /settings.
+  settingsTitle: 'Settings',
+  settingsStaffHeading: 'Staff',
+  settingsStaffIntro: 'Give staff a PIN to open the stamp screen in a browser — no app, and no need to share your own login.',
+  settingsStaffConvenienceNote: "PINs are for staff convenience, not strong security — don't reuse one as a real password.",
+  settingsStaffEmptyState: 'No staff added yet.',
+  settingsStaffAddHeading: 'Add staff',
+  settingsStaffNameLabel: 'Name',
+  settingsStaffPinLabel: 'PIN (4-6 digits)',
+  settingsStaffPinPlaceholder: 'Leave blank to generate one',
+  settingsStaffGeneratePinButton: 'Generate PIN',
+  settingsStaffPinHint: 'Digits only, 4 to 6 characters. Leave blank and we will generate one for you.',
+  settingsStaffAddButton: 'Add staff member',
+  settingsStaffNameRequired: 'Enter a name for this staff member.',
+  settingsStaffPinInvalid: 'PIN must be 4 to 6 digits.',
+  settingsStaffPinShownOnce: "{name}'s PIN — write it down now. It will not be shown again.",
+  settingsStaffActiveBadge: 'Active',
+  settingsStaffInactiveBadge: 'Inactive',
+  settingsStaffDeactivateButton: 'Deactivate',
+  settingsStaffActivateButton: 'Activate',
+  settingsStaffRemoveButton: 'Remove',
+  settingsStaffRemoveConfirm: 'Remove this staff member? Their PIN will stop working immediately.',
+
+  // Staff PIN sign-in for the stamp screen (BUILD.md §8.13) — shown at
+  // GET /stamp when neither a merchant nor a staff session is present.
+  staffPinLoginTitle: 'Staff sign-in',
+  staffPinLoginIntro: 'Enter your business email and your staff PIN to open the stamp screen.',
+  staffPinLoginEmailLabel: 'Business email',
+  staffPinLoginPinLabel: 'PIN',
+  staffPinLoginSubmitButton: 'Open stamp screen',
+  staffPinLoginOwnerText: 'Signing in as the owner?',
+  staffPinLoginOwnerLink: 'Sign in',
+  staffPinInvalid: 'Incorrect email or PIN.',
+  staffPinRateLimited: 'Too many attempts. Please wait a few minutes and try again.',
+  staffPinRequired: 'Sign in with your staff PIN to use the stamp screen.',
 
   // Cards list (GET /app)
   cardsListTitle: 'Your cards',
@@ -202,8 +293,9 @@ export const en = {
   // Stamp screen (BUILD.md §8.15)
   stampScreenTitle: 'Stamp a card',
   stampScreenSub: "Scan the QR inside the customer's wallet pass, or type their code below.",
-  stampScreenNotice:
-    'No staff PIN yet in this local demo — anyone who can reach this screen can stamp a card. PIN lock arrives with Firebase auth (sub-project 4).',
+  stampScreenNoticeMerchant: "You're signed in as the merchant. Staff can use their own PIN instead — see Settings.",
+  stampScreenStaffBadge: 'Stamping as {name}.',
+  stampScreenStaffSignOut: 'Sign out',
   stampScreenCameraHeading: 'Camera',
   stampScreenCameraStarting: 'Starting camera…',
   stampScreenManualHeading: 'Manual entry',
@@ -211,4 +303,79 @@ export const en = {
   stampScreenManualPlaceholder: 'e.g. AB12CD34',
   stampScreenSubmitButton: 'Stamp',
   stampScreenNetworkError: 'Network error — check the connection and try again.',
+
+  // Customer enrol page (BUILD.md §8.16) — the highest-value page, and
+  // previously the one page that never read card.lang at all: it rendered
+  // English regardless of the card's own language. These keys fixed that.
+  enrolPageTitleSuffix: 'Join the loyalty card',
+  enrolShowPage: 'Show this page at {name} every visit to collect a stamp.',
+  enrolStripAlt: '{name} — empty stamp card',
+  enrolNameLabel: 'Name',
+  enrolPhoneLabel: 'Phone',
+  enrolOptional: 'optional',
+  enrolNamePlaceholder: 'Your name',
+  enrolPhonePlaceholder: 'Your phone number',
+  enrolConsent: "I agree to join {name}’s loyalty card and receive updates about my rewards.",
+  walletAddApple: 'Add to Apple Wallet',
+  walletAddGoogle: 'Add to Google Wallet',
+  poweredByLoyaNexa: 'Powered by LoyaNexa',
+  /** Google Wallet's accountName when no customer name was given — shown inside the actual saved card, so "customer" not "member" (docs/COPY.md). */
+  walletAccountNameFallback: 'Customer',
+
+  // The Wallet pass itself (BUILD.md §9.1 / §8.6) — REWARD, STAMPS
+  // REMAINING and the auto-generated terms are customer-facing copy too,
+  // and previously always rendered in English regardless of card.lang.
+  passStampsFieldLabel: 'STAMPS',
+  passStampsFieldValue: '{stamps} of {goal}',
+  passRewardFieldLabel: 'REWARD',
+  passStampsRemainingFieldLabel: 'STAMPS REMAINING',
+  passStampsRemainingValue: '{count} stamps',
+  passTermsFieldLabel: 'Terms',
+  passTermsStampPerVisit: '1 stamp per visit.',
+  passTermsCollectReward: 'Collect {goal} stamps to get a reward.',
+  passTermsExpiry: 'Card, stamps and rewards expiry: {expiry}.',
+  passTermsNoExchange: 'Stamps and rewards cannot be exchanged, returned or bought for cash.',
+  passTermsNoTransfer: 'Cards cannot be transferred or combined with other cards.',
+  passTermsAmend: 'The company reserves the right to amend these terms.',
+  passExpiryUnlimited: 'unlimited',
+  passExpiryDays: '{days} days',
+  passDescription: '{name} loyalty card',
+  /** The lock-screen banner text for a location reminder (BUILD.md §9.1's own sample) when the merchant didn't type an override. `{name}` is the card's own (merchant-authored) name, interpolated verbatim — never translated (docs/COPY.md §1). */
+  passLocationRelevantTextDefault: "You're near {name}!",
+  /** The auxiliary "NEWS" field's label on the pass itself (BUILD.md §9.1's own sample) — the field a merchant broadcast (BUILD.md §8.12) lands in. */
+  passMessageFieldLabel: 'NEWS',
+
+  // Notifications screen (BUILD.md §8.12) — Send / Automated tabs.
+  notificationsTabSend: 'Send',
+  notificationsTabAutomated: 'Automated',
+  notificationsCardLabel: 'Card',
+  notificationsRecipientCount: '{count} recipients',
+  notificationsNoCards: 'Create and activate a card first — there is nothing to send to yet.',
+  notificationsMessageLabel: 'Message',
+  notificationsMessagePlaceholder: 'Type your offer…',
+  notificationsMessageCounter: '{count} / {max}',
+  /** The green advisory BUILD.md §8.12 asks for, word for word — never softened: it protects the merchant from themselves. */
+  notificationsAdvisory: 'Too many notifications push customers to mute or delete the card. Send only when you have something worth saying.',
+  notificationsSendButton: 'Send',
+  notificationsSending: 'Sending…',
+  notificationsMessageEmpty: 'Write a message before sending.',
+  notificationsSendError: 'Could not send. Please try again.',
+  notificationsRateLimited: 'Too many broadcasts sent recently for this business. Please wait a while and try again.',
+  notificationsHistoryHeading: 'Recent broadcasts',
+  notificationsHistoryEmpty: 'No broadcasts sent yet.',
+  notificationsStatusQueued: 'Queued',
+  notificationsStatusSending: 'Sending',
+  notificationsStatusSent: 'Sent',
+  notificationsProgress: '{sent} of {total} sent',
+  notificationsProgressWithFailed: '{sent} of {total} sent, {failed} failed',
+  notificationsAutomatedWelcomeTitle: 'Welcome',
+  notificationsAutomatedWelcomeDesc: 'Sent automatically the moment a customer joins any of your cards.',
+  notificationsAutomatedWelcomeStatus: 'Live',
+  notificationsAutomatedBirthdayTitle: 'Birthday',
+  notificationsAutomatedBirthdayDesc: 'Would send automatically on a customer’s birthday.',
+  notificationsAutomatedWinbackTitle: 'Win-back',
+  notificationsAutomatedWinbackDesc: 'Would send automatically to customers who haven’t visited in a while.',
+  notificationsAutomatedNotScheduled: 'Not yet scheduled',
+  /** The welcome automation's own message text (BUILD.md §8.12) — sent once per enrolment via the same broadcast queue as a manual Send, never inline in the enrolment request handler. */
+  notifWelcomeMessage: 'Welcome! Collect a stamp every visit and watch your reward get closer.',
 } as const;

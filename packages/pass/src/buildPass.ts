@@ -36,6 +36,22 @@ export interface PassCredentials {
 }
 
 /**
+ * One geofence entry (BUILD.md §9.4/§9.1) — surfaces the pass on the
+ * customer's lock screen when their phone is near this point, entirely
+ * inside the OS/Wallet, with no server call and no cost. `relevantText` is
+ * the lock-screen banner text; Apple has no per-location max-distance field,
+ * only the pass-level `PassContent.maxDistance` below.
+ */
+export interface PassLocation {
+  latitude: number;
+  longitude: number;
+  relevantText?: string;
+}
+
+/** Apple's own hard limit on `locations` entries per pass (BUILD.md §9.4). buildPassJson enforces this defensively (slices to the first 10) regardless of what a caller passes in — belt-and-braces alongside whatever validated the data before it got here. */
+export const MAX_PASS_LOCATIONS = 10;
+
+/**
  * Everything about one specific pass's content.
  *
  * `webServiceURL` / `authenticationToken` are optional and must be supplied
@@ -62,9 +78,29 @@ export interface PassContent {
   headerFields?: PkPassField[];
   primaryFields?: PkPassField[];
   secondaryFields?: PkPassField[];
+  /**
+   * The merchant-broadcast "news" field (BUILD.md §9.1's `"msg"`/`"NEWS"`
+   * sample, §8.12) — a single field whose `value` is set from `Pass.message`
+   * and whose `changeMessage` is what puts a merchant's broadcast text on
+   * the lock screen (the push itself carries none, per §9.3). Always
+   * present in this app's own pass.json (see apps/demo/passContent.ts),
+   * even before any broadcast has ever been sent — the field must already
+   * exist in the pass a device first downloads, or its first real value
+   * has no "old value" to diff against and may not show a banner at all.
+   */
+  auxiliaryFields?: PkPassField[];
   backFields?: PkPassField[];
   /** The QR payload — normally the pass's own serial number. */
   barcodeMessage: string;
+  /**
+   * Geofences to surface this pass near (BUILD.md §9.4) — at most
+   * {@link MAX_PASS_LOCATIONS}, enforced here regardless of array length.
+   * Omitted entirely (not an empty array) when there are none, matching how
+   * `webServiceURL` is only present when actually configured.
+   */
+  locations?: PassLocation[];
+  /** Metres from a `locations` entry within which iOS considers the pass "relevant" (BUILD.md §9.1's sample: 100). Only meaningful alongside `locations`. */
+  maxDistance?: number;
   /**
    * The Apple PassKit web-service origin, e.g. `https://loyanexa-new.fly.dev/apple`
    * — Apple appends `/v1/...` itself. Must be HTTPS (see interface doc) and
@@ -107,6 +143,7 @@ export interface PkPassJson {
     headerFields: PkPassField[];
     primaryFields: PkPassField[];
     secondaryFields: PkPassField[];
+    auxiliaryFields: PkPassField[];
     backFields: PkPassField[];
   };
   barcodes: Array<{
@@ -115,6 +152,8 @@ export interface PkPassJson {
     messageEncoding: string;
     altText: string;
   }>;
+  locations?: Array<{ latitude: number; longitude: number; relevantText?: string }>;
+  maxDistance?: number;
   webServiceURL?: string;
   authenticationToken?: string;
 }
@@ -210,6 +249,7 @@ export function buildPassJson(credentials: PassCredentials, content: PassContent
       headerFields: content.headerFields ?? [],
       primaryFields: content.primaryFields ?? [],
       secondaryFields: content.secondaryFields ?? [],
+      auxiliaryFields: content.auxiliaryFields ?? [],
       backFields: content.backFields ?? [],
     },
     barcodes: [
@@ -220,6 +260,24 @@ export function buildPassJson(credentials: PassCredentials, content: PassContent
         altText: 'scan here',
       },
     ],
+    // Location reminders (BUILD.md §9.4/§9.1) — omitted entirely (not an
+    // empty array) when there are none, same convention as
+    // webServiceURL/authenticationToken just below. Sliced to
+    // MAX_PASS_LOCATIONS here regardless of what content.locations actually
+    // holds — defense in depth alongside whatever validated the data before
+    // it reached this function (apps/demo/locations.ts's
+    // validateCardLocations), so a pass can never ship more than Apple's own
+    // limit even if a caller somehow got past that check.
+    ...(content.locations && content.locations.length > 0
+      ? {
+          locations: content.locations.slice(0, MAX_PASS_LOCATIONS).map((loc) => ({
+            latitude: loc.latitude,
+            longitude: loc.longitude,
+            ...(loc.relevantText !== undefined ? { relevantText: loc.relevantText } : {}),
+          })),
+          ...(content.maxDistance !== undefined ? { maxDistance: content.maxDistance } : {}),
+        }
+      : {}),
     ...(hasWebServiceURL
       ? { webServiceURL: content.webServiceURL, authenticationToken: content.authenticationToken }
       : {}),

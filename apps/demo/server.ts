@@ -40,7 +40,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import querystring from 'node:querystring';
 import { fileURLToPath } from 'node:url';
-import { Prisma, type Card, type Pass } from '@prisma/client';
+import { Prisma, type Card, type Pass, type Merchant, type Staff, type BroadcastJob, type Device } from '@prisma/client';
 import { buildPass, type PassCredentials, type PassImages } from '../../packages/pass/src/buildPass.ts';
 import { buildPassContentFor } from './passContent.ts';
 import {
@@ -70,6 +70,53 @@ import { createAppleCredentialsResolver } from './appleCredentials.ts';
 import { csvRow } from './csv.ts';
 import { createPassForEnrolment, deleteOrphanedPass } from './enrol.ts';
 import { RateLimiter, resolveClientIp } from './rateLimit.ts';
+import {
+  enqueueBroadcast,
+  recipientCountForCard,
+  listBroadcastJobs,
+  getBroadcastJob,
+  sanitizeBroadcastMessage,
+  BROADCAST_MESSAGE_MAX_LENGTH,
+} from './broadcast.ts';
+import { BroadcastWorker, type SendPushOutcome } from './broadcastWorker.ts';
+import {
+  hashPassword,
+  verifyPassword,
+  validatePassword,
+  MIN_PASSWORD_LENGTH,
+  createSession,
+  deleteSession,
+  getMerchantForSession,
+  setSessionCookie,
+  clearSessionCookie,
+  sessionIdFromRequest,
+  normalizeEmail,
+} from './auth.ts';
+import {
+  createStaffSession,
+  deleteStaffSession,
+  getStaffForSession,
+  setStaffSessionCookie,
+  clearStaffSessionCookie,
+  staffSessionIdFromRequest,
+} from './staffAuth.ts';
+import {
+  createStaff,
+  listStaff,
+  setStaffActive,
+  deleteStaff,
+  validatePin,
+  generatePin,
+  findStaffByPin,
+  MIN_PIN_LENGTH,
+  MAX_PIN_LENGTH,
+} from './staff.ts';
+import {
+  parseCardLocations,
+  validateCardLocations,
+  MAX_CARD_LOCATIONS,
+  type RawLocationRow,
+} from './locations.ts';
 import {
   normalizeUpload,
   storeCardImage,
@@ -677,22 +724,66 @@ function passFilenameStem(name: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Merchant resolution — no auth in this slice (Firebase lands in
-// sub-project 4). There is exactly one merchant on this machine: the owner
-// sitting at the laptop. We find-or-create it on first use.
+// Merchant resolution — session auth (see docs/BUILD.md §2's 2026-08-04
+// note and apps/demo/auth.ts). Every merchant-facing route below resolves
+// its merchant from the session cookie via requireMerchant(), never from
+// "the only merchant row that exists" the way the old single-tenant demo
+// did — that is exactly the gap this branch closes.
 // ---------------------------------------------------------------------------
-async function getOrCreateMerchant() {
-  // TODO(sub-project 4): real auth — resolve the merchant from the signed-in
-  // Firebase user instead of "the only merchant row that exists locally".
-  const existing = await prisma.merchant.findFirst({ orderBy: { createdAt: 'asc' } });
-  if (existing) return existing;
-  return prisma.merchant.create({
-    data: {
-      firebaseUid: 'local-demo-merchant',
-      email: 'ahmedabdulalgane@gmail.com',
-      name: 'Demo Merchant',
-    },
-  });
+
+/**
+ * Guards a merchant-facing route: resolves the signed-in Merchant from the
+ * session cookie, or 302s to /signin (carrying the original path as `next`)
+ * and returns `undefined` when there is no valid session. Callers must
+ * check for `undefined` and return immediately without writing any further
+ * response — requireMerchant has already sent one.
+ */
+async function requireMerchant(req: http.IncomingMessage, res: http.ServerResponse): Promise<Merchant | undefined> {
+  const merchant = await getMerchantForSession(sessionIdFromRequest(req));
+  if (merchant) return merchant;
+  const next = encodeURIComponent(req.url ?? '/app');
+  res.writeHead(302, { Location: `/signin?next=${next}` });
+  res.end();
+  return undefined;
+}
+
+/**
+ * Loads Card `id`, scoped to `merchantId` — the one lookup every
+ * merchant-facing card route uses instead of a bare `findUnique({ where:
+ * { id } })`. A card that exists but belongs to a different merchant comes
+ * back `null`, identical to one that doesn't exist at all: the caller's
+ * usual `sendNotFound` renders the same 404 either way, so a request can
+ * never learn that someone else's card id is real (BUILD.md job brief: 404,
+ * not 403).
+ */
+function findOwnedCard(id: string, merchantId: string): Promise<Card | null> {
+  return prisma.card.findFirst({ where: { id, merchantId } });
+}
+
+/**
+ * Who is allowed to open the stamp screen (BUILD.md §8.13): the merchant
+ * themself (`staff` absent — an owner-recorded stamp), or a signed-in staff
+ * member (`staff` present — a staff-recorded one). This is the *only*
+ * resolver GET /stamp and POST /api/stamp use — never requireMerchant(),
+ * which would 302 a staff session straight to /signin. Every other
+ * merchant-facing route keeps using requireMerchant() exactly as before, so
+ * a staff session (the `lnx-staff` cookie) is simply invisible to them: it
+ * is never read by anything except this function and staffAuth.ts's own
+ * getStaffForSession.
+ */
+interface StampAuth {
+  merchant: Merchant;
+  staff?: Staff;
+}
+async function resolveStampAuth(req: http.IncomingMessage): Promise<StampAuth | undefined> {
+  const staffSessionId = staffSessionIdFromRequest(req);
+  if (staffSessionId) {
+    const resolved = await getStaffForSession(staffSessionId);
+    if (resolved) return { merchant: resolved.merchant, staff: resolved.staff };
+  }
+  const merchant = await getMerchantForSession(sessionIdFromRequest(req));
+  if (merchant) return { merchant };
+  return undefined;
 }
 
 /** Atomically allocate the next link code from the shared counter (starts at 10000). */
@@ -720,15 +811,17 @@ function generateShortCode(): string {
 // same token set already used standalone by renderStampScreen() above — one
 // shell for every merchant page from here on, so the two never drift apart.
 // ---------------------------------------------------------------------------
-type NavKey = 'cards' | 'customers' | 'reports' | 'stamp';
+type NavKey = 'cards' | 'customers' | 'reports' | 'stamp' | 'notifications' | 'settings';
 
-/** The top nav bar BUILD.md §6 wants reachable from every merchant page: Cards · Customers · Reports · Stamp screen (this build's revision of the historical bottom tab bar list). Shared between layout() below and renderStampScreen(), so the stamp screen — reached *from* this nav — also carries it. */
+/** The top nav bar BUILD.md §6 wants reachable from every merchant page: Cards · Customers · Reports · Stamp screen · Settings (this build's revision of the historical bottom tab bar list; Settings — BUILD.md §8.13 — added alongside staff PINs and location reminders). Shared between layout() below and renderStampScreen() *only when viewed as the merchant* — a staff session gets its own, deliberately shorter header (see renderStampScreen's own doc comment) that omits every link a staff session cannot reach. */
 function navBar(active: NavKey | undefined, lang: Lang = 'en'): string {
   const items: Array<{ key: NavKey; href: string; label: string }> = [
     { key: 'cards', href: '/app', label: t(lang, 'navCards') },
     { key: 'customers', href: '/customers', label: t(lang, 'navCustomers') },
     { key: 'reports', href: '/reports', label: t(lang, 'navReports') },
     { key: 'stamp', href: '/stamp', label: t(lang, 'navStamp') },
+    { key: 'notifications', href: '/notifications', label: t(lang, 'navNotifications') },
+    { key: 'settings', href: '/settings', label: t(lang, 'navSettings') },
   ];
   return `<header class="top">
   <a class="brand" href="/app">LoyaNexa</a>
@@ -740,6 +833,9 @@ function navBar(active: NavKey | undefined, lang: Lang = 'en'): string {
       )
       .join('\n    ')}
   </nav>
+  <form method="POST" action="/signout" style="margin:0;">
+    <button type="submit" class="btn secondary small">${escapeHtml(t(lang, 'navSignOut'))}</button>
+  </form>
 </header>`;
 }
 
@@ -990,6 +1086,60 @@ function layout(title: string, bodyHtml: string, active?: NavKey, lang: Lang = '
   .icon-swatch img { width: 28px; height: 28px; }
   .field-hint { font-size: 12px; color: var(--ink-3); margin-top: 4px; }
   .field-hint.amber { color: var(--amber); }
+
+  /* Location reminders (BUILD.md §9.4/§8.13) — a variable-length list of
+     fieldsets, added/removed entirely client-side (plain JS, no server
+     round trip) until Save is pressed. */
+  .locations-heading-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .locations-counter { font-size: 13px; color: var(--ink-3); white-space: nowrap; }
+  .locations-intro { font-size: 13px; color: var(--ink-2); line-height: 1.5; margin: 4px 0 16px; }
+  .locations-empty { text-align: center; color: var(--ink-3); padding: 20px 12px; font-size: 13px; border: 1px dashed var(--line); border-radius: 12px; margin-bottom: 14px; }
+  .location-row { border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 12px; background: var(--sunk); }
+  .location-row .row-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .location-row .row-title { font-size: 13px; font-weight: 700; color: var(--ink-2); }
+  .location-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .location-grid .field { margin-bottom: 12px; }
+  .location-row .geo-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .location-row .geo-status { font-size: 12px; color: var(--ink-3); }
+  .location-row .geo-status.error { color: var(--red); }
+
+  /* Settings — staff PINs (BUILD.md §8.13). */
+  .staff-pin-reveal { background: rgba(34,197,94,.10); border: 1px solid rgba(34,197,94,.35); border-radius: 12px; padding: 14px 16px; margin-bottom: 18px; }
+  .staff-pin-reveal .pin { font-size: 24px; font-weight: 800; letter-spacing: 0.12em; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .staff-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+  .staff-row:last-child { border-bottom: none; }
+  .staff-row .name { font-weight: 600; color: var(--ink); }
+  .staff-row .badge { font-size: 11px; padding: 3px 10px; border-radius: 100px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+  .staff-row .badge.active { background: rgba(34,197,94,.14); color: var(--green); }
+  .staff-row .badge.inactive { background: rgba(148,163,184,.14); color: var(--ink-3); }
+  .staff-row .actions { display: flex; gap: 8px; }
+  .settings-note { font-size: 13px; color: var(--ink-3); line-height: 1.5; margin: 6px 0 18px; }
+
+  /* Notifications (BUILD.md §8.12). */
+  .notif-tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+  .notif-tabs a { padding: 8px 16px; border-radius: 100px; font-size: 13px; font-weight: 600; text-decoration: none; color: var(--ink-2); border: 1px solid var(--line); }
+  .notif-tabs a.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+  .notif-advisory { background: rgba(34,197,94,.10); border: 1px solid rgba(34,197,94,.35); color: var(--ink-2); border-radius: var(--radius-lg); padding: 14px 18px; margin-bottom: 20px; font-size: 13px; line-height: 1.5; }
+  .notif-advisory b { color: var(--green); }
+  .notif-recipient-count { font-size: 13px; color: var(--ink-3); margin-top: 6px; }
+  .notif-counter { font-size: 12px; color: var(--ink-3); text-align: end; margin-top: 4px; }
+  .notif-counter.over { color: var(--red); }
+  .notif-history { margin-top: 28px; }
+  .notif-job { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .notif-job:last-child { border-bottom: none; }
+  .notif-job .msg { color: var(--ink); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .notif-job .meta { color: var(--ink-3); white-space: nowrap; }
+  .notif-job .status-pill { font-size: 11px; padding: 3px 10px; border-radius: 100px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
+  .notif-job .status-pill.queued { background: rgba(148,163,184,.14); color: var(--ink-3); }
+  .notif-job .status-pill.sending { background: rgba(242,140,56,.14); color: var(--accent-light); }
+  .notif-job .status-pill.sent { background: rgba(34,197,94,.14); color: var(--green); }
+  .automated-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
+  .automated-card { background: var(--sunk); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 18px; }
+  .automated-card h3 { margin: 0 0 6px; font-size: 15px; color: var(--ink); display: flex; align-items: center; gap: 8px; }
+  .automated-card p { margin: 0; font-size: 13px; color: var(--ink-3); line-height: 1.5; }
+  .automated-card .status-pill { font-size: 10px; padding: 3px 9px; border-radius: 100px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+  .automated-card .status-pill.live { background: rgba(34,197,94,.14); color: var(--green); }
+  .automated-card .status-pill.pending { background: rgba(148,163,184,.14); color: var(--ink-3); }
 </style>
 </head>
 <body>
@@ -1001,8 +1151,313 @@ ${bodyHtml}
 </html>`;
 }
 
-function authBanner(lang: Lang): string {
-  return `<div class="banner"><b>${escapeHtml(t(lang, 'authBannerTitle'))}</b> ${escapeHtml(t(lang, 'authBannerBody'))}</div>`;
+// ---------------------------------------------------------------------------
+// Sign-up / sign-in / sign-out (BUILD.md §8.1/§8.2 — see BUILD.md §2's
+// 2026-08-04 note on why this is self-contained session auth rather than
+// Firebase). A minimal, unstyled-by-framework page each, matching §3's dark
+// palette and Alexandria via the same layout() shell every merchant page
+// uses (undefined `active` — neither is a nav-bar tab).
+// ---------------------------------------------------------------------------
+
+/** Login attempts are rate-limited both per email and per IP (BUILD.md job brief) — either alone lets an attacker route around the other (many emails from one IP, or one email from many IPs/a botnet). Separate, generous-for-a-human limits: a real merchant mistyping a password a few times must never be locked out by the same rule that stops a credential-stuffing script. */
+const loginLimiterByEmail = new RateLimiter({ limit: 8, windowMs: 15 * 60 * 1000 });
+const loginLimiterByIp = new RateLimiter({ limit: 30, windowMs: 15 * 60 * 1000 });
+
+/**
+ * POST /signup had no rate limit at all (final whole-branch review):
+ * `hashPassword` runs `crypto.scryptSync` — tens of milliseconds locally,
+ * measured 100-200ms on the shared-cpu-1x/512MB Fly machine this runs on —
+ * which blocks the single-threaded event loop, and every request that
+ * passes validation also inserts an unbounded `Merchant` row. A trivial
+ * loop from one host can both pin the one always-on machine (there is no
+ * second thread and no autoscaling headroom — see docs/DEPLOY.md) and fill
+ * the table, taking down enrol, pass issuance and stamping for everyone
+ * else along with it. Only IP-keyed (unlike sign-in's email+IP pair):
+ * there is no existing account to key a per-email limit against before the
+ * account exists, and one always-on machine behind one public form is
+ * exactly the shape loginLimiterByIp already exists to defend.
+ */
+const signupLimiterByIp = new RateLimiter({ limit: 5, windowMs: 15 * 60 * 1000 });
+
+/**
+ * A fixed, valid-shaped scrypt hash that no real password will ever match,
+ * computed once at module load. handleSignIn() always runs a verifyPassword
+ * call against *some* hash — this one when there's no real merchant/password
+ * to check against — so that scrypt's cost (tens of milliseconds) is paid on
+ * every sign-in attempt equally. Without this, "no such account" returns
+ * near-instantly (no hash to check) while "wrong password on a real
+ * account" pays the full scrypt cost — a response-time side channel that
+ * would let the identical, deliberately generic `signInInvalidCredentials`
+ * message (BUILD.md job brief: "the same generic message for wrong password
+ * and no such account") still leak which emails are registered, just
+ * through timing instead of content.
+ */
+const DUMMY_PASSWORD_HASH = hashPassword(crypto.randomBytes(24).toString('hex'));
+
+function authPageShell(title: string, bodyHtml: string, lang: Lang): string {
+  return layout(title, `<div class="panel" style="max-width:420px;margin:40px auto;">${bodyHtml}</div>`, undefined, lang);
+}
+
+/** A safe `next` path to redirect to after sign-in — only ever an in-app, same-origin path (starts with exactly one `/`, never `//…` which browsers treat as protocol-relative), so this can never be turned into an open redirect off a query parameter. */
+function safeNextPath(raw: string | null): string {
+  if (!raw) return '/app';
+  if (!raw.startsWith('/') || raw.startsWith('//')) return '/app';
+  return raw;
+}
+
+function renderSignInForm(opts: { email?: string; next: string; error?: string }, lang: Lang): string {
+  const { email = '', next, error } = opts;
+  const body = `
+    <h1>${escapeHtml(t(lang, 'signInTitle'))}</h1>
+    ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
+    <form method="POST" action="/signin">
+      <input type="hidden" name="next" value="${escapeHtml(next)}">
+      <div class="field">
+        <label for="email">${escapeHtml(t(lang, 'signInEmailLabel'))}</label>
+        <input type="text" id="email" name="email" required autocomplete="email" value="${escapeHtml(email)}">
+      </div>
+      <div class="field">
+        <label for="password">${escapeHtml(t(lang, 'signInPasswordLabel'))}</label>
+        <div class="hex-row">
+          <input type="password" id="password" name="password" required autocomplete="current-password" style="flex:1;">
+          <button type="button" class="btn secondary small" id="toggleSignInPassword">${escapeHtml(t(lang, 'signInShowPassword'))}</button>
+        </div>
+      </div>
+      <button class="btn" type="submit" style="width:100%;">${escapeHtml(t(lang, 'signInSubmitButton'))}</button>
+    </form>
+    <p class="muted" style="margin-top:16px;">${escapeHtml(t(lang, 'signInNoAccountText'))} <a href="/signup">${escapeHtml(t(lang, 'signInSignUpLink'))}</a></p>
+    <script>
+      (function () {
+        var btn = document.getElementById('toggleSignInPassword');
+        var input = document.getElementById('password');
+        if (!btn || !input) return;
+        btn.addEventListener('click', function () {
+          var show = input.type === 'password';
+          input.type = show ? 'text' : 'password';
+          btn.textContent = show ? ${JSON.stringify(t(lang, 'signInHidePassword'))} : ${JSON.stringify(t(lang, 'signInShowPassword'))};
+        });
+      })();
+    </script>
+  `;
+  return authPageShell(t(lang, 'signInTitle'), body, lang);
+}
+
+function renderSignUpForm(
+  opts: { businessName?: string; email?: string; next: string; error?: string },
+  lang: Lang
+): string {
+  const { businessName = '', email = '', next, error } = opts;
+  const body = `
+    <h1>${escapeHtml(t(lang, 'signUpTitle'))}</h1>
+    ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
+    <form method="POST" action="/signup">
+      <input type="hidden" name="next" value="${escapeHtml(next)}">
+      <div class="field">
+        <label for="businessName">${escapeHtml(t(lang, 'signUpBusinessNameLabel'))}</label>
+        <input type="text" id="businessName" name="businessName" required maxlength="120" value="${escapeHtml(businessName)}" placeholder="${escapeHtml(t(lang, 'signUpBusinessNamePlaceholder'))}">
+      </div>
+      <div class="field">
+        <label for="email">${escapeHtml(t(lang, 'signUpEmailLabel'))}</label>
+        <input type="text" id="email" name="email" required autocomplete="email" value="${escapeHtml(email)}">
+      </div>
+      <div class="field">
+        <label for="password">${escapeHtml(t(lang, 'signUpPasswordLabel'))}</label>
+        <input type="password" id="password" name="password" required autocomplete="new-password" minlength="${MIN_PASSWORD_LENGTH}">
+        <p class="field-hint">${escapeHtml(t(lang, 'signUpPasswordHint'))}</p>
+      </div>
+      <button class="btn" type="submit" style="width:100%;">${escapeHtml(t(lang, 'signUpSubmitButton'))}</button>
+    </form>
+    <p class="muted" style="margin-top:16px;">${escapeHtml(t(lang, 'signUpHaveAccountText'))} <a href="/signin">${escapeHtml(t(lang, 'signUpSignInLink'))}</a></p>
+  `;
+  return authPageShell(t(lang, 'signUpTitle'), body, lang);
+}
+
+function handleSignInForm(req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
+  const lang = resolveLang(req);
+  sendHtml(res, 200, renderSignInForm({ next: safeNextPath(url.searchParams.get('next')) }, lang));
+}
+
+function handleSignUpForm(req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
+  const lang = resolveLang(req);
+  sendHtml(res, 200, renderSignUpForm({ next: safeNextPath(url.searchParams.get('next')) }, lang));
+}
+
+/**
+ * POST /signin — BUILD.md job brief: rate-limited per email and per IP, and
+ * "wrong password" / "no such account" return the exact same generic
+ * message, so the sign-in form can never be used to enumerate registered
+ * emails. A fresh session is always minted here (never reused/extended from
+ * an existing one) — that is what "rotation on login" means.
+ */
+async function handleSignIn(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const lang = resolveLang(req);
+  let fields: querystring.ParsedUrlQuery;
+  try {
+    fields = await readUrlencodedBody(req);
+  } catch (err) {
+    const status = isHttpError(err) ? err.statusCode : 400;
+    const message = err instanceof Error ? err.message : String(err);
+    sendHtml(res, status, layout('Error', `<div class="panel"><h1>${status}</h1><p>${escapeHtml(message)}</p></div>`, undefined, lang));
+    return;
+  }
+
+  const emailRaw = String(fields.email ?? '').trim();
+  const password = String(fields.password ?? '');
+  const next = safeNextPath(typeof fields.next === 'string' ? fields.next : null);
+  const email = normalizeEmail(emailRaw);
+
+  const ip = resolveClientIp(req.headers, req.socket.remoteAddress);
+  if (!loginLimiterByEmail.check(email || `empty:${ip}`) || !loginLimiterByIp.check(ip)) {
+    sendHtml(res, 429, renderSignInForm({ email: emailRaw, next, error: t(lang, 'signInRateLimited') }, lang));
+    return;
+  }
+
+  // The same generic message either way — a missing merchant and a wrong
+  // password must be indistinguishable to the caller (BUILD.md job brief).
+  const invalid = () => sendHtml(res, 401, renderSignInForm({ email: emailRaw, next, error: t(lang, 'signInInvalidCredentials') }, lang));
+
+  if (!email || !password) {
+    invalid();
+    return;
+  }
+
+  const merchant = await prisma.merchant.findUnique({ where: { email } });
+
+  // A merchant row can exist with passwordHash === null — this branch's own
+  // migration (packages/db/prisma/migrations/…_add_auth_sessions) added the
+  // column nullable, precisely because the pre-auth demo Merchant row
+  // already existed with none. That is not "wrong password" or "no such
+  // account" — it's a real, known account this deploy simply hasn't been
+  // given a password for yet (docs/DEPLOY.md's "First deploy after auth"
+  // section is the fix: scripts/create-merchant.ts sets one). Collapsing it
+  // into the generic invalid-credentials message would be a *silent*
+  // permanent lockout — the owner (or anyone migrating an old row the same
+  // way) would see "wrong password" forever with no way to tell that no
+  // password was ever set to get wrong. Still pays the same scrypt cost as
+  // every other path below (against DUMMY_PASSWORD_HASH) so this more
+  // informative message differs only in content, never in timing, from the
+  // no-such-account case.
+  if (merchant && merchant.passwordHash === null) {
+    verifyPassword(password, DUMMY_PASSWORD_HASH);
+    sendHtml(res, 401, renderSignInForm({ email: emailRaw, next, error: t(lang, 'signInPasswordNotSet') }, lang));
+    return;
+  }
+
+  // Always call verifyPassword — against the real hash when there is one,
+  // against DUMMY_PASSWORD_HASH otherwise (no such merchant) — so a missing
+  // account and a wrong password cost the same scrypt work and are not just
+  // message-identical but time-identical (see DUMMY_PASSWORD_HASH's own doc
+  // comment).
+  const ok = verifyPassword(password, merchant?.passwordHash ?? DUMMY_PASSWORD_HASH);
+  if (!merchant || !ok) {
+    invalid();
+    return;
+  }
+
+  const session = await createSession(merchant.id);
+  setSessionCookie(res, session);
+  res.writeHead(303, { Location: next });
+  res.end();
+}
+
+/** POST /signup — creates the Merchant, logs them in (a fresh session, same as sign-in), and lands on the dashboard (or `next`, if it was carrying one — e.g. a bookmarked merchant link that redirected here). */
+async function handleSignUp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const lang = resolveLang(req);
+  let fields: querystring.ParsedUrlQuery;
+  try {
+    fields = await readUrlencodedBody(req);
+  } catch (err) {
+    const status = isHttpError(err) ? err.statusCode : 400;
+    const message = err instanceof Error ? err.message : String(err);
+    sendHtml(res, status, layout('Error', `<div class="panel"><h1>${status}</h1><p>${escapeHtml(message)}</p></div>`, undefined, lang));
+    return;
+  }
+
+  const businessName = String(fields.businessName ?? '').trim().slice(0, 120);
+  const emailRaw = String(fields.email ?? '').trim();
+  const email = normalizeEmail(emailRaw);
+  const password = String(fields.password ?? '');
+  const next = safeNextPath(typeof fields.next === 'string' ? fields.next : null);
+
+  const fail = (error: string, status = 400) =>
+    sendHtml(res, status, renderSignUpForm({ businessName, email: emailRaw, next, error }, lang));
+
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  if (!businessName) {
+    fail(t(lang, 'signUpBusinessNameRequired'));
+    return;
+  }
+  if (!EMAIL_RE.test(email)) {
+    fail(t(lang, 'signUpEmailInvalid'));
+    return;
+  }
+  const passwordCheck = validatePassword(password);
+  if (!passwordCheck.ok) {
+    fail(passwordCheck.reason === 'too_short' ? t(lang, 'signUpPasswordTooShort') : t(lang, 'signUpPasswordTooCommon'));
+    return;
+  }
+
+  // Checked here — after the cheap, synchronous field checks above (which
+  // already cost nothing worth rate-limiting on their own) but *before*
+  // the existing-account lookup, the 409 email-taken check, and above all
+  // hashPassword below: everything from here on is the expensive/
+  // informative part of this request (a DB round-trip, an "email taken or
+  // not" answer, and — the main threat — a blocking scrypt hash), and
+  // this is the last point before any of it runs. See signupLimiterByIp's
+  // own doc comment for why this route needs a limiter at all.
+  const ip = resolveClientIp(req.headers, req.socket.remoteAddress);
+  if (!signupLimiterByIp.check(ip)) {
+    fail(t(lang, 'signUpRateLimited'), 429);
+    return;
+  }
+
+  // Deliberately kept as a distinct 409 rather than folded into the same
+  // generic message sign-in uses (final whole-branch review raised this:
+  // without a limiter, this response makes the registered-merchant email
+  // list enumerable). Decision: keep it distinct. signupLimiterByIp above
+  // now caps this at 5 checks per IP per 15 minutes — the same order of
+  // magnitude slower an attacker already accepts against loginLimiterByIp
+  // for the identical "which emails exist" question — and a plain, honest
+  // "that email is taken" is real UX value for someone who has simply
+  // forgotten they already signed up. Sign-in's oracle-proofing exists
+  // because that form is hit far more often, by both real users and
+  // attackers, all day, every day; sign-up's is a one-time action the rate
+  // limit above already makes an unattractive enumeration channel.
+  const existing = await prisma.merchant.findUnique({ where: { email } });
+  if (existing) {
+    fail(t(lang, 'signUpEmailTaken'), 409);
+    return;
+  }
+
+  const passwordHash = hashPassword(password);
+  let merchant: Merchant;
+  try {
+    merchant = await prisma.merchant.create({ data: { email, name: businessName, passwordHash } });
+  } catch (err) {
+    // A raced double-submit past the findUnique check above (P2002 on the
+    // unique email constraint) — same user-facing message as the check
+    // finding it first, not a 500.
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      fail(t(lang, 'signUpEmailTaken'), 409);
+      return;
+    }
+    throw err;
+  }
+
+  const session = await createSession(merchant.id);
+  setSessionCookie(res, session);
+  res.writeHead(303, { Location: next });
+  res.end();
+}
+
+/** POST /signout — deletes the Session row (server-side invalidation — a copied/leaked cookie value stops working immediately, not just once it expires) and clears the cookie. Never errors on a missing/already-invalid session: signing out twice, or with a stale cookie, both just land back on the sign-in page. */
+async function handleSignOut(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const sessionId = sessionIdFromRequest(req);
+  if (sessionId) await deleteSession(sessionId);
+  clearSessionCookie(res);
+  res.writeHead(303, { Location: '/signin' });
+  res.end();
 }
 
 /**
@@ -1043,9 +1498,9 @@ function cardThumbSrc(card: Card): string {
   return `/preview.png?${stripPreviewParams(card, defaultFilled(card.stampsGoal)).toString()}`;
 }
 
-async function handleCardsList(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+async function handleCardsList(req: http.IncomingMessage, res: http.ServerResponse, merchant: Merchant): Promise<void> {
   const lang = resolveLang(req);
-  const cards = await prisma.card.findMany({ orderBy: { createdAt: 'desc' } });
+  const cards = await prisma.card.findMany({ where: { merchantId: merchant.id }, orderBy: { createdAt: 'desc' } });
 
   const body = cards.length
     ? `<div class="row" style="margin-bottom:18px;">
@@ -1074,7 +1529,7 @@ async function handleCardsList(req: http.IncomingMessage, res: http.ServerRespon
          <p><a class="btn" href="/cards/new">${escapeHtml(t(lang, 'createCardButton'))}</a></p>
        </div>`;
 
-  sendHtml(res, 200, layout(t(lang, 'cardsListTitle'), authBanner(lang) + body, 'cards', lang));
+  sendHtml(res, 200, layout(t(lang, 'cardsListTitle'), body, 'cards', lang));
 }
 
 // ---------------------------------------------------------------------------
@@ -1173,7 +1628,7 @@ function renderNewCardForm(
       })();
     </script>
   `;
-  return layout(t(lang, 'newCardTitle'), authBanner(lang) + body, 'cards', lang);
+  return layout(t(lang, 'newCardTitle'), body, 'cards', lang);
 }
 
 async function handleNewCardForm(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -1183,7 +1638,7 @@ async function handleNewCardForm(req: http.IncomingMessage, res: http.ServerResp
 // ---------------------------------------------------------------------------
 // Route: POST /cards — validate, persist, redirect
 // ---------------------------------------------------------------------------
-async function handleCreateCard(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+async function handleCreateCard(req: http.IncomingMessage, res: http.ServerResponse, merchant: Merchant): Promise<void> {
   const lang = resolveLang(req);
   let fields: querystring.ParsedUrlQuery;
   try {
@@ -1210,7 +1665,7 @@ async function handleCreateCard(req: http.IncomingMessage, res: http.ServerRespo
 
   const goalNum = Number.parseInt(String(goalRaw), 10);
   if (!Number.isInteger(goalNum) || goalNum < MIN_GOAL || goalNum > MAX_GOAL) {
-    errors.push(t(lang, 'newCardGoalRange', { min: String(MIN_GOAL), max: String(MAX_GOAL) }));
+    errors.push(t(lang, 'newCardGoalRange', { min: arabicDigits(MIN_GOAL, lang), max: arabicDigits(MAX_GOAL, lang) }));
   }
   if (!HEX_RE.test(bg)) errors.push(t(lang, 'newCardBgInvalid'));
   if (!HEX_RE.test(active)) errors.push(t(lang, 'newCardActiveInvalid'));
@@ -1233,7 +1688,6 @@ async function handleCreateCard(req: http.IncomingMessage, res: http.ServerRespo
   const stampActive = active.startsWith('#') ? active : `#${active}`;
   const stampInactive = inactive.startsWith('#') ? inactive : `#${inactive}`;
 
-  const merchant = await getOrCreateMerchant();
   const maxSlot = await prisma.card.aggregate({
     where: { merchantId: merchant.id },
     _max: { slot: true },
@@ -1300,9 +1754,9 @@ function lockedFieldChips(lang: Lang): string {
   return labels.map((label) => `<span class="chip locked">${escapeHtml(label)}</span>`).join(' ');
 }
 
-async function handleCardDetail(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
+async function handleCardDetail(req: http.IncomingMessage, res: http.ServerResponse, id: string, merchant: Merchant): Promise<void> {
   const lang = resolveLang(req);
-  const card = await prisma.card.findUnique({ where: { id } });
+  const card = await findOwnedCard(id, merchant.id);
   if (!card) {
     sendNotFound(res, `No card with id "${id}".`);
     return;
@@ -1323,7 +1777,7 @@ async function handleCardDetail(req: http.IncomingMessage, res: http.ServerRespo
     passCount > 0
       ? `<div class="banner">
           <b>${escapeHtml(t(lang, 'lockBannerTitle'))}</b> — ${escapeHtml(t(lang, 'lockBannerReason'))}<br>
-          <span>${escapeHtml(t(lang, 'lockCustomersRegistered', { count: String(passCount) }))}</span>
+          <span>${escapeHtml(t(lang, 'lockCustomersRegistered', { count: arabicDigits(passCount, lang) }))}</span>
         </div>`
       : '';
 
@@ -1375,7 +1829,7 @@ async function handleCardDetail(req: http.IncomingMessage, res: http.ServerRespo
       }</p>
     </div>
   `;
-  sendHtml(res, 200, layout(card.name, authBanner(lang) + body, 'cards', lang));
+  sendHtml(res, 200, layout(card.name, body, 'cards', lang));
 }
 
 // ---------------------------------------------------------------------------
@@ -1387,9 +1841,9 @@ async function handleCardDetail(req: http.IncomingMessage, res: http.ServerRespo
 // under @media print — printing the dark UI verbatim would waste a
 // cartridge of ink on a background nobody wants on a counter poster.
 // ---------------------------------------------------------------------------
-async function handleCardPrint(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
+async function handleCardPrint(req: http.IncomingMessage, res: http.ServerResponse, id: string, merchant: Merchant): Promise<void> {
   const lang = resolveLang(req);
-  const card = await prisma.card.findUnique({ where: { id } });
+  const card = await findOwnedCard(id, merchant.id);
   if (!card) {
     sendNotFound(res, `No card with id "${id}".`);
     return;
@@ -1495,9 +1949,9 @@ async function handleCardPrint(req: http.IncomingMessage, res: http.ServerRespon
 // enforces the freeze — this confirmation step is a courtesy, not the
 // enforcement (BUILD.md §8.7: "enforce server-side, not just in the UI").
 // ---------------------------------------------------------------------------
-async function handleActivateConfirm(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
+async function handleActivateConfirm(req: http.IncomingMessage, res: http.ServerResponse, id: string, merchant: Merchant): Promise<void> {
   const lang = resolveLang(req);
-  const card = await prisma.card.findUnique({ where: { id } });
+  const card = await findOwnedCard(id, merchant.id);
   if (!card) {
     sendNotFound(res, `No card with id "${id}".`);
     return;
@@ -1525,9 +1979,9 @@ async function handleActivateConfirm(req: http.IncomingMessage, res: http.Server
   sendHtml(res, 200, layout(t(lang, 'activateTitle'), body, 'cards', lang));
 }
 
-async function handleActivateCard(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
+async function handleActivateCard(req: http.IncomingMessage, res: http.ServerResponse, id: string, merchant: Merchant): Promise<void> {
   const lang = resolveLang(req);
-  const result = await activateCard(id);
+  const result = await activateCard(id, merchant.id);
   if (!result.ok) {
     sendNotFound(res, `No card with id "${id}".`);
     return;
@@ -1621,12 +2075,77 @@ function designerPreviewQs(values: EditCardFormValues, filled: number): URLSearc
   return qs;
 }
 
+/** A saved CardLocation as the all-strings shape the edit form's inputs need — the inverse of parseLocationsFromFields below. Used both for the initial GET render (from Card.locations) and is mirrored by the raw rows a rejected POST redisplays. */
+function locationToRawRow(loc: { name: string; latitude: number; longitude: number; relevantText?: string }): RawLocationRow {
+  return { name: loc.name, latitude: String(loc.latitude), longitude: String(loc.longitude), relevantText: loc.relevantText ?? '' };
+}
+
+/**
+ * Groups `locations[i][name|lat|lng|relevantText]` fields (renderLocationRow's
+ * own field-name pattern) back into an ordered list of raw rows. node's
+ * built-in `querystring.parse` (readUrlencodedBody's own parser) does not
+ * do bracket/array parsing itself — it returns these as literal flat keys —
+ * so this does the grouping by hand. Index gaps (a row removed client-side
+ * before submit) are fine: rows are sorted by their numeric index and
+ * returned in that order, never assumed contiguous.
+ */
+function parseLocationsFromFields(fields: querystring.ParsedUrlQuery): RawLocationRow[] {
+  const byIndex = new Map<number, { name: string; lat: string; lng: string; relevantText: string }>();
+  for (const key of Object.keys(fields)) {
+    const m = key.match(/^locations\[(\d+)\]\[(name|lat|lng|relevantText)\]$/);
+    if (!m) continue;
+    const idx = Number.parseInt(m[1]!, 10);
+    const field = m[2] as 'name' | 'lat' | 'lng' | 'relevantText';
+    const raw = fields[key];
+    const value = Array.isArray(raw) ? (raw[0] ?? '') : (raw ?? '');
+    const entry = byIndex.get(idx) ?? { name: '', lat: '', lng: '', relevantText: '' };
+    entry[field] = value;
+    byIndex.set(idx, entry);
+  }
+  return [...byIndex.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([, v]) => ({ name: v.name, latitude: v.lat, longitude: v.lng, relevantText: v.relevantText }));
+}
+
+/** One `<fieldset>`-style row for a saved (or just-submitted, on a validation error) location — shared by the server-rendered initial rows and the client-side "Add location" template (both must stay in sync: `wireLocationRows` below re-derives the field-name pattern `locations[i][...]` this produces). `index` need not be contiguous — server.ts's own parseLocationsFromFields groups by whatever index each field name carries, gaps and all. */
+function renderLocationRow(index: number, row: RawLocationRow, lang: Lang): string {
+  return `<div class="location-row" data-location-row data-index="${index}">
+            <div class="row-head">
+              <span class="row-title">${escapeHtml(t(lang, 'designerLocationsRowTitle', { n: arabicDigits(index + 1, lang) }))}</span>
+              <button type="button" class="btn remove small" data-remove-location>${escapeHtml(t(lang, 'designerLocationsRemoveButton'))}</button>
+            </div>
+            <div class="field">
+              <label>${escapeHtml(t(lang, 'designerLocationsNameLabel'))}</label>
+              <input type="text" name="locations[${index}][name]" maxlength="80" value="${escapeHtml(row.name)}" placeholder="${escapeHtml(t(lang, 'designerLocationsNamePlaceholder'))}">
+            </div>
+            <div class="geo-row">
+              <button type="button" class="btn secondary small" data-use-current-location>${escapeHtml(t(lang, 'designerLocationsUseCurrentButton'))}</button>
+              <span class="geo-status" data-geo-status></span>
+            </div>
+            <div class="location-grid">
+              <div class="field">
+                <label>${escapeHtml(t(lang, 'designerLocationsLatLabel'))}</label>
+                <input type="text" inputmode="decimal" name="locations[${index}][lat]" data-lat value="${escapeHtml(row.latitude)}" placeholder="24.7136">
+              </div>
+              <div class="field">
+                <label>${escapeHtml(t(lang, 'designerLocationsLngLabel'))}</label>
+                <input type="text" inputmode="decimal" name="locations[${index}][lng]" data-lng value="${escapeHtml(row.longitude)}" placeholder="46.6753">
+              </div>
+            </div>
+            <div class="field" style="margin-bottom:0;">
+              <label>${escapeHtml(t(lang, 'designerLocationsRelevantTextLabel'))}</label>
+              <input type="text" name="locations[${index}][relevantText]" maxlength="160" value="${escapeHtml(row.relevantText)}" placeholder="${escapeHtml(t(lang, 'designerLocationsRelevantTextPlaceholder'))}">
+            </div>
+          </div>`;
+}
+
 function renderEditCardForm(
   card: Card,
   passCount: number,
   lang: Lang,
   values: EditCardFormValues,
   wideIcon: boolean,
+  locationRows: RawLocationRow[],
   error?: string
 ): string {
   const locked = passCount > 0;
@@ -1635,7 +2154,7 @@ function renderEditCardForm(
         <b>${escapeHtml(t(lang, 'lockBannerTitle'))}</b><br>
         ${escapeHtml(t(lang, 'lockBannerReason'))}<br>
         <p class="chips" style="margin-top:8px;">${lockedFieldChips(lang)}</p>
-        <p style="margin-top:8px;">${escapeHtml(t(lang, 'lockCustomersRegistered', { count: String(passCount) }))}</p>
+        <p style="margin-top:8px;">${escapeHtml(t(lang, 'lockCustomersRegistered', { count: arabicDigits(passCount, lang) }))}</p>
       </div>`
     : '';
   const dis = locked ? 'disabled' : '';
@@ -1789,6 +2308,18 @@ function renderEditCardForm(
             <label for="labelRewards">${escapeHtml(t(lang, 'designerLabelRewardsLabel'))}</label>
             <input type="text" id="labelRewards" name="labelRewards" maxlength="16" value="${escapeHtml(values.labelRewards)}">
           </div>
+
+          <div class="locations-heading-row">
+            <h2 style="margin:0;">${escapeHtml(t(lang, 'designerLocationsHeading'))}</h2>
+            <span class="locations-counter" id="locationsCounter">${escapeHtml(t(lang, 'designerLocationsCounter', { count: arabicDigits(locationRows.length, lang), max: arabicDigits(MAX_CARD_LOCATIONS, lang) }))}</span>
+          </div>
+          <p class="locations-intro">${escapeHtml(t(lang, 'designerLocationsIntro'))}</p>
+          <div id="locationsList">
+            <p class="locations-empty" id="locationsEmpty" ${locationRows.length > 0 ? 'hidden' : ''}>${escapeHtml(t(lang, 'designerLocationsEmpty'))}</p>
+            ${locationRows.map((row, i) => renderLocationRow(i, row, lang)).join('\n')}
+          </div>
+          <button type="button" class="btn secondary small" id="addLocationBtn" ${locationRows.length >= MAX_CARD_LOCATIONS ? 'disabled' : ''}>${escapeHtml(t(lang, 'designerLocationsAddButton'))}</button>
+          <p class="field-hint amber" id="locationsMaxHint" ${locationRows.length >= MAX_CARD_LOCATIONS ? '' : 'hidden'}>${escapeHtml(t(lang, 'designerLocationsMaxReached', { max: arabicDigits(MAX_CARD_LOCATIONS, lang) }))}</p>
 
           <h2>${escapeHtml(t(lang, 'designerEconomicsHeading'))}${locked ? escapeHtml(t(lang, 'designerLockedSuffix')) : ''}</h2>
           <div class="field"${lockedClass}>
@@ -2035,15 +2566,160 @@ function renderEditCardForm(
         wireUpload('logoFile', 'logoHash', 'logoThumb', 'logoError', 'logoRemoveBtn', 'logo');
         wireUpload('iconFile', 'iconHash', 'iconThumb', 'iconError', 'iconRemoveBtn', 'icon');
         wireUpload('coverFile', 'coverHash', 'coverThumb', 'coverError', 'coverRemoveBtn', 'cover');
+
+        // -------------------------------------------------------------------
+        // Location reminders (BUILD.md §9.4/§8.13) — add/remove rows entirely
+        // client-side, no server round trip, until Save is pressed (the
+        // server re-validates everything on submit regardless — see
+        // handleUpdateCard's parseLocationsFromFields/validateCardLocations).
+        // The row markup here must stay in sync with server.ts's own
+        // renderLocationRow: same field-name pattern locations[i][...].
+        // -------------------------------------------------------------------
+        var MAX_LOCATIONS = ${MAX_CARD_LOCATIONS};
+        var locationsList = document.getElementById('locationsList');
+        var locationsEmpty = document.getElementById('locationsEmpty');
+        var locationsCounter = document.getElementById('locationsCounter');
+        var addLocationBtn = document.getElementById('addLocationBtn');
+        var locationsMaxHint = document.getElementById('locationsMaxHint');
+        var nextLocationIndex = ${locationRows.length};
+        var counterTemplate = ${JSON.stringify(t(lang, 'designerLocationsCounter', { count: '__COUNT__', max: '__MAX__' }))};
+        var geoUnsupported = ${JSON.stringify(t(lang, 'designerLocationsGeoUnsupported'))};
+        var geoRequesting = ${JSON.stringify(t(lang, 'designerLocationsGeoRequesting'))};
+        var geoDenied = ${JSON.stringify(t(lang, 'designerLocationsGeoDenied'))};
+        var geoSuccess = ${JSON.stringify(t(lang, 'designerLocationsGeoSuccess'))};
+        var rowTitleTemplate = ${JSON.stringify(t(lang, 'designerLocationsRowTitle', { n: '__N__' }))};
+
+        // Arabic-Indic digits (docs/COPY.md §3) for every number this
+        // script renders after the initial (server-rendered, already
+        // arabicDigits()-converted) page load — mirrors
+        // packages/i18n/src/index.ts's own arabicDigits(), duplicated here
+        // for the same reason the contrast-ratio math above is duplicated:
+        // this designer script is plain browser JS with no build step and
+        // no access to that module.
+        var LNX_LANG = ${JSON.stringify(lang)};
+        var ARABIC_INDIC_DIGITS = '٠١٢٣٤٥٦٧٨٩';
+        function localizeDigits(n) {
+          var s = String(n);
+          if (LNX_LANG !== 'ar') return s;
+          return s.replace(/[0-9]/g, function (d) { return ARABIC_INDIC_DIGITS[Number(d)]; });
+        }
+
+        function rowCount() {
+          return locationsList.querySelectorAll('[data-location-row]').length;
+        }
+
+        function refreshLocationsChrome() {
+          var count = rowCount();
+          locationsEmpty.hidden = count > 0;
+          locationsCounter.textContent = counterTemplate
+            .replace('__COUNT__', localizeDigits(count))
+            .replace('__MAX__', localizeDigits(MAX_LOCATIONS));
+          var atMax = count >= MAX_LOCATIONS;
+          addLocationBtn.disabled = atMax;
+          locationsMaxHint.hidden = !atMax;
+        }
+
+        function renumberLocationRows() {
+          locationsList.querySelectorAll('[data-location-row]').forEach(function (row, i) {
+            var title = row.querySelector('.row-title');
+            if (title) title.textContent = rowTitleTemplate.replace('__N__', localizeDigits(i + 1));
+          });
+        }
+
+        function buildLocationRow(index) {
+          var row = document.createElement('div');
+          row.className = 'location-row';
+          row.setAttribute('data-location-row', '');
+          row.setAttribute('data-index', String(index));
+          row.innerHTML =
+            '<div class="row-head">' +
+              '<span class="row-title"></span>' +
+              '<button type="button" class="btn remove small" data-remove-location>${escapeHtml(t(lang, 'designerLocationsRemoveButton'))}</button>' +
+            '</div>' +
+            '<div class="field">' +
+              '<label>${escapeHtml(t(lang, 'designerLocationsNameLabel'))}</label>' +
+              '<input type="text" name="locations[' + index + '][name]" maxlength="80" placeholder="${escapeHtml(t(lang, 'designerLocationsNamePlaceholder'))}">' +
+            '</div>' +
+            '<div class="geo-row">' +
+              '<button type="button" class="btn secondary small" data-use-current-location>${escapeHtml(t(lang, 'designerLocationsUseCurrentButton'))}</button>' +
+              '<span class="geo-status" data-geo-status></span>' +
+            '</div>' +
+            '<div class="location-grid">' +
+              '<div class="field">' +
+                '<label>${escapeHtml(t(lang, 'designerLocationsLatLabel'))}</label>' +
+                '<input type="text" inputmode="decimal" name="locations[' + index + '][lat]" data-lat placeholder="24.7136">' +
+              '</div>' +
+              '<div class="field">' +
+                '<label>${escapeHtml(t(lang, 'designerLocationsLngLabel'))}</label>' +
+                '<input type="text" inputmode="decimal" name="locations[' + index + '][lng]" data-lng placeholder="46.6753">' +
+              '</div>' +
+            '</div>' +
+            '<div class="field" style="margin-bottom:0;">' +
+              '<label>${escapeHtml(t(lang, 'designerLocationsRelevantTextLabel'))}</label>' +
+              '<input type="text" name="locations[' + index + '][relevantText]" maxlength="160" placeholder="${escapeHtml(t(lang, 'designerLocationsRelevantTextPlaceholder'))}">' +
+            '</div>';
+          return row;
+        }
+
+        function wireLocationRow(row) {
+          var removeBtn = row.querySelector('[data-remove-location]');
+          removeBtn.addEventListener('click', function () {
+            row.remove();
+            renumberLocationRows();
+            refreshLocationsChrome();
+          });
+
+          var useCurrentBtn = row.querySelector('[data-use-current-location]');
+          var status = row.querySelector('[data-geo-status]');
+          var latInput = row.querySelector('[data-lat]');
+          var lngInput = row.querySelector('[data-lng]');
+          useCurrentBtn.addEventListener('click', function () {
+            status.classList.remove('error');
+            if (!navigator.geolocation) {
+              status.textContent = geoUnsupported;
+              status.classList.add('error');
+              return;
+            }
+            status.textContent = geoRequesting;
+            navigator.geolocation.getCurrentPosition(
+              function (pos) {
+                latInput.value = pos.coords.latitude.toFixed(6);
+                lngInput.value = pos.coords.longitude.toFixed(6);
+                status.textContent = geoSuccess;
+              },
+              function () {
+                status.textContent = geoDenied;
+                status.classList.add('error');
+              },
+              { enableHighAccuracy: false, timeout: 10000 }
+            );
+          });
+        }
+
+        locationsList.querySelectorAll('[data-location-row]').forEach(function (row) {
+          wireLocationRow(row);
+        });
+
+        addLocationBtn.addEventListener('click', function () {
+          if (rowCount() >= MAX_LOCATIONS) return;
+          var row = buildLocationRow(nextLocationIndex);
+          nextLocationIndex += 1;
+          locationsList.appendChild(row);
+          wireLocationRow(row);
+          renumberLocationRows();
+          refreshLocationsChrome();
+        });
+
+        refreshLocationsChrome();
       })();
     </script>
   `;
   return layout(t(lang, 'editTitle'), body, 'cards', lang);
 }
 
-async function handleEditCardForm(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
+async function handleEditCardForm(req: http.IncomingMessage, res: http.ServerResponse, id: string, merchant: Merchant): Promise<void> {
   const lang = resolveLang(req);
-  const card = await prisma.card.findUnique({ where: { id } });
+  const card = await findOwnedCard(id, merchant.id);
   if (!card) {
     sendNotFound(res, `No card with id "${id}".`);
     return;
@@ -2076,12 +2752,13 @@ async function handleEditCardForm(req: http.IncomingMessage, res: http.ServerRes
         iconFit: card.iconFit,
         coverHash: card.coverHash ?? '',
       },
-      wideIcon
+      wideIcon,
+      parseCardLocations(card.locations).map(locationToRawRow)
     )
   );
 }
 
-async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
+async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerResponse, id: string, merchant: Merchant): Promise<void> {
   const lang = resolveLang(req);
   let fields: querystring.ParsedUrlQuery;
   try {
@@ -2093,7 +2770,7 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
     return;
   }
 
-  const card = await prisma.card.findUnique({ where: { id } });
+  const card = await findOwnedCard(id, merchant.id);
   if (!card) {
     sendNotFound(res, `No card with id "${id}".`);
     return;
@@ -2128,6 +2805,59 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
   const iconFitRaw = String(fields.iconFit ?? '').trim();
   const iconFit = iconFitRaw === 'cover' ? 'cover' : iconFitRaw === 'contain' ? 'contain' : card.iconFit;
 
+  // Location reminders (BUILD.md §9.4/§9.1) — always editable (cardEdit.ts's
+  // AESTHETIC_FIELDS), so this runs unconditionally, locked card or not,
+  // same as colours/images above. Validated *before* the economic-lock
+  // rejection path below can fire, so a merchant fixing their location list
+  // on a locked card gets the location-specific error, not a generic one,
+  // when both happen to be wrong at once — locations are simply checked
+  // first.
+  const locationRows = parseLocationsFromFields(fields);
+  const locationsResult = validateCardLocations(locationRows);
+  if (!locationsResult.ok) {
+    const message =
+      locationsResult.reason === 'too_many'
+        ? t(lang, 'designerLocationsMaxReached', { max: arabicDigits(MAX_CARD_LOCATIONS, lang) })
+        : locationsResult.reason === 'name_required'
+          ? t(lang, 'designerLocationsNameRequired', { n: arabicDigits(locationsResult.index + 1, lang) })
+          : locationsResult.reason === 'invalid_latitude'
+            ? t(lang, 'designerLocationsLatInvalid', { n: arabicDigits(locationsResult.index + 1, lang) })
+            : t(lang, 'designerLocationsLngInvalid', { n: arabicDigits(locationsResult.index + 1, lang) });
+    const wideIconForError = await isStoredLogoWide(card.iconHash);
+    sendHtml(
+      res,
+      400,
+      renderEditCardForm(
+        card,
+        passCount,
+        lang,
+        {
+          name,
+          rewardText: card.rewardText,
+          stampsGoal: card.stampsGoal,
+          starterStamps: card.starterStamps,
+          bgColor,
+          bgOpacity,
+          stampActive,
+          stampInactive,
+          stampShape,
+          stampSource,
+          builtinIcon,
+          labelStamps,
+          labelRewards,
+          logoHash: card.logoHash ?? '',
+          iconHash: card.iconHash ?? '',
+          iconFit,
+          coverHash: card.coverHash ?? '',
+        },
+        wideIconForError,
+        locationRows,
+        message
+      )
+    );
+    return;
+  }
+
   const patch: CardEditInput = {
     name: name || card.name,
     bgColor,
@@ -2140,6 +2870,7 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
     labelStamps,
     labelRewards,
     iconFit,
+    locations: locationsResult.locations,
   };
 
   // Images: images/colours/shape/labels never lock (BUILD.md §8.7's green
@@ -2148,20 +2879,32 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
   // treats a present-but-empty patch value the same as any other explicit
   // write, so this clears the column rather than leaving it alone (which is
   // what an *absent* key would do instead).
+  // isValidHash() gate matches every other consumer of a card image hash
+  // (cardImages.ts's isStoredLogoWide, server.ts's own loadImageRef) — a
+  // hidden field's value is only ever supposed to be a sha256 hex hash this
+  // same request cycle's own upload handler produced, but nothing stops a
+  // tampered request from sending something else. An invalid value is
+  // treated exactly like an empty one (the "remove the image" case) rather
+  // than stored as-is: the same graceful-degrade-to-"no image" rule
+  // loadImageRef's own comment describes, applied at write time instead of
+  // read time, so a bad hash never reaches the database in the first place.
   if ('logoHash' in fields) {
     const hash = String(fields.logoHash ?? '').trim();
-    patch.logoHash = hash || null;
-    patch.logoUrl = hash ? imageUrl(hash) : null;
+    const valid = isValidHash(hash);
+    patch.logoHash = valid ? hash : null;
+    patch.logoUrl = valid ? imageUrl(hash) : null;
   }
   if ('iconHash' in fields) {
     const hash = String(fields.iconHash ?? '').trim();
-    patch.iconHash = hash || null;
-    patch.iconUrl = hash ? imageUrl(hash) : null;
+    const valid = isValidHash(hash);
+    patch.iconHash = valid ? hash : null;
+    patch.iconUrl = valid ? imageUrl(hash) : null;
   }
   if ('coverHash' in fields) {
     const hash = String(fields.coverHash ?? '').trim();
-    patch.coverHash = hash || null;
-    patch.coverUrl = hash ? imageUrl(hash) : null;
+    const valid = isValidHash(hash);
+    patch.coverHash = valid ? hash : null;
+    patch.coverUrl = valid ? imageUrl(hash) : null;
   }
 
   // Economic fields: a locked card's form renders these inputs `disabled`,
@@ -2186,7 +2929,7 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
     if ('starterStamps' in fields) patch.starterStamps = clampInt(fields.starterStamps, 0, MAX_GOAL, card.starterStamps);
   }
 
-  const result = await updateCard(id, patch);
+  const result = await updateCard(id, merchant.id, patch);
   if (!result.ok) {
     if (result.reason === 'not_found') {
       sendNotFound(res, `No card with id "${id}".`);
@@ -2229,6 +2972,7 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
           coverHash: card.coverHash ?? '',
         },
         wideIcon,
+        locationRows,
         t(lang, 'economicFieldLocked')
       )
     );
@@ -2256,10 +3000,9 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
 // ---------------------------------------------------------------------------
 // Route: GET /customers — BUILD.md §8.11. Search by card number, name or
 // phone; filter by card; footer "showing N of N customers"; Export CSV.
-// Single-merchant demo (no auth, see getOrCreateMerchant()'s own comment),
-// so every query below is still explicitly scoped by merchantId — never
-// "every Pass row in the table" — the same discipline BUILD.md §17 asks
-// for once real auth lands.
+// `merchant` comes from requireMerchant() at the router (never a
+// client-supplied id), and every query below is explicitly scoped by
+// merchantId — never "every Pass row in the table" (BUILD.md §17).
 // ---------------------------------------------------------------------------
 interface CustomerFilters {
   q: string;
@@ -2291,9 +3034,8 @@ function formatLastVisit(date: Date | null, lang: Lang): string {
   return arabicDigits(date.toISOString().slice(0, 10), lang);
 }
 
-async function handleCustomersList(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
+async function handleCustomersList(req: http.IncomingMessage, res: http.ServerResponse, url: URL, merchant: Merchant): Promise<void> {
   const lang = resolveLang(req);
-  const merchant = await getOrCreateMerchant();
   const filters = parseCustomerFilters(url);
 
   const [cards, totalCount, rows] = await Promise.all([
@@ -2384,13 +3126,12 @@ async function handleCustomersList(req: http.IncomingMessage, res: http.ServerRe
       </form>
     </div>
     ${tableOrEmpty}
-    <p class="muted">${escapeHtml(t(lang, 'customersFooter', { shown: String(rows.length), total: String(totalCount) }))}</p>
+    <p class="muted">${escapeHtml(t(lang, 'customersFooter', { shown: arabicDigits(rows.length, lang), total: arabicDigits(totalCount, lang) }))}</p>
   `;
   sendHtml(res, 200, layout(t(lang, 'customersTitle'), body, 'customers', lang));
 }
 
-async function handleCustomersExport(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
-  const merchant = await getOrCreateMerchant();
+async function handleCustomersExport(req: http.IncomingMessage, res: http.ServerResponse, url: URL, merchant: Merchant): Promise<void> {
   const filters = parseCustomerFilters(url);
   const rows = await fetchCustomerRows(merchant.id, filters);
 
@@ -2449,9 +3190,8 @@ const WEEKDAY_KEYS = [
   'reportsDaySat',
 ] as const;
 
-async function handleReports(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
+async function handleReports(req: http.IncomingMessage, res: http.ServerResponse, url: URL, merchant: Merchant): Promise<void> {
   const lang = resolveLang(req);
-  const merchant = await getOrCreateMerchant();
   const range = parseReportRange(url);
 
   const now = new Date();
@@ -2601,6 +3341,611 @@ async function handleReports(req: http.IncomingMessage, res: http.ServerResponse
 }
 
 // ---------------------------------------------------------------------------
+// Route: GET /settings — BUILD.md §8.13. This build ships the staff-PIN
+// section (add/deactivate/remove staff who can open the stamp screen); the
+// rest of §8.13 (business profile, billing, products & services) is out of
+// scope here. Location reminders — also part of §8.13's design — live on
+// each card's own edit page instead (handleEditCardForm/handleUpdateCard
+// above), a deliberate choice: Card.locations is a per-card column, so a
+// merchant with several cards can give each one its own geofences, and the
+// existing card-edit page already carries exactly this "settings for one
+// card, always editable, cache-invalidating on save" behaviour — see
+// docs/BUILD.md §9.4's own value proposition and this branch's own report
+// for the reasoning.
+// ---------------------------------------------------------------------------
+
+/** A random-looking but readable label for a just-created staff row when nothing else distinguishes it in a "created" banner — not used anywhere else; kept simple. */
+function renderStaffRow(staff: Staff, lang: Lang): string {
+  const badgeClass = staff.active ? 'active' : 'inactive';
+  const badgeLabel = staff.active ? t(lang, 'settingsStaffActiveBadge') : t(lang, 'settingsStaffInactiveBadge');
+  const toggleAction = staff.active ? 'deactivate' : 'activate';
+  const toggleLabel = staff.active ? t(lang, 'settingsStaffDeactivateButton') : t(lang, 'settingsStaffActivateButton');
+  return `<div class="staff-row">
+    <div>
+      <div class="name">${escapeHtml(staff.name)}</div>
+      <span class="badge ${badgeClass}">${escapeHtml(badgeLabel)}</span>
+    </div>
+    <div class="actions">
+      <form method="POST" action="/staff/${staff.id}/${toggleAction}" style="margin:0;">
+        <button type="submit" class="btn secondary small">${escapeHtml(toggleLabel)}</button>
+      </form>
+      <form method="POST" action="/staff/${staff.id}/delete" style="margin:0;" data-confirm-remove-staff>
+        <button type="submit" class="btn remove small">${escapeHtml(t(lang, 'settingsStaffRemoveButton'))}</button>
+      </form>
+    </div>
+  </div>`;
+}
+
+function renderSettingsPage(
+  staffList: Staff[],
+  lang: Lang,
+  opts: { newStaffName?: string; newStaffPin?: string; error?: string } = {}
+): string {
+  const revealBanner = opts.newStaffPin
+    ? `<div class="staff-pin-reveal">
+        <p style="margin:0 0 6px;">${escapeHtml(t(lang, 'settingsStaffPinShownOnce', { name: opts.newStaffName ?? '' }))}</p>
+        <div class="pin">${escapeHtml(arabicDigits(opts.newStaffPin, lang))}</div>
+      </div>`
+    : '';
+  const body = `
+    <h1>${escapeHtml(t(lang, 'settingsTitle'))}</h1>
+    ${opts.error ? `<div class="error">${escapeHtml(opts.error)}</div>` : ''}
+    <div class="panel">
+      <h2>${escapeHtml(t(lang, 'settingsStaffHeading'))}</h2>
+      <p class="settings-note">${escapeHtml(t(lang, 'settingsStaffIntro'))}</p>
+      <p class="settings-note">${escapeHtml(t(lang, 'settingsStaffConvenienceNote'))}</p>
+      ${revealBanner}
+      ${
+        staffList.length === 0
+          ? `<p class="locations-empty">${escapeHtml(t(lang, 'settingsStaffEmptyState'))}</p>`
+          : staffList.map((s) => renderStaffRow(s, lang)).join('\n')
+      }
+      <h2 style="margin-top:24px;">${escapeHtml(t(lang, 'settingsStaffAddHeading'))}</h2>
+      <form method="POST" action="/staff">
+        <div class="field">
+          <label for="staffName">${escapeHtml(t(lang, 'settingsStaffNameLabel'))}</label>
+          <input type="text" id="staffName" name="name" required maxlength="80" value="${escapeHtml(opts.newStaffName && opts.error ? opts.newStaffName : '')}">
+        </div>
+        <div class="field">
+          <label for="staffPin">${escapeHtml(t(lang, 'settingsStaffPinLabel'))}</label>
+          <div class="hex-row">
+            <input type="text" id="staffPin" name="pin" inputmode="numeric" pattern="[0-9]{4,6}" minlength="${MIN_PIN_LENGTH}" maxlength="${MAX_PIN_LENGTH}" placeholder="${escapeHtml(t(lang, 'settingsStaffPinPlaceholder'))}">
+            <button type="button" class="btn secondary small" id="generatePinBtn">${escapeHtml(t(lang, 'settingsStaffGeneratePinButton'))}</button>
+          </div>
+          <p class="field-hint">${escapeHtml(t(lang, 'settingsStaffPinHint'))}</p>
+        </div>
+        <button class="btn" type="submit">${escapeHtml(t(lang, 'settingsStaffAddButton'))}</button>
+      </form>
+    </div>
+    <script>
+      (function () {
+        var btn = document.getElementById('generatePinBtn');
+        var input = document.getElementById('staffPin');
+        if (!btn || !input) return;
+        btn.addEventListener('click', function () {
+          var digits = '';
+          var bytes = new Uint8Array(6);
+          (window.crypto || window.msCrypto).getRandomValues(bytes);
+          for (var i = 0; i < 6; i++) digits += String(bytes[i] % 10);
+          input.value = digits;
+        });
+        document.querySelectorAll('[data-confirm-remove-staff]').forEach(function (form) {
+          form.addEventListener('submit', function (e) {
+            if (!window.confirm(${JSON.stringify(t(lang, 'settingsStaffRemoveConfirm'))})) e.preventDefault();
+          });
+        });
+      })();
+    </script>
+  `;
+  return layout(t(lang, 'settingsTitle'), body, 'settings', lang);
+}
+
+async function handleSettingsPage(req: http.IncomingMessage, res: http.ServerResponse, merchant: Merchant): Promise<void> {
+  const lang = resolveLang(req);
+  const staffList = await listStaff(merchant.id);
+  sendHtml(res, 200, renderSettingsPage(staffList, lang));
+}
+
+/** POST /staff — creates a staff PIN account. Shows the plaintext PIN exactly once, inline in this response (never via redirect, so it never lands in a URL, a browser history entry, or a server access log) — it is hashed the moment it is generated/typed and cannot be recovered afterward. */
+async function handleCreateStaff(req: http.IncomingMessage, res: http.ServerResponse, merchant: Merchant): Promise<void> {
+  const lang = resolveLang(req);
+  let fields: querystring.ParsedUrlQuery;
+  try {
+    fields = await readUrlencodedBody(req);
+  } catch (err) {
+    const status = isHttpError(err) ? err.statusCode : 400;
+    const message = err instanceof Error ? err.message : String(err);
+    sendHtml(res, status, layout('Error', `<div class="panel"><h1>${status}</h1><p>${escapeHtml(message)}</p></div>`, 'settings', lang));
+    return;
+  }
+
+  const name = String(fields.name ?? '').trim().slice(0, 80);
+  const pinRaw = String(fields.pin ?? '').trim();
+  const pin = pinRaw || generatePin();
+
+  const staffList = await listStaff(merchant.id);
+
+  if (!name) {
+    sendHtml(res, 400, renderSettingsPage(staffList, lang, { error: t(lang, 'settingsStaffNameRequired') }));
+    return;
+  }
+  const pinCheck = validatePin(pin);
+  if (!pinCheck.ok) {
+    sendHtml(res, 400, renderSettingsPage(staffList, lang, { newStaffName: name, error: t(lang, 'settingsStaffPinInvalid') }));
+    return;
+  }
+
+  await createStaff(merchant.id, name, pin);
+  const updatedStaffList = await listStaff(merchant.id);
+  sendHtml(res, 200, renderSettingsPage(updatedStaffList, lang, { newStaffName: name, newStaffPin: pin }));
+}
+
+/** POST /staff/:id/(activate|deactivate|delete) — scoped to `merchant.id` (setStaffActive/deleteStaff both re-check ownership themselves), same not-found-not-403 shape as every other merchant-owned-resource route in this file. An id belonging to another merchant, or that never existed, just redirects back to Settings with nothing changed — there is no separate "staff not found" state worth its own page for an action triggered from a button on a list this merchant already owns. */
+async function handleStaffAction(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  staffId: string,
+  action: 'activate' | 'deactivate' | 'delete',
+  merchant: Merchant
+): Promise<void> {
+  if (action === 'delete') {
+    await deleteStaff(staffId, merchant.id);
+  } else {
+    await setStaffActive(staffId, merchant.id, action === 'activate');
+  }
+  res.writeHead(303, { Location: '/settings' });
+  res.end();
+}
+
+// ---------------------------------------------------------------------------
+// Notifications (BUILD.md §8.12) — Send · Automated tabs. Owner session
+// only: every handler below is reached exclusively via requireMerchant()
+// at the router, the same guard as /customers, /reports and /settings — a
+// staff PIN session (`lnx-staff` cookie) is simply invisible to it and
+// 302s to /signin exactly as if there were no session at all (see
+// requireMerchant's own doc comment). apps/demo/test/notificationsHttp.test.ts
+// proves the refusal.
+//
+// Enqueuing (POST /notifications/send) only ever inserts rows via
+// apps/demo/broadcast.ts's enqueueBroadcast() and returns — no push, no
+// APNs client, nothing that could time out the request (BUILD.md §18 item
+// 6). The actual fan-out is broadcastWorker's job, started once at boot
+// (see the bottom of this file) and running independently of any request.
+// ---------------------------------------------------------------------------
+
+/** One broadcast per merchant per BROADCAST_WINDOW_MS at most — BUILD.md: "so a mistake cannot fire fifty in a minute." Keyed by merchant id, not IP: the whole point is limiting *this business's* messages to *its own* customers, regardless of which device/IP the owner is on. */
+const broadcastLimiter = new RateLimiter({ limit: 5, windowMs: 10 * 60 * 1000 });
+
+function checkBroadcastRateLimit(merchantId: string): boolean {
+  return broadcastLimiter.check(merchantId);
+}
+
+type NotifTab = 'send' | 'automated';
+
+function parseNotifTab(url: URL): NotifTab {
+  return url.searchParams.get('tab') === 'automated' ? 'automated' : 'send';
+}
+
+function broadcastJobStatusLabel(job: Pick<BroadcastJob, 'status'>, lang: Lang): string {
+  if (job.status === 'sending') return t(lang, 'notificationsStatusSending');
+  if (job.status === 'sent') return t(lang, 'notificationsStatusSent');
+  return t(lang, 'notificationsStatusQueued');
+}
+
+function broadcastJobProgressText(job: Pick<BroadcastJob, 'sentCount' | 'failedCount' | 'recipientCount'>, lang: Lang): string {
+  const vars = {
+    sent: arabicDigits(job.sentCount, lang),
+    total: arabicDigits(job.recipientCount, lang),
+    failed: arabicDigits(job.failedCount, lang),
+  };
+  return job.failedCount > 0
+    ? t(lang, 'notificationsProgressWithFailed', vars)
+    : t(lang, 'notificationsProgress', vars);
+}
+
+/** One `<div class="notif-job">` row — shared between the initial server-rendered list and the JS template string the Send tab's own `<script>` uses to render newly-submitted/polled jobs, so the two can never visually drift apart. */
+function renderBroadcastJobRow(
+  job: Pick<BroadcastJob, 'id' | 'status' | 'sentCount' | 'failedCount' | 'recipientCount'> & { cardName: string; message: string },
+  lang: Lang
+): string {
+  return `<div class="notif-job" data-job-id="${escapeHtml(job.id)}" data-status="${escapeHtml(job.status)}">
+    <span class="msg">${escapeHtml(job.cardName)} — ${escapeHtml(job.message)}</span>
+    <span class="meta">${escapeHtml(broadcastJobProgressText(job, lang))}</span>
+    <span class="status-pill ${escapeHtml(job.status)}">${escapeHtml(broadcastJobStatusLabel(job, lang))}</span>
+  </div>`;
+}
+
+function renderNotificationsPage(
+  lang: Lang,
+  tab: NotifTab,
+  cards: Card[],
+  selectedCardId: string | undefined,
+  initialRecipientCount: number,
+  jobs: Array<BroadcastJob & { card: { name: string } }>
+): string {
+  const tabsHtml = `<div class="notif-tabs">
+    <a href="/notifications?tab=send"${tab === 'send' ? ' class="active"' : ''}>${escapeHtml(t(lang, 'notificationsTabSend'))}</a>
+    <a href="/notifications?tab=automated"${tab === 'automated' ? ' class="active"' : ''}>${escapeHtml(t(lang, 'notificationsTabAutomated'))}</a>
+  </div>`;
+
+  if (cards.length === 0) {
+    return `<h1>${escapeHtml(t(lang, 'navNotifications'))}</h1>${tabsHtml}<div class="panel empty"><p class="muted">${escapeHtml(t(lang, 'notificationsNoCards'))}</p></div>`;
+  }
+
+  if (tab === 'automated') {
+    const body = `<h1>${escapeHtml(t(lang, 'navNotifications'))}</h1>
+    ${tabsHtml}
+    <div class="automated-grid">
+      <div class="automated-card">
+        <h3>${escapeHtml(t(lang, 'notificationsAutomatedWelcomeTitle'))} <span class="status-pill live">${escapeHtml(t(lang, 'notificationsAutomatedWelcomeStatus'))}</span></h3>
+        <p>${escapeHtml(t(lang, 'notificationsAutomatedWelcomeDesc'))}</p>
+      </div>
+      <div class="automated-card">
+        <h3>${escapeHtml(t(lang, 'notificationsAutomatedBirthdayTitle'))} <span class="status-pill pending">${escapeHtml(t(lang, 'notificationsAutomatedNotScheduled'))}</span></h3>
+        <p>${escapeHtml(t(lang, 'notificationsAutomatedBirthdayDesc'))}</p>
+      </div>
+      <div class="automated-card">
+        <h3>${escapeHtml(t(lang, 'notificationsAutomatedWinbackTitle'))} <span class="status-pill pending">${escapeHtml(t(lang, 'notificationsAutomatedNotScheduled'))}</span></h3>
+        <p>${escapeHtml(t(lang, 'notificationsAutomatedWinbackDesc'))}</p>
+      </div>
+    </div>`;
+    return body;
+  }
+
+  const selected = selectedCardId ?? cards[0]!.id;
+  const cardOptions = cards
+    .map((c) => `<option value="${escapeHtml(c.id)}"${c.id === selected ? ' selected' : ''}>${escapeHtml(c.name)}</option>`)
+    .join('');
+
+  const historyHtml =
+    jobs.length === 0
+      ? `<p class="muted">${escapeHtml(t(lang, 'notificationsHistoryEmpty'))}</p>`
+      : jobs.map((j) => renderBroadcastJobRow({ ...j, cardName: j.card.name }, lang)).join('\n');
+
+  const body = `<h1>${escapeHtml(t(lang, 'navNotifications'))}</h1>
+  ${tabsHtml}
+  <div class="notif-advisory"><b>${escapeHtml(t(lang, 'notificationsTabSend'))}:</b> ${escapeHtml(t(lang, 'notificationsAdvisory'))}</div>
+  <div class="panel">
+    <form id="broadcastForm">
+      <div class="field">
+        <label for="cardId">${escapeHtml(t(lang, 'notificationsCardLabel'))}</label>
+        <select id="cardId" name="cardId">${cardOptions}</select>
+        <p class="notif-recipient-count" id="recipientCount">${escapeHtml(t(lang, 'notificationsRecipientCount', { count: arabicDigits(initialRecipientCount, lang) }))}</p>
+      </div>
+      <div class="field">
+        <label for="message">${escapeHtml(t(lang, 'notificationsMessageLabel'))}</label>
+        <textarea id="message" name="message" rows="4" maxlength="${BROADCAST_MESSAGE_MAX_LENGTH}" placeholder="${escapeHtml(t(lang, 'notificationsMessagePlaceholder'))}"></textarea>
+        <p class="notif-counter" id="messageCounter">${escapeHtml(t(lang, 'notificationsMessageCounter', { count: arabicDigits(0, lang), max: arabicDigits(BROADCAST_MESSAGE_MAX_LENGTH, lang) }))}</p>
+      </div>
+      <p class="error" id="broadcastError" style="display:none;"></p>
+      <button type="submit" class="btn" id="sendButton" disabled>${escapeHtml(t(lang, 'notificationsSendButton'))}</button>
+    </form>
+  </div>
+  <div class="notif-history">
+    <h2>${escapeHtml(t(lang, 'notificationsHistoryHeading'))}</h2>
+    <div class="panel" id="jobList">${historyHtml}</div>
+  </div>
+  <script>
+    (function () {
+      var MAX_LEN = ${BROADCAST_MESSAGE_MAX_LENGTH};
+      var LABELS = {
+        queued: ${JSON.stringify(t(lang, 'notificationsStatusQueued'))},
+        sending: ${JSON.stringify(t(lang, 'notificationsStatusSending'))},
+        sent: ${JSON.stringify(t(lang, 'notificationsStatusSent'))}
+      };
+      var counterTpl = ${JSON.stringify(t(lang, 'notificationsMessageCounter', { count: '__N__', max: String(BROADCAST_MESSAGE_MAX_LENGTH) }))};
+      var progressTpl = ${JSON.stringify(t(lang, 'notificationsProgress', { sent: '__S__', total: '__T__' }))};
+      var progressFailedTpl = ${JSON.stringify(t(lang, 'notificationsProgressWithFailed', { sent: '__S__', total: '__T__', failed: '__F__' }))};
+      var msgEmptyText = ${JSON.stringify(t(lang, 'notificationsMessageEmpty'))};
+      var sendErrorText = ${JSON.stringify(t(lang, 'notificationsSendError'))};
+      var sendingText = ${JSON.stringify(t(lang, 'notificationsSending'))};
+      var sendText = ${JSON.stringify(t(lang, 'notificationsSendButton'))};
+      var recipientTpl = ${JSON.stringify(t(lang, 'notificationsRecipientCount', { count: '__N__' }))};
+
+      var cardSelect = document.getElementById('cardId');
+      var messageEl = document.getElementById('message');
+      var counterEl = document.getElementById('messageCounter');
+      var sendBtn = document.getElementById('sendButton');
+      var errorEl = document.getElementById('broadcastError');
+      var recipientEl = document.getElementById('recipientCount');
+      var jobList = document.getElementById('jobList');
+      var form = document.getElementById('broadcastForm');
+
+      function updateCounter() {
+        var len = Array.from(messageEl.value.trim()).length;
+        counterEl.textContent = counterTpl.replace('__N__', String(len));
+        counterEl.classList.toggle('over', len > MAX_LEN);
+        sendBtn.disabled = len === 0 || len > MAX_LEN;
+      }
+      messageEl.addEventListener('input', updateCounter);
+      updateCounter();
+
+      function refreshRecipientCount() {
+        recipientEl.textContent = '…';
+        fetch('/notifications/recipient-count?cardId=' + encodeURIComponent(cardSelect.value))
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            recipientEl.textContent = recipientTpl.replace('__N__', String(data.count));
+          })
+          .catch(function () {});
+      }
+      cardSelect.addEventListener('change', refreshRecipientCount);
+
+      function progressText(job) {
+        if (job.failedCount > 0) {
+          return progressFailedTpl.replace('__S__', String(job.sentCount)).replace('__T__', String(job.recipientCount)).replace('__F__', String(job.failedCount));
+        }
+        return progressTpl.replace('__S__', String(job.sentCount)).replace('__T__', String(job.recipientCount));
+      }
+
+      function renderRow(job) {
+        var row = document.createElement('div');
+        row.className = 'notif-job';
+        row.setAttribute('data-job-id', job.id);
+        row.setAttribute('data-status', job.status);
+        var msg = document.createElement('span');
+        msg.className = 'msg';
+        msg.textContent = job.cardName + ' — ' + job.message;
+        var meta = document.createElement('span');
+        meta.className = 'meta';
+        meta.textContent = progressText(job);
+        var pill = document.createElement('span');
+        pill.className = 'status-pill ' + job.status;
+        pill.textContent = LABELS[job.status] || job.status;
+        row.appendChild(msg);
+        row.appendChild(meta);
+        row.appendChild(pill);
+        return row;
+      }
+
+      function pollJob(jobId) {
+        var attempts = 0;
+        var interval = setInterval(function () {
+          attempts++;
+          fetch('/notifications/jobs/' + encodeURIComponent(jobId))
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (data) {
+              if (!data || !data.job) { clearInterval(interval); return; }
+              var existing = jobList.querySelector('[data-job-id="' + jobId + '"]');
+              var fresh = renderRow(data.job);
+              if (existing) existing.replaceWith(fresh);
+              if (data.job.status === 'sent' || attempts > 120) clearInterval(interval);
+            })
+            .catch(function () { clearInterval(interval); });
+        }, 1500);
+      }
+
+      // Any job the page loaded with that isn't finished yet — a merchant
+      // who refreshes mid-send should see it keep moving, not look stuck.
+      Array.prototype.forEach.call(jobList.querySelectorAll('.notif-job'), function (row) {
+        var status = row.getAttribute('data-status');
+        if (status !== 'sent') pollJob(row.getAttribute('data-job-id'));
+      });
+
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        errorEl.style.display = 'none';
+        var message = messageEl.value.trim();
+        if (!message) {
+          errorEl.textContent = msgEmptyText;
+          errorEl.style.display = 'block';
+          return;
+        }
+        sendBtn.disabled = true;
+        sendBtn.textContent = sendingText;
+        fetch('/notifications/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cardId: cardSelect.value, message: message })
+        })
+          .then(function (r) { return r.json().then(function (data) { return { status: r.status, data: data }; }); })
+          .then(function (res) {
+            if (res.status !== 200 || !res.data.ok) {
+              errorEl.textContent = res.data && res.data.message ? res.data.message : sendErrorText;
+              errorEl.style.display = 'block';
+              return;
+            }
+            var emptyState = jobList.querySelector('.muted');
+            if (emptyState) emptyState.remove();
+            jobList.insertBefore(renderRow(res.data.job), jobList.firstChild);
+            if (res.data.job.status !== 'sent') pollJob(res.data.job.id);
+            messageEl.value = '';
+            updateCounter();
+          })
+          .catch(function () {
+            errorEl.textContent = sendErrorText;
+            errorEl.style.display = 'block';
+          })
+          .then(function () {
+            sendBtn.textContent = sendText;
+            updateCounter();
+          });
+      });
+    })();
+  </script>`;
+  return body;
+}
+
+async function handleNotificationsPage(req: http.IncomingMessage, res: http.ServerResponse, url: URL, merchant: Merchant): Promise<void> {
+  const lang = resolveLang(req);
+  const tab = parseNotifTab(url);
+  const cards = await prisma.card.findMany({ where: { merchantId: merchant.id }, orderBy: { createdAt: 'desc' } });
+
+  const requestedCardId = url.searchParams.get('cardId') ?? undefined;
+  const selectedCard = cards.find((c) => c.id === requestedCardId) ?? cards[0];
+  const initialRecipientCount = selectedCard ? await recipientCountForCard(selectedCard) : 0;
+
+  const jobs = tab === 'send' ? await listBroadcastJobs(merchant.id) : [];
+
+  sendHtml(res, 200, layout(t(lang, 'navNotifications'), renderNotificationsPage(lang, tab, cards, selectedCard?.id, initialRecipientCount, jobs), 'notifications', lang));
+}
+
+async function handleRecipientCount(req: http.IncomingMessage, res: http.ServerResponse, url: URL, merchant: Merchant): Promise<void> {
+  const cardId = url.searchParams.get('cardId') ?? '';
+  const card = await findOwnedCard(cardId, merchant.id);
+  if (!card) {
+    sendJson(res, 404, { ok: false, count: 0 });
+    return;
+  }
+  const count = await recipientCountForCard(card);
+  sendJson(res, 200, { ok: true, count });
+}
+
+function broadcastJobJson(job: BroadcastJob & { card?: { name: string } }) {
+  return {
+    id: job.id,
+    status: job.status,
+    message: job.message,
+    recipientCount: job.recipientCount,
+    sentCount: job.sentCount,
+    failedCount: job.failedCount,
+    cardName: job.card?.name ?? '',
+  };
+}
+
+async function handleSendBroadcast(req: http.IncomingMessage, res: http.ServerResponse, merchant: Merchant): Promise<void> {
+  const lang = resolveLang(req);
+
+  if (!checkBroadcastRateLimit(merchant.id)) {
+    sendJson(res, 429, { ok: false, message: t(lang, 'notificationsRateLimited') });
+    return;
+  }
+
+  let body: unknown;
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    const status = isHttpError(err) ? err.statusCode : 400;
+    sendJson(res, status, { ok: false, message: t(lang, 'notificationsSendError') });
+    return;
+  }
+
+  const cardId =
+    typeof body === 'object' && body !== null && 'cardId' in body && typeof (body as { cardId: unknown }).cardId === 'string'
+      ? (body as { cardId: string }).cardId
+      : '';
+  const rawMessage =
+    typeof body === 'object' && body !== null && 'message' in body && typeof (body as { message: unknown }).message === 'string'
+      ? (body as { message: string }).message
+      : '';
+
+  const card = await findOwnedCard(cardId, merchant.id);
+  if (!card) {
+    sendJson(res, 404, { ok: false, message: t(lang, 'cardNotFound') });
+    return;
+  }
+
+  const message = sanitizeBroadcastMessage(rawMessage);
+  if (!message) {
+    sendJson(res, 400, { ok: false, message: t(lang, 'notificationsMessageEmpty') });
+    return;
+  }
+
+  const job = await enqueueBroadcast(card, message, 'manual');
+  sendJson(res, 200, { ok: true, job: broadcastJobJson({ ...job, card: { name: card.name } }) });
+}
+
+async function handleBroadcastJobStatus(req: http.IncomingMessage, res: http.ServerResponse, jobId: string, merchant: Merchant): Promise<void> {
+  const job = await getBroadcastJob(jobId, merchant.id);
+  if (!job) {
+    sendJson(res, 404, { ok: false });
+    return;
+  }
+  const card = await prisma.card.findUnique({ where: { id: job.cardId }, select: { name: true } });
+  sendJson(res, 200, { ok: true, job: broadcastJobJson({ ...job, card: card ?? undefined }) });
+}
+
+// ---------------------------------------------------------------------------
+// The stamp screen's own sign-in: a staff PIN (BUILD.md §8.13). Reached
+// only when resolveStampAuth() finds neither a merchant session nor a
+// staff session already (see the router's own GET /stamp handling below).
+// There is no per-merchant URL for the stamp screen, so — like the owner's
+// own sign-in form — this asks for the business email too, purely to know
+// *whose* staff list to check the PIN against (apps/demo/staff.ts's
+// findStaffByPin doc comment explains this choice in full).
+// ---------------------------------------------------------------------------
+
+function renderStaffPinForm(opts: { email?: string; error?: string }, lang: Lang): string {
+  const { email = '', error } = opts;
+  const body = `
+    <h1>${escapeHtml(t(lang, 'staffPinLoginTitle'))}</h1>
+    <p class="muted" style="margin-top:0;">${escapeHtml(t(lang, 'staffPinLoginIntro'))}</p>
+    ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
+    <form method="POST" action="/stamp/pin">
+      <div class="field">
+        <label for="pinEmail">${escapeHtml(t(lang, 'staffPinLoginEmailLabel'))}</label>
+        <input type="text" id="pinEmail" name="email" required autocomplete="email" value="${escapeHtml(email)}">
+      </div>
+      <div class="field">
+        <label for="pinCode">${escapeHtml(t(lang, 'staffPinLoginPinLabel'))}</label>
+        <input type="text" id="pinCode" name="pin" required inputmode="numeric" pattern="[0-9]{4,6}" autocomplete="off" maxlength="${MAX_PIN_LENGTH}">
+      </div>
+      <button class="btn" type="submit" style="width:100%;">${escapeHtml(t(lang, 'staffPinLoginSubmitButton'))}</button>
+    </form>
+    <p class="muted" style="margin-top:16px;">${escapeHtml(t(lang, 'staffPinLoginOwnerText'))} <a href="/signin">${escapeHtml(t(lang, 'staffPinLoginOwnerLink'))}</a></p>
+  `;
+  return authPageShell(t(lang, 'staffPinLoginTitle'), body, lang);
+}
+
+function handleStaffPinForm(req: http.IncomingMessage, res: http.ServerResponse): void {
+  const lang = resolveLang(req);
+  sendHtml(res, 200, renderStaffPinForm({}, lang));
+}
+
+/** Rate-limited both per business email/id (a shared shop device brute-forcing its own owner's staff PINs) and per IP (a botnet spraying PIN guesses across many businesses) — same two-limiter shape as auth.ts's own sign-in limiters, and for the same reason: either alone lets an attacker route around the other. A 4-6 digit PIN is only 10,000-1,000,000 combinations, so this lockout is the entire reason a leaked/guessed PIN doesn't just work on the first try eventually — BUILD.md job brief: "rate-limit PIN attempts per merchant and lock out after repeated failures". */
+const staffPinLimiterByKey = new RateLimiter({ limit: 8, windowMs: 15 * 60 * 1000 });
+const staffPinLimiterByIp = new RateLimiter({ limit: 30, windowMs: 15 * 60 * 1000 });
+
+async function handleStaffPinLogin(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const lang = resolveLang(req);
+  let fields: querystring.ParsedUrlQuery;
+  try {
+    fields = await readUrlencodedBody(req);
+  } catch (err) {
+    const status = isHttpError(err) ? err.statusCode : 400;
+    const message = err instanceof Error ? err.message : String(err);
+    sendHtml(res, status, layout('Error', `<div class="panel"><h1>${status}</h1><p>${escapeHtml(message)}</p></div>`, undefined, lang));
+    return;
+  }
+
+  const emailRaw = String(fields.email ?? '').trim();
+  const email = normalizeEmail(emailRaw);
+  const pin = String(fields.pin ?? '').trim();
+  const ip = resolveClientIp(req.headers, req.socket.remoteAddress);
+
+  if (!staffPinLimiterByKey.check(email || `empty:${ip}`) || !staffPinLimiterByIp.check(ip)) {
+    sendHtml(res, 429, renderStaffPinForm({ email: emailRaw, error: t(lang, 'staffPinRateLimited') }, lang));
+    return;
+  }
+
+  const invalid = () => sendHtml(res, 401, renderStaffPinForm({ email: emailRaw, error: t(lang, 'staffPinInvalid') }, lang));
+  if (!email || !pin) {
+    invalid();
+    return;
+  }
+
+  const result = await findStaffByPin(email, pin);
+  if (!result) {
+    invalid();
+    return;
+  }
+
+  const session = await createStaffSession(result.staff.id, result.merchant.id);
+  setStaffSessionCookie(res, session);
+  res.writeHead(303, { Location: '/stamp' });
+  res.end();
+}
+
+/** POST /stamp/signout — the staff-session counterpart to POST /signout, on its own path so it can never be reached without a staff cookie doing anything meaningful (and so it never needs a merchant session, which a staff-only browser doesn't have). */
+async function handleStaffSignOut(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const id = staffSessionIdFromRequest(req);
+  if (id) await deleteStaffSession(id);
+  clearStaffSessionCookie(res);
+  res.writeHead(303, { Location: '/stamp' });
+  res.end();
+}
+
+// ---------------------------------------------------------------------------
 // Short-link code parsing — Card.linkCode is an Int, so a valid code is
 // digits only. Anything else (favicon.ico, robots.txt, ...) is just "no
 // such card", not a crash.
@@ -2640,13 +3985,20 @@ function renderEnrolPage(card: Card): string {
   // for why this is deliberately short-lived and in-memory only, not a
   // database column.
   const idempotencyKey = crypto.randomBytes(16).toString('base64url');
+  // BUILD.md §8.16 calls this "the highest-value page" and §13 requires the
+  // whole platform to follow the card's own language — this page used to
+  // hardcode `lang="en"` and every string in it regardless of card.lang, so
+  // an Arabic card's own customers landed on an English enrol page. Same
+  // `=== 'en' ? 'en' : 'ar'` coercion resolveLang()/passContent.ts use.
+  const lang: Lang = card.lang === 'en' ? 'en' : 'ar';
+  const dir = lang === 'ar' ? 'rtl' : 'ltr';
 
   return `<!doctype html>
-<html lang="en">
+<html lang="${lang}" dir="${dir}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(card.name)} · Join the loyalty card</title>
+<title>${escapeHtml(card.name)} · ${escapeHtml(t(lang, 'enrolPageTitleSuffix'))}</title>
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; min-height: 100%; }
@@ -2701,31 +4053,31 @@ function renderEnrolPage(card: Card): string {
 <main>
   ${card.logoUrl ? `<img class="enrol-logo" src="${escapeHtml(card.logoUrl)}" alt="${escapeHtml(card.name)}">` : ''}
   <h1>${escapeHtml(card.rewardText)}</h1>
-  <p class="lede">Show this page at ${escapeHtml(card.name)} every visit to collect a stamp.</p>
-  <p class="lede">Collect ${card.stampsGoal} stamps to get your reward.</p>
+  <p class="lede">${escapeHtml(t(lang, 'enrolShowPage', { name: card.name }))}</p>
+  <p class="lede">${escapeHtml(t(lang, 'printStep4', { goal: arabicDigits(card.stampsGoal, lang) }))}</p>
   <div class="strip">
-    <img src="/preview.png?${stripQs.toString()}" alt="${escapeHtml(card.name)} empty stamp card" width="375" height="144">
+    <img src="/preview.png?${stripQs.toString()}" alt="${escapeHtml(t(lang, 'enrolStripAlt', { name: card.name }))}" width="375" height="144">
   </div>
   <form method="POST" action="/${card.linkCode}/pass">
     <input type="hidden" name="idem" value="${escapeHtml(idempotencyKey)}">
     <div class="field">
-      <label for="name">Name <span class="opt">(optional)</span></label>
-      <input type="text" id="name" name="name" maxlength="80" autocomplete="name" placeholder="Your name">
+      <label for="name">${escapeHtml(t(lang, 'enrolNameLabel'))} <span class="opt">(${escapeHtml(t(lang, 'enrolOptional'))})</span></label>
+      <input type="text" id="name" name="name" maxlength="80" autocomplete="name" placeholder="${escapeHtml(t(lang, 'enrolNamePlaceholder'))}">
     </div>
     <div class="field">
-      <label for="phone">Phone <span class="opt">(optional)</span></label>
-      <input type="tel" id="phone" name="phone" maxlength="30" autocomplete="tel" placeholder="Your phone number">
+      <label for="phone">${escapeHtml(t(lang, 'enrolPhoneLabel'))} <span class="opt">(${escapeHtml(t(lang, 'enrolOptional'))})</span></label>
+      <input type="tel" id="phone" name="phone" maxlength="30" autocomplete="tel" placeholder="${escapeHtml(t(lang, 'enrolPhonePlaceholder'))}">
     </div>
     <label class="consent">
       <input type="checkbox" name="consent" required>
-      <span>I agree to join ${escapeHtml(card.name)}'s loyalty card and receive updates about my rewards.</span>
+      <span>${escapeHtml(t(lang, 'enrolConsent', { name: card.name }))}</span>
     </label>
     <div class="wallet-buttons">
-      <button class="cta apple" type="submit" formaction="/${card.linkCode}/pass">Add to Apple Wallet</button>
-      <button class="cta google" type="submit" formaction="/${card.linkCode}/google-pass">Add to Google Wallet</button>
+      <button class="cta apple" type="submit" formaction="/${card.linkCode}/pass">${escapeHtml(t(lang, 'walletAddApple'))}</button>
+      <button class="cta google" type="submit" formaction="/${card.linkCode}/google-pass">${escapeHtml(t(lang, 'walletAddGoogle'))}</button>
     </div>
   </form>
-  <p class="powered">Powered by LoyaNexa</p>
+  <p class="powered">${escapeHtml(t(lang, 'poweredByLoyaNexa'))}</p>
 </main>
 <script>
   // Platform detection is a hint only — see the block comment above this
@@ -2922,6 +4274,7 @@ async function handleIssuePass(req: http.IncomingMessage, res: http.ServerRespon
       kind: 'ENROLL',
     },
   });
+  await enqueueWelcomeBroadcast(card, pass, created);
 
   res.writeHead(200, {
     'Content-Type': 'application/vnd.apple.pkpass',
@@ -2930,6 +4283,39 @@ async function handleIssuePass(req: http.IncomingMessage, res: http.ServerRespon
     'Cache-Control': 'no-store',
   });
   res.end(pkpass);
+}
+
+/**
+ * The welcome automation (BUILD.md §8.12's "Automated" tab, built end to
+ * end here — unlike birthday/win-back, which the Notifications page shows
+ * clearly marked "not yet scheduled" rather than pretending to work).
+ * Fires once per genuine new enrolment (`created`, from
+ * createPassForEnrolment's EnrolmentResult) — never on a reused Pass, or a
+ * returning customer re-scanning the same QR would get "welcomed" again
+ * every time. Goes through the exact same queue a manual Send uses
+ * (apps/demo/broadcast.ts's enqueueBroadcast(), `kind: 'welcome'`) instead
+ * of pushing inline: enqueueBroadcast() only ever inserts rows, so calling
+ * it from inside this request handler cannot be the "fan out APNs inside
+ * a request handler" mistake BUILD.md §18 item 6 warns about — the actual
+ * push happens later, entirely on broadcastWorker's own schedule.
+ *
+ * Passes `onlySerial: pass.serial` down to enqueueBroadcast() so the
+ * welcome job's recipient snapshot is this one newly-enrolled Pass only —
+ * without it, enqueueBroadcast's default "every Pass this card has right
+ * now" snapshot would welcome-broadcast to every *existing* customer of
+ * the card too, each time anyone new enrols.
+ */
+async function enqueueWelcomeBroadcast(card: Card, pass: Pass, created: boolean): Promise<void> {
+  if (!created) return;
+  const lang: Lang = card.lang === 'en' ? 'en' : 'ar';
+  try {
+    await enqueueBroadcast(card, t(lang, 'notifWelcomeMessage'), 'welcome', { onlySerial: pass.serial });
+  } catch (err) {
+    // The customer's pass has already been created by the time this runs
+    // — never let a welcome-automation hiccup fail (or even flag) a real
+    // enrolment.
+    console.error(`[broadcast] welcome enqueue failed for card ${card.id}:`, err);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2990,9 +4376,20 @@ async function handleIssueGooglePass(
   let saveLink: string;
   try {
     await client.ensureLoyaltyClass({ id: card.id, name: card.name, bgColor: card.bgColor });
+    // accountName/balance are customer-facing text inside the actual saved
+    // Google Wallet card (BUILD.md §13) — localize to the card's own
+    // language here, same as buildPassContentFor() does for Apple Wallet.
+    // packages/pass deliberately has no i18n dependency of its own, so
+    // these come in pre-localized via saveLink()'s opts (see its doc
+    // comment in packages/pass/src/googleWallet.ts).
+    const enrolLang: Lang = card.lang === 'en' ? 'en' : 'ar';
     saveLink = client.saveLink(
       { serial: pass.serial, stamps: pass.stamps, custName: pass.custName || undefined },
-      { id: card.id, stampsGoal: card.stampsGoal }
+      { id: card.id, stampsGoal: card.stampsGoal },
+      {
+        accountNameFallback: t(enrolLang, 'walletAccountNameFallback'),
+        balanceText: `${arabicDigits(pass.stamps, enrolLang)} / ${arabicDigits(card.stampsGoal, enrolLang)}`,
+      }
     );
   } catch (err) {
     if (created) await deleteOrphanedPass(pass.id);
@@ -3007,6 +4404,7 @@ async function handleIssueGooglePass(
       kind: 'ENROLL',
     },
   });
+  await enqueueWelcomeBroadcast(card, pass, created);
 
   res.writeHead(302, { Location: saveLink });
   res.end();
@@ -3039,18 +4437,18 @@ async function handleGetImage(res: http.ServerResponse, hash: string): Promise<v
 // (BUILD.md §8.5 step 1 / §8.9 step 2). multipart/form-data with exactly
 // one file part, named "logo", "icon" or "cover" — that name is what
 // decides which Card column gets updated, there is no separate "kind"
-// field to trust or distrust. A public, unauthenticated endpoint (no auth yet — same caveat
-// as every other merchant route in this slice, see getOrCreateMerchant()'s
-// own comment), so every step below is a hard reject, never a best-effort
-// clamp: the Content-Length precheck rejects an oversized body before
+// field to trust or distrust. Guarded by requireMerchant() at the router
+// and scoped to the calling merchant's own card (findOwnedCard) below, so
+// every step past that is a hard reject, never a best-effort clamp: the
+// Content-Length precheck rejects an oversized body before
 // reading any of it, readMultipart() enforces the same cap while streaming
 // (covering a missing/wrong Content-Length), and normalizeUpload() rejects
 // anything that isn't a decodable image within the documented size/pixel
 // limits. Responds JSON — this is called from the designer's own fetch(),
 // never rendered as a full page.
 // ---------------------------------------------------------------------------
-async function handleUploadCardImage(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
-  const card = await prisma.card.findUnique({ where: { id } });
+async function handleUploadCardImage(req: http.IncomingMessage, res: http.ServerResponse, id: string, merchant: Merchant): Promise<void> {
+  const card = await findOwnedCard(id, merchant.id);
   if (!card) {
     sendJson(res, 404, { ok: false, error: 'card not found' });
     return;
@@ -3112,7 +4510,7 @@ async function handleUploadCardImage(req: http.IncomingMessage, res: http.Server
       : kind === 'icon'
         ? { iconHash: result.hash, iconUrl: imageUrl(result.hash) }
         : { coverHash: result.hash, coverUrl: imageUrl(result.hash) };
-  const updateResult = await updateCard(id, patch);
+  const updateResult = await updateCard(id, merchant.id, patch);
   if (!updateResult.ok) {
     // Only reachable if the card was deleted between the lookup above and
     // here — aesthetic fields can't produce a 'locked' result.
@@ -3256,7 +4654,27 @@ function handleQrPng(res: http.ServerResponse, query: URLSearchParams): void {
 // per BUILD.md §3 (2026-08-03 revision):
 // canvas #0F172A, paper #1C2A42, accent #F28C38, Alexandria typeface.
 // ---------------------------------------------------------------------------
-function renderStampScreen(lang: Lang = 'en'): string {
+/** Who is viewing the stamp screen — mirrors StampAuth above, minus the full Merchant/Staff rows (renderStampScreen only ever needs a name to display). */
+type StampScreenViewer = { kind: 'merchant' } | { kind: 'staff'; staffName: string };
+
+/**
+ * The header a *staff* session sees on the stamp screen — deliberately not
+ * navBar(): every link navBar renders (Cards, Customers, Reports, Settings)
+ * 302s a staff session straight to /signin (requireMerchant() never
+ * recognises the `lnx-staff` cookie), so showing them here would just be a
+ * row of dead ends. Brand plus a sign-out button is everything a staff
+ * session can actually do besides stamp.
+ */
+function staffHeader(lang: Lang): string {
+  return `<header class="top">
+  <a class="brand" href="/stamp">LoyaNexa</a>
+  <form method="POST" action="/stamp/signout" style="margin-inline-start:auto;">
+    <button type="submit" class="btn secondary small">${escapeHtml(t(lang, 'stampScreenStaffSignOut'))}</button>
+  </form>
+</header>`;
+}
+
+function renderStampScreen(lang: Lang = 'en', viewer: StampScreenViewer = { kind: 'merchant' }): string {
   return `<!doctype html>
 <html lang="${lang}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
 <head>
@@ -3337,11 +4755,15 @@ function renderStampScreen(lang: Lang = 'en'): string {
 </style>
 </head>
 <body>
-${navBar('stamp', lang)}
+${viewer.kind === 'staff' ? staffHeader(lang) : navBar('stamp', lang)}
 <main>
   <h1>${escapeHtml(t(lang, 'stampScreenTitle'))}</h1>
   <p class="sub">${escapeHtml(t(lang, 'stampScreenSub'))}</p>
-  <div class="notice">${escapeHtml(t(lang, 'stampScreenNotice'))}</div>
+  <div class="notice">${escapeHtml(
+    viewer.kind === 'staff'
+      ? t(lang, 'stampScreenStaffBadge', { name: viewer.staffName })
+      : t(lang, 'stampScreenNoticeMerchant')
+  )}</div>
 
   <div id="result" role="status" aria-live="polite"></div>
 
@@ -3571,8 +4993,9 @@ ${navBar('stamp', lang)}
 </html>`;
 }
 
-function handleStampScreen(req: http.IncomingMessage, res: http.ServerResponse): void {
-  sendHtml(res, 200, renderStampScreen(resolveLang(req)));
+function handleStampScreen(req: http.IncomingMessage, res: http.ServerResponse, auth: StampAuth): void {
+  const viewer: StampScreenViewer = auth.staff ? { kind: 'staff', staffName: auth.staff.name } : { kind: 'merchant' };
+  sendHtml(res, 200, renderStampScreen(resolveLang(req), viewer));
 }
 
 // ---------------------------------------------------------------------------
@@ -3584,7 +5007,7 @@ function handleStampScreen(req: http.IncomingMessage, res: http.ServerResponse):
 // body — success or error — carries a `message` already translated per the
 // `lang` cookie (BUILD.md §13: server error messages translated too).
 // ---------------------------------------------------------------------------
-async function handleApiStamp(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+async function handleApiStamp(req: http.IncomingMessage, res: http.ServerResponse, merchant: Merchant, staff?: Staff): Promise<void> {
   const lang = resolveLang(req);
 
   let body: unknown;
@@ -3609,7 +5032,7 @@ async function handleApiStamp(req: http.IncomingMessage, res: http.ServerRespons
     return;
   }
 
-  const outcome = await applyStamp(code);
+  const outcome = await applyStamp(code, merchant.id, 'browser', staff?.id);
 
   if (!outcome.ok) {
     if (outcome.reason === 'not_found') {
@@ -3711,9 +5134,10 @@ async function handleGetUpdatedSerials(
   deviceId: string,
   url: URL
 ): Promise<void> {
+  // No auth header is read here on purpose — Apple does not send one to this
+  // endpoint. See the comment on getUpdatedSerials in passkit.ts.
   const result = await getUpdatedSerials({
     deviceId,
-    authHeader: applePassAuthHeader(req),
     passesUpdatedSince: url.searchParams.get('passesUpdatedSince') ?? undefined,
   });
   if (result.status === 200) {
@@ -3884,6 +5308,37 @@ function serveStaticFile(res: http.ServerResponse, pathname: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Broadcast worker (BUILD.md §8.12 / §18 item 6 / §10) — the consumer side
+// of the Postgres-backed queue apps/demo/broadcast.ts's enqueueBroadcast()
+// writes into. `sendOne` is wired to the exact same ApnsClient every other
+// push path in this file uses (getApnsClient() above): one warm HTTP/2
+// session for the whole process, never a client built per push. Started
+// once, at boot (see server.listen's callback below); stopped cleanly —
+// waiting for any cycle already in flight — on shutdown.
+// ---------------------------------------------------------------------------
+async function broadcastSendOne(device: Device): Promise<SendPushOutcome> {
+  const client = getApnsClient();
+  if (!client) return { ok: false, error: 'APNs not configured' }; // getApnsClient() already logged why, once.
+  const passTypeId = process.env.APPLE_PASS_TYPE_ID;
+  if (!passTypeId) return { ok: false, error: '.env is missing APPLE_PASS_TYPE_ID' };
+
+  const result = await client.sendPush(device.pushToken, passTypeId);
+  if (result.ok) return { ok: true };
+  if (result.reason === 'gone') return { ok: false, gone: true };
+  if (isBadEnvironmentKeyError(result.status, result.body)) {
+    // Same actionable shape as pushApnsUpdate's own line — see that
+    // function's comment for the full explanation.
+    return {
+      ok: false,
+      error: `BadEnvironmentKeyInToken — APNs key not provisioned for '${APNS_ENV}' (host=${client.host})`,
+    };
+  }
+  return { ok: false, error: `status=${result.status} auth=${client.authMode} host=${client.host} body=${result.body}` };
+}
+
+const broadcastWorker = new BroadcastWorker({ sendOne: broadcastSendOne });
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 const server = http.createServer(async (req, res) => {
@@ -3902,18 +5357,54 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && serveStaticFile(res, pathname)) {
       return;
     }
+    // Sign-up / sign-in / sign-out — public (a session is what every route
+    // below this point exists to require).
+    if (req.method === 'GET' && pathname === '/signin') {
+      handleSignInForm(req, res, url);
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/signin') {
+      await handleSignIn(req, res);
+      return;
+    }
+    if (req.method === 'GET' && pathname === '/signup') {
+      handleSignUpForm(req, res, url);
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/signup') {
+      await handleSignUp(req, res);
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/signout') {
+      await handleSignOut(req, res);
+      return;
+    }
+
+    // Everything from here down through /api/stamp is a merchant-facing
+    // route: requireMerchant() 302s to /signin when there is no valid
+    // session, and every handler below is scoped to the merchant it
+    // resolves — never a bare client-supplied id (BUILD.md job brief).
     if (req.method === 'GET' && pathname === '/app') {
-      await handleCardsList(req, res);
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleCardsList(req, res, merchant);
       return;
     }
     if (req.method === 'GET' && pathname === '/cards/new') {
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
       await handleNewCardForm(req, res);
       return;
     }
     if (req.method === 'POST' && pathname === '/cards') {
-      await handleCreateCard(req, res);
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleCreateCard(req, res, merchant);
       return;
     }
+    // /preview.png, /qr.png, /icon-swatch.png stay fully public — the
+    // customer enrol page and print sheet embed them with no session
+    // (BUILD.md job brief's "what stays public" list).
     if (req.method === 'GET' && pathname === '/preview.png') {
       await handlePreviewPng(res, url.searchParams);
       return;
@@ -3930,15 +5421,75 @@ const server = http.createServer(async (req, res) => {
     // (BUILD.md §8.14) — literal single-segment paths, registered here
     // above the /:code catch-all for the same reason /app and /stamp are.
     if (req.method === 'GET' && pathname === '/customers/export.csv') {
-      await handleCustomersExport(req, res, url);
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleCustomersExport(req, res, url, merchant);
       return;
     }
     if (req.method === 'GET' && pathname === '/customers') {
-      await handleCustomersList(req, res, url);
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleCustomersList(req, res, url, merchant);
       return;
     }
     if (req.method === 'GET' && pathname === '/reports') {
-      await handleReports(req, res, url);
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleReports(req, res, url, merchant);
+      return;
+    }
+    // GET /settings and its staff-PIN management actions (BUILD.md §8.13) —
+    // literal/regex paths registered here for the same reason /customers and
+    // /reports are: above the `GET /:code` catch-all, and never colliding
+    // with the /cards/... group below regardless.
+    if (req.method === 'GET' && pathname === '/settings') {
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleSettingsPage(req, res, merchant);
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/staff') {
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleCreateStaff(req, res, merchant);
+      return;
+    }
+    const staffActionMatch = pathname.match(/^\/staff\/([^/]+)\/(activate|deactivate|delete)$/);
+    if (req.method === 'POST' && staffActionMatch) {
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleStaffAction(req, res, staffActionMatch[1]!, staffActionMatch[2] as 'activate' | 'deactivate' | 'delete', merchant);
+      return;
+    }
+    // GET /notifications and its two AJAX endpoints (BUILD.md §8.12) —
+    // literal/regex paths registered here for the same reason /settings
+    // and /staff are: above the `GET /:code` catch-all, owner session only
+    // (requireMerchant() — see this section's own doc comment above
+    // handleNotificationsPage for why a staff session can never reach any
+    // of these).
+    if (req.method === 'GET' && pathname === '/notifications') {
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleNotificationsPage(req, res, url, merchant);
+      return;
+    }
+    if (req.method === 'GET' && pathname === '/notifications/recipient-count') {
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleRecipientCount(req, res, url, merchant);
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/notifications/send') {
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleSendBroadcast(req, res, merchant);
+      return;
+    }
+    const broadcastJobMatch = pathname.match(/^\/notifications\/jobs\/([^/]+)$/);
+    if (req.method === 'GET' && broadcastJobMatch) {
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleBroadcastJobStatus(req, res, broadcastJobMatch[1]!, merchant);
       return;
     }
     // /cards/:id/print, /cards/:id/activate, /cards/:id/edit — two-segment
@@ -3948,36 +5499,51 @@ const server = http.createServer(async (req, res) => {
     // are above the `GET /:code` catch-all at the bottom of this router.
     const cardPrintMatch = pathname.match(/^\/cards\/([^/]+)\/print$/);
     if (req.method === 'GET' && cardPrintMatch) {
-      await handleCardPrint(req, res, cardPrintMatch[1]!);
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleCardPrint(req, res, cardPrintMatch[1]!, merchant);
       return;
     }
     const cardActivateMatch = pathname.match(/^\/cards\/([^/]+)\/activate$/);
     if (cardActivateMatch) {
       if (req.method === 'GET') {
-        await handleActivateConfirm(req, res, cardActivateMatch[1]!);
+        const merchant = await requireMerchant(req, res);
+        if (!merchant) return;
+        await handleActivateConfirm(req, res, cardActivateMatch[1]!, merchant);
         return;
       }
       if (req.method === 'POST') {
-        await handleActivateCard(req, res, cardActivateMatch[1]!);
+        const merchant = await requireMerchant(req, res);
+        if (!merchant) return;
+        await handleActivateCard(req, res, cardActivateMatch[1]!, merchant);
         return;
       }
     }
     const cardEditMatch = pathname.match(/^\/cards\/([^/]+)\/edit$/);
     if (cardEditMatch) {
       if (req.method === 'GET') {
-        await handleEditCardForm(req, res, cardEditMatch[1]!);
+        const merchant = await requireMerchant(req, res);
+        if (!merchant) return;
+        await handleEditCardForm(req, res, cardEditMatch[1]!, merchant);
         return;
       }
       if (req.method === 'POST') {
-        await handleUpdateCard(req, res, cardEditMatch[1]!);
+        const merchant = await requireMerchant(req, res);
+        if (!merchant) return;
+        await handleUpdateCard(req, res, cardEditMatch[1]!, merchant);
         return;
       }
     }
     const cardImageMatch = pathname.match(/^\/cards\/([^/]+)\/image$/);
     if (req.method === 'POST' && cardImageMatch) {
-      await handleUploadCardImage(req, res, cardImageMatch[1]!);
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleUploadCardImage(req, res, cardImageMatch[1]!, merchant);
       return;
     }
+    // GET /img/:hash stays fully public — content-addressed by a sha256
+    // hash, served to the customer enrol page and the print sheet with no
+    // session (BUILD.md job brief's "what stays public" list).
     const imgMatch = pathname.match(/^\/img\/([0-9a-f]{64})$/);
     if (req.method === 'GET' && imgMatch) {
       await handleGetImage(res, imgMatch[1]!);
@@ -3986,18 +5552,44 @@ const server = http.createServer(async (req, res) => {
     const cardMatch = pathname.match(/^\/cards\/([^/]+)$/);
     const cardId = cardMatch?.[1];
     if (req.method === 'GET' && cardId !== undefined) {
-      await handleCardDetail(req, res, cardId);
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleCardDetail(req, res, cardId, merchant);
       return;
     }
     // /stamp and /api/stamp are literal paths and must be registered here —
     // above the `GET /:code` catch-all below — or the catch-all would
-    // swallow them (BUILD.md §12 / §18 item 10).
+    // swallow them (BUILD.md §12 / §18 item 10). The stamp screen is a
+    // special case (BUILD.md §8.13): staff need it without being the owner,
+    // so these two use resolveStampAuth() — merchant session OR staff
+    // session — never requireMerchant(), which would 302 a staff-only
+    // browser to /signin (a page it has no credentials for and must never
+    // reach). GET /stamp with neither shows the staff PIN entry screen
+    // instead of redirecting.
     if (req.method === 'GET' && pathname === '/stamp') {
-      handleStampScreen(req, res);
+      const auth = await resolveStampAuth(req);
+      if (!auth) {
+        handleStaffPinForm(req, res);
+        return;
+      }
+      handleStampScreen(req, res, auth);
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/stamp/pin') {
+      await handleStaffPinLogin(req, res);
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/stamp/signout') {
+      await handleStaffSignOut(req, res);
       return;
     }
     if (req.method === 'POST' && pathname === '/api/stamp') {
-      await handleApiStamp(req, res);
+      const auth = await resolveStampAuth(req);
+      if (!auth) {
+        sendJson(res, 401, { ok: false, message: t(resolveLang(req), 'staffPinRequired') });
+        return;
+      }
+      await handleApiStamp(req, res, auth.merchant, auth.staff);
       return;
     }
 
@@ -4086,9 +5678,26 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`  Local: http://localhost:${PORT}`);
   console.log(`  LAN:   ${LAN_URL}   (open this on an iPhone on the same network)`);
   if (PUBLIC_BASE_URL) console.log(`  Public: ${PUBLIC_BASE_URL}   (used for enrol links and QR codes)`);
+  // DISABLE_BROADCAST_WORKER=1 is test-only: every apps/demo/test/*.test.ts
+  // file that spawns this server as a real child process sets it, so that
+  // process never runs a live BroadcastWorker against the shared local
+  // test Postgres. Without this, a broadcast job/recipient row created by
+  // one test file's fixture could be claimed by a *different* spawned
+  // server's background worker (claimBatch() is deliberately global, not
+  // scoped to one job — see broadcastWorker.ts's own file comment) and
+  // pushed through the real ApnsClient this server wires up below —
+  // exactly the "contact Apple from a test" outcome the job's own
+  // constraints forbid. apps/demo/test/broadcastWorker.test.ts is the only
+  // place a BroadcastWorker ever actually runs under test, and it always
+  // constructs its own instance directly with an injected stub `sendOne`,
+  // never through this server process.
+  if (process.env.DISABLE_BROADCAST_WORKER !== '1') broadcastWorker.start();
 });
 
-process.on('SIGINT', async () => {
+async function shutdown(): Promise<void> {
+  await broadcastWorker.stop();
   await prisma.$disconnect();
   process.exit(0);
-});
+}
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown); // Fly.io/most container platforms send this on deploy/stop, not just Ctrl-C
