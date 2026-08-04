@@ -406,9 +406,11 @@ Automated types: **welcome · birthday · win-back**.
 > the two values but nothing ever creates a job with them.
 >
 > The one part of this easy to get subtly wrong (§18 item 5, §9.3): a Wallet
-> push carries no content, so the banner comes from `Pass`'s new
-> `auxiliaryFields` "msg"/"NEWS" entry (`apps/demo/passContent.ts`) —
-> `changeMessage` on a field whose *value* changed. Re-sending identical text
+> push carries no content, so the banner comes from `Pass`'s "msg"/"NEWS"
+> field (`apps/demo/passContent.ts` — `storeCard.backFields`'s first entry as
+> of the §9.1 2026-08-04 revision, `auxiliaryFields` before it) —
+> `changeMessage` on a field whose *value* changed, which fires identically
+> whether the field is a front row or a back one. Re-sending identical text
 > would normally show nothing; `apps/demo/broadcast.ts`'s `enqueueBroadcast()`
 > appends one `invisibleChangeMarker()` call **once per job, at enqueue time**
 > (not per push, not per retry) so a repeated identical broadcast still banks
@@ -504,8 +506,9 @@ Show **stamps remaining**, not stamps collected — a countdown reads as closer 
     "headerFields":[{"key":"stamps","label":"STAMPS","value":"3"}],
     "primaryFields":[],
     "secondaryFields":[{"key":"reward","label":"REWARD :","value":"Free coffee"}],
-    "auxiliaryFields":[{"key":"msg","label":"NEWS","value":"…","changeMessage":"%@"}],
-    "backFields":[ terms, website, extraText, customerName ] },
+    "backFields":[
+      {"key":"msg","label":"NEWS","value":"…","changeMessage":"%@"},
+      terms, website, extraText, customerName ] },
   "barcodes":[{"format":"PKBarcodeFormatQR","message":"<serial>",
                "messageEncoding":"iso-8859-1","altText":"scan here"}],
   "locations":[{"latitude":…,"longitude":…,"relevantText":"You're near <shop>!"}],
@@ -513,6 +516,41 @@ Show **stamps remaining**, not stamps collected — a countdown reads as closer 
   "webServiceURL":"https://api.loyanexa.com/apple",
   "authenticationToken":"<per-pass token>" }
 ```
+
+> **Revised, 2026-08-04.** The `"msg"`/`"NEWS"` broadcast field moved from
+> `storeCard.auxiliaryFields` (shown in an earlier revision of this shape) into
+> `storeCard.backFields`, as its first entry, ahead of the terms text. Apple
+> renders `auxiliaryFields` as a third row on the card **face**, directly under
+> reward/stamps-remaining — the owner looked at his own pass in Apple Wallet
+> and pointed out that a broadcast message living there permanently is
+> clutter, not a notification, the moment it stops being new: "the
+> notification should show as notifications outside, not be stuck in the card
+> itself." `backFields` is not rendered on the face at all — the customer sees
+> it only after tapping in. This is safe specifically because `changeMessage`
+> (§9.3/§18 item 5 — what actually puts text on the lock screen; the push
+> itself carries none) fires on a **back** field's value change exactly the
+> same as a front one. Moving the field changes nothing about whether the
+> banner appears, only where the text lives afterward. See
+> `apps/demo/passContent.ts`'s own dated doc comment for the implementation,
+> and this section's own `secondaryFields`/`headerFields` split above, which
+> is unchanged: `primaryFields` stays empty (§9.1's own reasoning: the strip
+> renders behind it), `headerFields` carries stamps collected, `secondaryFields`
+> carries reward and stamps remaining — the face now carries exactly those two
+> rows and nothing else.
+>
+> A code-only shape change like this touches no `Card`/`Pass` row on its own,
+> so it does not by itself invalidate the `.pkpass` cache
+> (`apps/demo/pkpassCache.ts`'s key, or wake any device to re-poll (§9.3). The
+> existing card-edit mechanism (`apps/demo/cardPush.ts`'s `pushCardDevices`,
+> added alongside the cache-key fix, §9.3's 2026-08-03 note) is reused via a
+> one-shot script, `scripts/repush-cards.ts`, run once after this ships: it
+> bumps every `Card.updatedAt` (invalidating every affected pass's cache
+> entry, the same way a design edit does) and wakes every registered device to
+> re-poll immediately, so existing pass holders see the cleaned-up face
+> without waiting for their next stamp or edit. No `changeMessage` fires for
+> this alone — the message field's *value* did not change, only where it
+> lives in the pass — so no lock-screen banner appears for the layout change
+> itself, which is correct: nothing new happened worth a banner.
 
 ### 9.2 The stamp circles are an IMAGE, not text
 They live in the pass **strip** (`strip.png`, `@2x`, `@3x`), generated server-side and
