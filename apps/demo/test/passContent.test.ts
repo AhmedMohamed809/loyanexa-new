@@ -98,29 +98,50 @@ test('secondaryFields carries the reward and stamps-remaining, in that order, in
   assert.ok(content.secondaryFields?.[1]?.value.startsWith('5 stamps'), 'stampsRemaining should read 8 - 3 = 5');
 });
 
-test('auxiliaryFields carries the "msg" field, sourced verbatim from pass.message, with changeMessage set for the broadcast banner (BUILD.md §9.1/§8.12)', () => {
-  const withMessage = buildPassContentFor(makeCard({ lang: 'en' }), makePass({ message: 'Half price today!​‌' }));
-  assert.equal(withMessage.auxiliaryFields?.length, 1);
-  assert.equal(withMessage.auxiliaryFields?.[0]?.key, 'msg');
-  assert.equal(withMessage.auxiliaryFields?.[0]?.label, 'NEWS');
-  assert.equal(withMessage.auxiliaryFields?.[0]?.value, 'Half price today!​‌', 'must be pass.message verbatim — the marker was already baked in by whoever wrote it, never re-added here');
-  assert.equal(withMessage.auxiliaryFields?.[0]?.changeMessage, '%@');
+// ---------------------------------------------------------------------------
+// Revised 2026-08-04 (sub-project 8, "clean the card face"): the merchant
+// broadcast message moved from `auxiliaryFields` (a face row, permanent
+// clutter once the message stops being new) to `backFields` — first entry,
+// ahead of the terms text. `changeMessage` fires on a back field's value
+// change exactly the same as a front one, so the lock-screen banner is
+// unaffected; see docs/BUILD.md §9.1's dated note and
+// apps/demo/passContent.ts's own doc comment.
+// ---------------------------------------------------------------------------
+
+test('the pass no longer has any auxiliaryFields — the card face carries only headerFields/secondaryFields', () => {
+  const content = buildPassContentFor(makeCard({ lang: 'en' }), makePass({ message: 'Half price today!' }));
+  assert.equal(content.auxiliaryFields, undefined);
 });
 
-test('auxiliaryFields\' "msg" field is present even before any broadcast has ever been sent (pass.message === "") — the field must already exist for its first real value to diff against', () => {
+test('backFields\' first entry is the "msg" field, sourced verbatim from pass.message, with changeMessage set for the broadcast banner (BUILD.md §9.1/§8.12/§9.3)', () => {
+  const withMessage = buildPassContentFor(makeCard({ lang: 'en' }), makePass({ message: 'Half price today!​‌' }));
+  assert.equal(withMessage.backFields?.[0]?.key, 'msg');
+  assert.equal(withMessage.backFields?.[0]?.label, 'NEWS');
+  assert.equal(withMessage.backFields?.[0]?.value, 'Half price today!​‌', 'must be pass.message verbatim — the marker was already baked in by whoever wrote it, never re-added here');
+  assert.equal(withMessage.backFields?.[0]?.changeMessage, '%@');
+});
+
+test('backFields\' "msg" field is present even before any broadcast has ever been sent (pass.message === "") — the field must already exist for its first real value to diff against', () => {
   const content = buildPassContentFor(makeCard({ lang: 'en' }), makePass({ message: '' }));
-  assert.equal(content.auxiliaryFields?.length, 1);
-  assert.equal(content.auxiliaryFields?.[0]?.value, '');
+  assert.equal(content.backFields?.[0]?.key, 'msg');
+  assert.equal(content.backFields?.[0]?.value, '');
 });
 
 test('the "msg" field label is localised (NEWS in English, translated in Arabic)', () => {
   const en = buildPassContentFor(makeCard({ lang: 'en' }), makePass({ message: 'Sale!' }));
   const ar = buildPassContentFor(makeCard({ lang: 'ar' }), makePass({ message: 'Sale!' }));
-  assert.equal(en.auxiliaryFields?.[0]?.label, 'NEWS');
-  assert.notEqual(ar.auxiliaryFields?.[0]?.label, 'NEWS');
-  assert.ok((ar.auxiliaryFields?.[0]?.label.length ?? 0) > 0);
+  assert.equal(en.backFields?.[0]?.label, 'NEWS');
+  assert.notEqual(ar.backFields?.[0]?.label, 'NEWS');
+  assert.ok((ar.backFields?.[0]?.label.length ?? 0) > 0);
   // Merchant-authored broadcast text is never translated (docs/COPY.md §4) — only the field's own label is localised.
-  assert.equal(ar.auxiliaryFields?.[0]?.value, 'Sale!');
+  assert.equal(ar.backFields?.[0]?.value, 'Sale!');
+});
+
+test('backFields carries the message before the terms text, in that order', () => {
+  const content = buildPassContentFor(makeCard({ lang: 'en' }), makePass({ message: 'Sale!' }));
+  assert.equal(content.backFields?.length, 2);
+  assert.equal(content.backFields?.[0]?.key, 'msg');
+  assert.equal(content.backFields?.[1]?.key, 'terms');
 });
 
 test('the invisible change marker is still appended to stampsRemaining, and changeMessage is set for the live-update banner', () => {
@@ -160,7 +181,8 @@ test('headerFields, secondaryFields and backFields labels are Arabic on an Arabi
   assert.equal(content.secondaryFields?.[0]?.label, 'المكافأة');
   assert.equal(content.secondaryFields?.[1]?.label, 'الأختام المتبقية');
   assert.ok(content.secondaryFields?.[1]?.value.startsWith('٥ أختام'), 'stampsRemaining should read 8 - 3 = 5, in Arabic-Indic digits');
-  assert.equal(content.backFields?.[0]?.label, 'الشروط');
+  assert.equal(content.backFields?.[0]?.label, 'أخبار', 'the message field is now backFields[0]');
+  assert.equal(content.backFields?.[1]?.label, 'الشروط', 'terms come after the message in backFields');
 });
 
 test('merchant-authored rewardText is never translated, in either language (BUILD.md §13)', () => {

@@ -79,14 +79,19 @@ export interface PassContent {
   primaryFields?: PkPassField[];
   secondaryFields?: PkPassField[];
   /**
-   * The merchant-broadcast "news" field (BUILD.md §9.1's `"msg"`/`"NEWS"`
-   * sample, §8.12) — a single field whose `value` is set from `Pass.message`
-   * and whose `changeMessage` is what puts a merchant's broadcast text on
-   * the lock screen (the push itself carries none, per §9.3). Always
-   * present in this app's own pass.json (see apps/demo/passContent.ts),
-   * even before any broadcast has ever been sent — the field must already
-   * exist in the pass a device first downloads, or its first real value
-   * has no "old value" to diff against and may not show a banner at all.
+   * A storeCard pass's third face row, directly under `secondaryFields` —
+   * generic and unused by this app's own pass.json as of the 2026-08-04
+   * revision below (kept here only because Apple's storeCard schema
+   * supports it and a future caller may legitimately want a face row).
+   *
+   * **Revised, 2026-08-04.** This used to be where the merchant-broadcast
+   * "news" field (BUILD.md §9.1's `"msg"`/`"NEWS"` sample, §8.12) lived —
+   * see apps/demo/passContent.ts's own dated doc comment for why it moved
+   * to `backFields` instead: a face row is permanent clutter once the
+   * message stops being new, and `changeMessage` (the thing that actually
+   * puts text on the lock screen, per §9.3) fires on a back field's value
+   * change exactly the same as a front one, so the banner is unaffected.
+   * Do not "restore" a broadcast field here without re-reading that note.
    */
   auxiliaryFields?: PkPassField[];
   backFields?: PkPassField[];

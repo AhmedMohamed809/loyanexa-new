@@ -55,6 +55,18 @@ export function buildTermsText(card: Card): string {
  * ours to change), so putting the reward text in primaryFields sits it on
  * top of the stamp-strip artwork instead of beside it. Do not move fields
  * between these three arrays without re-reading BUILD.md §9.1 first.
+ *
+ * **Revised, 2026-08-04.** The merchant-broadcast "msg" field used to sit in
+ * `auxiliaryFields`, which Apple renders as a third row on the card *face*,
+ * right under reward/stamps-remaining — permanent clutter once the message
+ * stopped being new. It now lives in `backFields` instead (first entry,
+ * ahead of the terms text — BUILD.md §9.1's own dated note has the reasoning
+ * and the owner's original complaint). This is safe for the lock-screen
+ * banner specifically because `changeMessage` fires on a **back** field's
+ * value change exactly the same as a front one (BUILD.md §9.3/§18 item 5) —
+ * moving the field does not touch what makes the banner appear, only where
+ * the text lives once the customer taps in to read it. Do not put this back
+ * in `auxiliaryFields`/`secondaryFields` without re-reading that note first.
  */
 export function buildPassContentFor(
   card: Card,
@@ -111,22 +123,29 @@ export function buildPassContentFor(
         changeMessage: '%@',
       },
     ],
-    // The merchant-broadcast field (BUILD.md §9.1's "msg"/"NEWS" sample,
-    // §8.12) — always present, even before any broadcast has ever been
-    // sent (pass.message defaults to ""), so the field already exists in
-    // the very first pass.json a device downloads; see PassContent's own
-    // auxiliaryFields doc comment in buildPass.ts for why a field's first
-    // real value needs an "old value" already on the device to diff
-    // against. `value` is pass.message verbatim, never re-marked here —
-    // apps/demo/broadcastWorker.ts computes and stores the invisible
-    // change marker exactly once per broadcast job, at the point it writes
-    // Pass.message, so every subsequent pass.json rebuild (a stamp landing,
-    // a card edit) reads the same already-marked text and causes no
-    // spurious repeat of the news banner.
-    auxiliaryFields: [
+    // backFields, in order (BUILD.md §9.1's dated note): the merchant
+    // broadcast message first, then the auto-generated terms (§8.6). The
+    // message field (BUILD.md §9.1's "msg"/"NEWS" sample, §8.12) is always
+    // present, even before any broadcast has ever been sent (pass.message
+    // defaults to ""), so the field already exists in the very first
+    // pass.json a device downloads; see PassContent's own auxiliaryFields
+    // doc comment in buildPass.ts for why a field's first real value needs
+    // an "old value" already on the device to diff against — that reasoning
+    // holds identically for a back field. `value` is pass.message verbatim,
+    // never re-marked here — apps/demo/broadcastWorker.ts computes and
+    // stores the invisible change marker exactly once per broadcast job, at
+    // the point it writes Pass.message, so every subsequent pass.json
+    // rebuild (a stamp landing, a card edit) reads the same already-marked
+    // text and causes no spurious repeat of the news banner. It was moved
+    // here from `auxiliaryFields` (which Apple renders on the card *face*)
+    // specifically so a stale broadcast stops being permanent clutter once
+    // it stops being new — `changeMessage` still fires from a back field
+    // exactly as it did from a front one, so the lock-screen banner is
+    // unaffected; only where the text lives once read is different.
+    backFields: [
       { key: 'msg', label: t(lang, 'passMessageFieldLabel'), value: pass.message, changeMessage: '%@' },
+      { key: 'terms', label: t(lang, 'passTermsFieldLabel'), value: buildTermsText(card) },
     ],
-    backFields: [{ key: 'terms', label: t(lang, 'passTermsFieldLabel'), value: buildTermsText(card) }],
     barcodeMessage: pass.serial,
     ...(locations.length > 0 ? { locations, maxDistance: DEFAULT_MAX_DISTANCE_METERS } : {}),
     ...(options.publicBaseUrl
