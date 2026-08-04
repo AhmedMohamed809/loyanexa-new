@@ -833,6 +833,7 @@ function navBar(active: NavKey | undefined, lang: Lang = 'en'): string {
     { key: 'notifications', href: '/notifications', label: t(lang, 'navNotifications') },
     { key: 'settings', href: '/settings', label: t(lang, 'navSettings') },
   ];
+  const otherLang: Lang = lang === 'ar' ? 'en' : 'ar';
   return `<header class="top">
   <a class="brand" href="/app">LoyaNexa</a>
   <nav class="nav">
@@ -842,11 +843,87 @@ function navBar(active: NavKey | undefined, lang: Lang = 'en'): string {
           `<a href="${i.href}"${i.key === active ? ' class="active" aria-current="page"' : ''}>${escapeHtml(i.label)}</a>`
       )
       .join('\n    ')}
+    <a class="lang-toggle" href="/lang/${otherLang}" lang="${otherLang}">${escapeHtml(t(lang, 'navSwitchLang'))}</a>
   </nav>
   <form method="POST" action="/signout" style="margin:0;">
     <button type="submit" class="btn secondary small">${escapeHtml(t(lang, 'navSignOut'))}</button>
   </form>
 </header>`;
+}
+
+/**
+ * The five tab-bar icons, as inline SVG paths.
+ *
+ * Inline and not an icon font or sprite sheet: the tab bar is on every
+ * merchant page, and BUILD.md's "no framework, no bundler" rule applies to
+ * the dashboard too. `stroke="currentColor"` is what lets one path serve
+ * both the muted and the active-accent state without a second asset.
+ * `vector-effect` is deliberately omitted — these render at a single size.
+ */
+const TAB_ICONS: Record<TabKey, string> = {
+  cards: '<rect x="2.5" y="5.5" width="19" height="13" rx="2.5"/><path d="M2.5 10h19"/>',
+  customers: '<circle cx="9" cy="8.5" r="3.2"/><path d="M3.2 19.2a6 6 0 0 1 11.6 0"/><path d="M16.5 6.2a3 3 0 0 1 0 5.6"/><path d="M17.6 14.4a5.6 5.6 0 0 1 3.2 4.8"/>',
+  stamp: '<circle cx="12" cy="12" r="8.2"/><path d="M8.6 12.2l2.3 2.3 4.5-4.6"/>',
+  notifications: '<path d="M12 3.5a5.6 5.6 0 0 0-5.6 5.6c0 4-1.5 5.4-1.5 5.4h14.2s-1.5-1.4-1.5-5.4A5.6 5.6 0 0 0 12 3.5Z"/><path d="M10.3 18a1.9 1.9 0 0 0 3.4 0"/>',
+  more: '<circle cx="5.5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="18.5" cy="12" r="1.3"/>',
+};
+
+type TabKey = 'cards' | 'customers' | 'stamp' | 'notifications' | 'more';
+
+/**
+ * The mobile bottom tab bar (owner's ask, 2026-08-04: *"when I open the
+ * website on the mobile phone I need to see the nav bar at the bottom, and
+ * it should look like a mobile application"*).
+ *
+ * Five tabs, not the top nav's six. Native tab bars cap at five because
+ * below ~64px a target stops being reliably tappable — Reports and Settings
+ * move into "More", which is a pure-CSS `<details>` sheet needing no
+ * JavaScript. Reports is the one judgement call here: it is genuinely useful
+ * but not a per-shift action, whereas Stamp is used dozens of times a day
+ * and keeps its own tab.
+ *
+ * `active` reuses NavKey so a page never has to know about both navs; the
+ * two Reports/Settings keys simply light up the More tab instead.
+ *
+ * The bar is hidden entirely above 720px, where the top nav takes over — so
+ * desktop is untouched and only one of the two is ever visible.
+ */
+function tabBar(active: NavKey | undefined, lang: Lang = 'en'): string {
+  const tabs: Array<{ key: TabKey; href: string; label: string }> = [
+    { key: 'cards', href: '/app', label: t(lang, 'navCards') },
+    { key: 'customers', href: '/customers', label: t(lang, 'navCustomers') },
+    { key: 'stamp', href: '/stamp', label: t(lang, 'navStamp') },
+    { key: 'notifications', href: '/notifications', label: t(lang, 'navNotifications') },
+  ];
+  // Reports and Settings have no tab of their own, so they light up "More".
+  const activeTab: TabKey | undefined =
+    active === 'reports' || active === 'settings' ? 'more' : active;
+
+  const icon = (key: TabKey): string =>
+    `<svg class="tabicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${TAB_ICONS[key]}</svg>`;
+
+  const links = tabs
+    .map(
+      (tab) =>
+        `<a href="${tab.href}" class="tab${tab.key === activeTab ? ' active' : ''}"${
+          tab.key === activeTab ? ' aria-current="page"' : ''
+        }>${icon(tab.key)}<span>${escapeHtml(tab.label)}</span></a>`
+    )
+    .join('\n    ');
+
+  const otherLang: Lang = lang === 'ar' ? 'en' : 'ar';
+  return `<nav class="tabbar" aria-label="${escapeHtml(t(lang, 'navPrimary'))}">
+    ${links}
+    <details class="tab-more">
+      <summary class="tab${activeTab === 'more' ? ' active' : ''}">${icon('more')}<span>${escapeHtml(t(lang, 'navMore'))}</span></summary>
+      <div class="more-sheet">
+        <a href="/reports">${escapeHtml(t(lang, 'navReports'))}</a>
+        <a href="/settings">${escapeHtml(t(lang, 'navSettings'))}</a>
+        <a href="/lang/${otherLang}">${escapeHtml(t(lang, 'navSwitchLang'))}</a>
+        <form method="POST" action="/signout"><button type="submit">${escapeHtml(t(lang, 'navSignOut'))}</button></form>
+      </div>
+    </details>
+  </nav>`;
 }
 
 function layout(title: string, bodyHtml: string, active?: NavKey, lang: Lang = 'en'): string {
@@ -903,6 +980,122 @@ function layout(title: string, bodyHtml: string, active?: NavKey, lang: Lang = '
   }
   header.top nav.nav a:hover { color: var(--ink); background: var(--raise); }
   header.top nav.nav a.active { color: var(--on-accent); background: var(--accent); }
+
+  header.top nav.nav a.lang-toggle {
+    border: 1px solid var(--line);
+    margin-inline-start: 8px;
+    color: var(--ink-3);
+  }
+  header.top nav.nav a.lang-toggle:hover { color: var(--ink); border-color: var(--accent); }
+
+  /* -------------------------------------------------------------------
+     Mobile bottom tab bar (owner's ask, 2026-08-04). Hidden by default and
+     shown only under 720px, where the top nav's links are hidden in turn —
+     exactly one of the two is ever visible, so nothing is duplicated for a
+     screen reader or a keyboard user.
+     ------------------------------------------------------------------- */
+  .tabbar { display: none; }
+
+  @media (max-width: 720px) {
+    /* The top bar keeps the brand and becomes a slim title bar; its links
+       move to the bottom. Sign out goes with them (it lives in More), or a
+       destructive action sits under the thumb on every page. */
+    header.top { padding: 12px 16px; gap: 12px; }
+    header.top nav.nav,
+    header.top form { display: none; }
+
+    .tabbar {
+      display: flex;
+      position: fixed;
+      inset-inline: 0;
+      bottom: 0;
+      z-index: 50;
+      background: color-mix(in srgb, var(--sunk) 92%, transparent);
+      backdrop-filter: saturate(160%) blur(12px);
+      -webkit-backdrop-filter: saturate(160%) blur(12px);
+      border-top: 1px solid var(--line);
+      /* The home-indicator inset. Without it the last row of labels sits
+         under the gesture bar on every modern iPhone. */
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+    }
+    .tabbar .tab {
+      flex: 1 1 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 4px;
+      padding: 9px 2px 7px;
+      color: var(--ink-3);
+      text-decoration: none;
+      font-size: 10.5px;
+      font-weight: 600;
+      line-height: 1.1;
+      text-align: center;
+      /* 48px keeps every tab at the accessible minimum target even at five
+         across a 320px phone. */
+      min-height: 48px;
+      background: none;
+      border: 0;
+      cursor: pointer;
+      /* Kills the grey flash iOS paints over a tapped link. */
+      -webkit-tap-highlight-color: transparent;
+    }
+    .tabbar .tab span {
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .tabbar .tabicon { width: 23px; height: 23px; flex: none; }
+    .tabbar .tab.active { color: var(--accent); }
+    /* Pressed state only — no :hover, which sticks after a tap on touch. */
+    .tabbar .tab:active { background: var(--raise); }
+
+    /* "More" is a <details> sheet: no JavaScript, and it closes on Escape
+       and on a second tap for free. */
+    .tab-more { flex: 1 1 0; display: flex; position: relative; }
+    .tab-more > summary { list-style: none; width: 100%; }
+    .tab-more > summary::-webkit-details-marker { display: none; }
+    .more-sheet {
+      position: absolute;
+      bottom: calc(100% + 8px);
+      inset-inline-end: 6px;
+      min-width: 190px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 6px;
+      box-shadow: 0 18px 40px rgba(0,0,0,.45);
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .more-sheet a,
+    .more-sheet button {
+      display: block;
+      width: 100%;
+      text-align: start;
+      padding: 12px 14px;
+      border-radius: 10px;
+      color: var(--ink-2);
+      text-decoration: none;
+      font: inherit;
+      font-size: 14px;
+      font-weight: 600;
+      background: none;
+      border: 0;
+      cursor: pointer;
+    }
+    .more-sheet a:active,
+    .more-sheet button:active { background: var(--raise); color: var(--ink); }
+    .more-sheet form { margin: 0; }
+
+    /* Clears the fixed bar so the last element on a page is never trapped
+       underneath it. */
+    main { padding-bottom: calc(76px + env(safe-area-inset-bottom, 0px)); }
+  }
+
   main {
     max-width: 1000px;
     margin: 0 auto;
@@ -1173,6 +1366,7 @@ ${navBar(active, lang)}
 <main>
 ${bodyHtml}
 </main>
+${tabBar(active, lang)}
 </body>
 </html>`;
 }
@@ -1483,6 +1677,174 @@ async function handleSignOut(req: http.IncomingMessage, res: http.ServerResponse
   if (sessionId) await deleteSession(sessionId);
   clearSessionCookie(res);
   res.writeHead(303, { Location: '/signin' });
+  res.end();
+}
+
+/**
+ * `GET /cards/:id/delete` — the confirmation page (owner's ask, 2026-08-04:
+ * *"the customers can delete the cards as well, and he can add a new card
+ * like usual"*).
+ *
+ * A separate page rather than a `confirm()` dialog: the stamp screen is used
+ * on shared counter phones, the dashboard must work without JavaScript
+ * (BUILD.md's no-framework rule), and this is the only irreversible action
+ * in the product. It states the real cost — **every customer's card stops
+ * working** — before offering the button, and requires the card's name to be
+ * typed, which is what stops a mis-tap on a phone from destroying a live
+ * card.
+ */
+async function handleCardDeleteConfirm(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  merchant: Merchant,
+  cardId: string,
+  error?: string
+): Promise<void> {
+  const lang = resolveLang(req);
+  // Scoped to the owner, and 404 (never 403) for anyone else's id — the same
+  // rule every other merchant route follows, so no id is even confirmable.
+  const card = await prisma.card.findFirst({ where: { id: cardId, merchantId: merchant.id } });
+  if (!card) {
+    sendHtml(res, 404, layout(t(lang, 'cardNotFound'), `<div class="panel empty"><h1>${escapeHtml(t(lang, 'cardNotFound'))}</h1></div>`, 'cards', lang));
+    return;
+  }
+
+  const [passCount, stampCount] = await Promise.all([
+    prisma.pass.count({ where: { cardId: card.id } }),
+    prisma.stampEvent.count({ where: { cardId: card.id } }),
+  ]);
+
+  const impact =
+    passCount === 0
+      ? `<p class="muted">${escapeHtml(t(lang, 'cardDeleteNoCustomers'))}</p>`
+      : `<div class="kpis">
+      <div class="kpi"><div class="n">${arabicDigits(passCount, lang)}</div><div class="label">${escapeHtml(t(lang, 'cardDeleteCustomers'))}</div></div>
+      <div class="kpi"><div class="n">${arabicDigits(stampCount, lang)}</div><div class="label">${escapeHtml(t(lang, 'cardDeleteStampsLost'))}</div></div>
+    </div>
+    <p class="warn">${escapeHtml(t(lang, 'cardDeleteWarning'))}</p>`;
+
+  const body = `
+    <div class="panel">
+      <h1>${escapeHtml(t(lang, 'cardDeleteTitle'))}</h1>
+      <p><strong>${escapeHtml(card.name)}</strong></p>
+      <p class="muted">${escapeHtml(t(lang, 'cardDeleteIntro'))}</p>
+      ${impact}
+      ${error ? `<p class="warn">${escapeHtml(error)}</p>` : ''}
+      <form method="POST" action="/cards/${card.id}/delete">
+        <label for="confirmName">${escapeHtml(t(lang, 'cardDeleteConfirmLabel'))}</label>
+        <input type="text" id="confirmName" name="confirmName" required
+          autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false"
+          placeholder="${escapeHtml(card.name)}">
+        <p>
+          <button type="submit" class="btn remove">${escapeHtml(t(lang, 'cardDeleteConfirmButton'))}</button>
+          <a class="btn secondary" href="/cards/${card.id}">${escapeHtml(t(lang, 'cardDeleteCancel'))}</a>
+        </p>
+      </form>
+    </div>
+  `;
+  sendHtml(res, 200, layout(t(lang, 'cardDeleteTitle'), body, 'cards', lang));
+}
+
+/**
+ * `POST /cards/:id/delete` — performs the deletion.
+ *
+ * `StampEvent` has no foreign key to `Card` (it stores a bare `cardId`
+ * string so a card's history survives schema churn), so Postgres will not
+ * cascade it — it is deleted explicitly here. Everything else does cascade
+ * from `Card`: `Pass` → `Device`, plus `CardImage`.
+ *
+ * One transaction, so a card is never left half-deleted: a `Card` row gone
+ * while its `Pass` rows remain would leave passes whose update endpoint
+ * throws on every refresh, which is worse than either outcome.
+ *
+ * Note what this deliberately does **not** do: notify the affected
+ * customers. There is no channel for it — the only push we have is the pass
+ * itself, and it is about to stop existing. The confirmation page says so
+ * plainly rather than implying a courtesy the system cannot deliver.
+ */
+async function handleCardDelete(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  merchant: Merchant,
+  cardId: string
+): Promise<void> {
+  const lang = resolveLang(req);
+  const card = await prisma.card.findFirst({ where: { id: cardId, merchantId: merchant.id } });
+  if (!card) {
+    sendHtml(res, 404, layout(t(lang, 'cardNotFound'), `<div class="panel empty"><h1>${escapeHtml(t(lang, 'cardNotFound'))}</h1></div>`, 'cards', lang));
+    return;
+  }
+
+  let fields: querystring.ParsedUrlQuery;
+  try {
+    fields = await readUrlencodedBody(req);
+  } catch (err) {
+    const status = isHttpError(err) ? err.statusCode : 400;
+    sendHtml(res, status, layout('Error', `<div class="panel"><h1>${status}</h1></div>`, 'cards', lang));
+    return;
+  }
+  const raw = fields.confirmName;
+  const typed = (typeof raw === 'string' ? raw : '').trim();
+  // Compared case-insensitively and whitespace-trimmed: this guards against
+  // an accidental tap, not against the signed-in owner themself, and a phone
+  // keyboard capitalising the first letter should not read as "cancel".
+  if (typed.toLocaleLowerCase() !== card.name.trim().toLocaleLowerCase()) {
+    await handleCardDeleteConfirm(req, res, merchant, cardId, t(lang, 'cardDeleteMismatch'));
+    return;
+  }
+
+  await prisma.$transaction([
+    prisma.stampEvent.deleteMany({ where: { cardId: card.id } }),
+    prisma.card.delete({ where: { id: card.id } }),
+  ]);
+
+  res.writeHead(303, { Location: '/app' });
+  res.end();
+}
+
+/**
+ * `GET /lang/:lang` — writes the `lnx-lang` cookie and sends the user back
+ * where they came from.
+ *
+ * The cookie name is shared with the landing page's own toggle (BUILD.md
+ * §13), so switching in the dashboard and switching on the marketing site
+ * agree instead of silently diverging.
+ *
+ * **The redirect target is taken from `Referer` but never trusted.** Only a
+ * same-origin *path* is used: it must start with a single `/` and not `//`
+ * (which a browser reads as a protocol-relative URL to another host, the
+ * classic open-redirect). Anything else falls back to `/app`. A redirector
+ * that will bounce a visitor to an attacker's domain is worth having on a
+ * site whose whole job is asking members of the public to trust a link.
+ *
+ * Not `HttpOnly`: the landing page's own toggle is client-side JS and has
+ * to read and write this same cookie. It holds a display preference, never
+ * anything sensitive — unlike the session cookie, which is HttpOnly.
+ */
+function handleLangSwitch(req: http.IncomingMessage, res: http.ServerResponse, raw: string): void {
+  // Unknown values fall back rather than 404 — a stale bookmark should
+  // change nothing, not show an error page.
+  const lang: Lang = raw === 'ar' ? 'ar' : 'en';
+
+  let target = '/app';
+  const referer = req.headers.referer;
+  if (typeof referer === 'string') {
+    try {
+      const url = new URL(referer, `http://${req.headers.host ?? 'localhost'}`);
+      const path = `${url.pathname}${url.search}`;
+      // Same-origin only, and never a protocol-relative "//evil.example".
+      if (url.host === req.headers.host && path.startsWith('/') && !path.startsWith('//')) {
+        target = path;
+      }
+    } catch {
+      // A malformed Referer is not worth failing the request over.
+    }
+  }
+
+  res.writeHead(303, {
+    Location: target,
+    'Set-Cookie': `lnx-lang=${lang}; Path=/; Max-Age=31536000; SameSite=Lax`,
+  });
   res.end();
 }
 
@@ -1882,6 +2244,7 @@ async function handleCardDetail(req: http.IncomingMessage, res: http.ServerRespo
         <a class="btn secondary" href="/cards/${card.id}/edit">${escapeHtml(t(lang, 'editTitle'))}</a>
         <a class="btn secondary" href="/cards/${card.id}/print">${escapeHtml(t(lang, 'activatePrintSheetLink'))}</a>
         <a class="btn secondary" href="/app">${escapeHtml(t(lang, 'cardDetailAllCardsLink'))}</a>
+        <a class="btn remove" href="/cards/${card.id}/delete">${escapeHtml(t(lang, 'cardDeleteAction'))}</a>
       </div>
     </div>
     ${lockBanner}
@@ -5600,6 +5963,13 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // Language switch. Deliberately above requireMerchant: the sign-in page
+    // needs it too, and it exposes nothing — it only writes a cookie.
+    if (req.method === 'GET' && pathname.startsWith('/lang/')) {
+      handleLangSwitch(req, res, pathname.slice('/lang/'.length));
+      return;
+    }
+
     // Everything from here down through /api/stamp is a merchant-facing
     // route: requireMerchant() 302s to /signin when there is no valid
     // session, and every handler below is scoped to the merchant it
@@ -5751,6 +6121,21 @@ const server = http.createServer(async (req, res) => {
         const merchant = await requireMerchant(req, res);
         if (!merchant) return;
         await handleUpdateCard(req, res, cardEditMatch[1]!, merchant);
+        return;
+      }
+    }
+    const cardDeleteMatch = pathname.match(/^\/cards\/([^/]+)\/delete$/);
+    if (cardDeleteMatch) {
+      if (req.method === 'GET') {
+        const merchant = await requireMerchant(req, res);
+        if (!merchant) return;
+        await handleCardDeleteConfirm(req, res, merchant, cardDeleteMatch[1]!);
+        return;
+      }
+      if (req.method === 'POST') {
+        const merchant = await requireMerchant(req, res);
+        if (!merchant) return;
+        await handleCardDelete(req, res, merchant, cardDeleteMatch[1]!);
         return;
       }
     }

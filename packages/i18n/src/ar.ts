@@ -204,6 +204,22 @@ export const ar: Record<keyof typeof en, string> = {
   signUpPasswordTooCommon: 'كلمة المرور هذه شائعة جدًا. يرجى اختيار كلمة مرور مختلفة.',
   signUpRateLimited: 'محاولات إنشاء حساب كثيرة جدًا من هذا الاتصال. يرجى الانتظار بضع دقائق ثم المحاولة مرة أخرى.',
   navSignOut: 'تسجيل الخروج',
+  cardDeleteAction: 'حذف',
+  cardDeleteTitle: 'حذف هذه البطاقة؟',
+  cardDeleteIntro: 'سيؤدي هذا إلى حذف البطاقة وتصميمها وسجلها بالكامل نهائيًا.',
+  cardDeleteCustomers: 'بطاقات موجودة فعلًا في محافظ العملاء',
+  cardDeleteStampsLost: 'الأختام والمكافآت المسجلة',
+  cardDeleteWarning: 'أي بطاقة أضافها عميل إلى محفظة آبل أو جوجل ستتوقف عن العمل. لا يمكن التراجع عن هذا الإجراء، ولا يمكن إشعار العملاء به.',
+  cardDeleteNoCustomers: 'لم يضف أي عميل هذه البطاقة بعد، لذلك لن يتأثر أحد.',
+  cardDeleteConfirmLabel: 'اكتب اسم البطاقة للتأكيد',
+  cardDeleteConfirmButton: 'حذف البطاقة نهائيًا',
+  cardDeleteCancel: 'الاحتفاظ بالبطاقة',
+  cardDeleteMismatch: 'الاسم غير مطابق، لذلك لم يتم حذف أي شيء.',
+  cardDeleted: 'تم حذف البطاقة.',
+  navPrimary: 'التنقل الرئيسي',
+  navMore: 'المزيد',
+  /** See en.ts — this always reads in the language being switched to, so it stays Latin here. */
+  navSwitchLang: 'English',
 
   // Settings — رموز PIN للموظفين (BUILD.md §8.13)
   settingsTitle: 'الإعدادات',

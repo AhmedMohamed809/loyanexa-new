@@ -205,6 +205,29 @@ export const en = {
   signUpPasswordTooCommon: 'That password is too common. Please choose a different one.',
   signUpRateLimited: 'Too many sign-up attempts from this connection. Please wait a few minutes and try again.',
   navSignOut: 'Sign out',
+  /** Accessible name for the mobile bottom tab bar — screen-reader only, never rendered. */
+  cardDeleteAction: 'Delete',
+  cardDeleteTitle: 'Delete this card?',
+  /** Merchant-authored card name is interpolated by the caller, never translated (docs/CLAUDE.md). */
+  cardDeleteIntro: 'This permanently deletes the card, its design, and its whole history.',
+  cardDeleteCustomers: 'Cards already in customers’ wallets',
+  cardDeleteStampsLost: 'Stamps and rewards on record',
+  cardDeleteWarning: 'Any card already added to a customer’s Apple or Google Wallet will stop working. It cannot be undone, and the customers cannot be notified.',
+  cardDeleteNoCustomers: 'No customer has added this card yet, so nobody will be affected.',
+  cardDeleteConfirmLabel: 'Type the card name to confirm',
+  cardDeleteConfirmButton: 'Delete this card permanently',
+  cardDeleteCancel: 'Keep the card',
+  cardDeleteMismatch: 'That did not match the card name, so nothing was deleted.',
+  cardDeleted: 'Card deleted.',
+  navPrimary: 'Main navigation',
+  /** The fifth tab, holding what does not fit in a five-tab bar (Reports, Settings, language, sign out). */
+  navMore: 'More',
+  /**
+   * Always names the language you would switch TO, and is always written in
+   * that language — an Arabic speaker looking for a way out of an English UI
+   * scans for Arabic script, not for the English word "Arabic".
+   */
+  navSwitchLang: 'العربية',
 
   // Settings — staff PINs (BUILD.md §8.13). Business profile, billing and
   // products & services are out of scope for this build; only staff
