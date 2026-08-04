@@ -68,7 +68,7 @@ import { pushCardDevices } from './cardPush.ts';
 import { pkpassCacheKey } from './pkpassCache.ts';
 import { createAppleCredentialsResolver } from './appleCredentials.ts';
 import { csvRow } from './csv.ts';
-import { createPassForEnrolment, deleteOrphanedPass } from './enrol.ts';
+import { createPassForEnrolment, deleteOrphanedPass, parseBirthday } from './enrol.ts';
 import { RateLimiter, resolveClientIp } from './rateLimit.ts';
 import {
   enqueueBroadcast,
@@ -130,6 +130,7 @@ import {
   type UploadKind,
 } from './cardImages.ts';
 import { readMultipart } from './multipart.ts';
+import { AutomationScheduler } from './automations.ts';
 import {
   findTemplate,
   findTemplateByCode,
@@ -4440,6 +4441,92 @@ function renderBroadcastJobRow(
   </div>`;
 }
 
+
+/** Bounds on the win-back window. Below a week it fires on people who simply had a quiet few days; above a year it is not a win-back, it is archaeology. */
+const MIN_WINBACK_DAYS = 7;
+const MAX_WINBACK_DAYS = 365;
+
+/**
+ * `POST /notifications/automations` — saves one card's birthday and win-back
+ * settings (BUILD.md §8.12).
+ *
+ * Scoped to the owner, and 404 for anyone else's card id, exactly like every
+ * other merchant route. The one rule worth stating: an automation cannot be
+ * switched on with an empty message. A message is what the customer actually
+ * receives, so enabling without one would schedule a job that either sends
+ * nothing or throws inside the worker every time it fires.
+ */
+async function handleSaveAutomations(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  merchant: Merchant
+): Promise<void> {
+  const lang = resolveLang(req);
+  let fields: querystring.ParsedUrlQuery;
+  try {
+    fields = await readUrlencodedBody(req);
+  } catch (err) {
+    const status = isHttpError(err) ? err.statusCode : 400;
+    sendHtml(res, status, layout('Error', `<div class="panel"><h1>${status}</h1></div>`, 'notifications', lang));
+    return;
+  }
+
+  const cardId = String(fields.cardId ?? '').trim();
+  const card = await prisma.card.findFirst({ where: { id: cardId, merchantId: merchant.id } });
+  if (!card) {
+    sendHtml(res, 404, layout(t(lang, 'cardNotFound'), `<div class="panel empty"><h1>${escapeHtml(t(lang, 'cardNotFound'))}</h1></div>`, 'notifications', lang));
+    return;
+  }
+
+  const birthdayEnabled = String(fields.birthdayEnabled ?? '') === '1';
+  const winbackEnabled = String(fields.winbackEnabled ?? '') === '1';
+  // Merchant-authored text: sanitised for length and control characters by
+  // the same function a manual Send uses, never translated or rewritten.
+  const birthdayMessage = sanitizeBroadcastMessage(String(fields.birthdayMessage ?? ''));
+  const winbackMessage = sanitizeBroadcastMessage(String(fields.winbackMessage ?? ''));
+  const winbackDays = Number.parseInt(String(fields.winbackDays ?? ''), 10);
+
+  const errors: string[] = [];
+  if ((birthdayEnabled && !birthdayMessage) || (winbackEnabled && !winbackMessage)) {
+    errors.push(t(lang, 'autoMessageRequired'));
+  }
+  if (!Number.isInteger(winbackDays) || winbackDays < MIN_WINBACK_DAYS || winbackDays > MAX_WINBACK_DAYS) {
+    errors.push(
+      t(lang, 'autoWinbackDaysRange', {
+        min: arabicDigits(MIN_WINBACK_DAYS, lang),
+        max: arabicDigits(MAX_WINBACK_DAYS, lang),
+      })
+    );
+  }
+
+  if (errors.length === 0) {
+    await prisma.card.update({
+      where: { id: card.id },
+      data: { birthdayEnabled, birthdayMessage, winbackEnabled, winbackDays, winbackMessage },
+    });
+  }
+
+  const notice: { kind: 'saved' | 'error'; text: string } =
+    errors.length === 0
+      ? { kind: 'saved', text: t(lang, 'autoSaved') }
+      : { kind: 'error', text: errors.join(' ') };
+
+  const cards = await prisma.card.findMany({
+    where: { merchantId: merchant.id },
+    orderBy: { slot: 'asc' },
+  });
+  sendHtml(
+    res,
+    errors.length === 0 ? 200 : 400,
+    layout(
+      t(lang, 'navNotifications'),
+      renderNotificationsPage(lang, 'automated', cards, undefined, 0, [], resolveBroadcastMessageTtlMinutes(), new Date(), notice),
+      'notifications',
+      lang
+    )
+  );
+}
+
 function renderNotificationsPage(
   lang: Lang,
   tab: NotifTab,
@@ -4448,7 +4535,8 @@ function renderNotificationsPage(
   initialRecipientCount: number,
   jobs: Array<BroadcastJob & { card: { name: string } }>,
   ttlMinutes: number,
-  now: Date
+  now: Date,
+  automationNotice?: { kind: 'saved' | 'error'; text: string }
 ): string {
   const tabsHtml = `<div class="notif-tabs">
     <a href="/notifications?tab=send"${tab === 'send' ? ' class="active"' : ''}>${escapeHtml(t(lang, 'notificationsTabSend'))}</a>
@@ -4460,23 +4548,67 @@ function renderNotificationsPage(
   }
 
   if (tab === 'automated') {
-    const body = `<h1>${escapeHtml(t(lang, 'navNotifications'))}</h1>
+    // One form per card: these are per-card columns, and a merchant running a
+    // café and a barber will not want the same birthday message on both.
+    const statusPill = (on: boolean): string =>
+      on
+        ? `<span class="status-pill live">${escapeHtml(t(lang, 'autoStatusOn'))}</span>`
+        : `<span class="status-pill pending">${escapeHtml(t(lang, 'autoStatusOff'))}</span>`;
+
+    const cardForms = cards
+      .map(
+        (c) => `<div class="panel">
+      <h2>${escapeHtml(c.name)}</h2>
+      <form method="POST" action="/notifications/automations">
+        <input type="hidden" name="cardId" value="${escapeHtml(c.id)}">
+
+        <h3>${escapeHtml(t(lang, 'autoBirthdayTitle'))} ${statusPill(c.birthdayEnabled)}</h3>
+        <p class="muted">${escapeHtml(t(lang, 'autoBirthdayDesc'))}</p>
+        <label class="consent">
+          <input type="checkbox" name="birthdayEnabled" value="1"${c.birthdayEnabled ? ' checked' : ''}>
+          <span>${escapeHtml(t(lang, 'autoEnableLabel'))}</span>
+        </label>
+        <div class="field">
+          <label for="birthdayMessage-${escapeHtml(c.id)}">${escapeHtml(t(lang, 'autoMessageLabel'))}</label>
+          <textarea id="birthdayMessage-${escapeHtml(c.id)}" name="birthdayMessage" rows="2" maxlength="${BROADCAST_MESSAGE_MAX_LENGTH}">${escapeHtml(c.birthdayMessage)}</textarea>
+        </div>
+
+        <h3 style="margin-top:22px;">${escapeHtml(t(lang, 'autoWinbackTitle'))} ${statusPill(c.winbackEnabled)}</h3>
+        <p class="muted">${escapeHtml(t(lang, 'autoWinbackDesc'))}</p>
+        <label class="consent">
+          <input type="checkbox" name="winbackEnabled" value="1"${c.winbackEnabled ? ' checked' : ''}>
+          <span>${escapeHtml(t(lang, 'autoEnableLabel'))}</span>
+        </label>
+        <div class="field">
+          <label for="winbackDays-${escapeHtml(c.id)}">${escapeHtml(t(lang, 'autoWinbackDaysLabel'))}</label>
+          <input type="number" id="winbackDays-${escapeHtml(c.id)}" name="winbackDays"
+            min="${MIN_WINBACK_DAYS}" max="${MAX_WINBACK_DAYS}" value="${c.winbackDays}" inputmode="numeric">
+        </div>
+        <div class="field">
+          <label for="winbackMessage-${escapeHtml(c.id)}">${escapeHtml(t(lang, 'autoMessageLabel'))}</label>
+          <textarea id="winbackMessage-${escapeHtml(c.id)}" name="winbackMessage" rows="2" maxlength="${BROADCAST_MESSAGE_MAX_LENGTH}">${escapeHtml(c.winbackMessage)}</textarea>
+        </div>
+
+        <button class="btn" type="submit">${escapeHtml(t(lang, 'autoSaveButton'))}</button>
+      </form>
+    </div>`
+      )
+      .join('\n    ');
+
+    return `<h1>${escapeHtml(t(lang, 'navNotifications'))}</h1>
     ${tabsHtml}
-    <div class="automated-grid">
-      <div class="automated-card">
-        <h3>${escapeHtml(t(lang, 'notificationsAutomatedWelcomeTitle'))} <span class="status-pill live">${escapeHtml(t(lang, 'notificationsAutomatedWelcomeStatus'))}</span></h3>
-        <p>${escapeHtml(t(lang, 'notificationsAutomatedWelcomeDesc'))}</p>
-      </div>
-      <div class="automated-card">
-        <h3>${escapeHtml(t(lang, 'notificationsAutomatedBirthdayTitle'))} <span class="status-pill pending">${escapeHtml(t(lang, 'notificationsAutomatedNotScheduled'))}</span></h3>
-        <p>${escapeHtml(t(lang, 'notificationsAutomatedBirthdayDesc'))}</p>
-      </div>
-      <div class="automated-card">
-        <h3>${escapeHtml(t(lang, 'notificationsAutomatedWinbackTitle'))} <span class="status-pill pending">${escapeHtml(t(lang, 'notificationsAutomatedNotScheduled'))}</span></h3>
-        <p>${escapeHtml(t(lang, 'notificationsAutomatedWinbackDesc'))}</p>
-      </div>
-    </div>`;
-    return body;
+    ${
+      automationNotice
+        ? `<div class="${automationNotice.kind === 'saved' ? 'ok-banner' : 'error'}">${escapeHtml(automationNotice.text)}</div>`
+        : ''
+    }
+    <div class="panel">
+      <h2>${escapeHtml(t(lang, 'autoTitle'))}</h2>
+      <p class="muted">${escapeHtml(t(lang, 'autoSubtitle'))}</p>
+      <h3>${escapeHtml(t(lang, 'notificationsAutomatedWelcomeTitle'))} <span class="status-pill live">${escapeHtml(t(lang, 'notificationsAutomatedWelcomeStatus'))}</span></h3>
+      <p class="muted">${escapeHtml(t(lang, 'notificationsAutomatedWelcomeDesc'))}</p>
+    </div>
+    ${cardForms}`;
   }
 
   const selected = selectedCardId ?? cards[0]!.id;
@@ -4999,6 +5131,19 @@ function renderEnrolPage(card: Card): string {
       <label for="phone">${escapeHtml(t(lang, 'enrolPhoneLabel'))} <span class="opt">(${escapeHtml(t(lang, 'enrolOptional'))})</span></label>
       <input type="tel" id="phone" name="phone" maxlength="30" autocomplete="tel" placeholder="${escapeHtml(t(lang, 'enrolPhonePlaceholder'))}">
     </div>
+    ${
+      // Only asked when the merchant actually runs a birthday automation.
+      // Asking every customer for a birthday that will never be used is
+      // collecting personal data for nothing, and every extra field on this
+      // form costs enrolments — the metric the business rests on.
+      card.birthdayEnabled
+        ? `<div class="field">
+      <label for="birthday">${escapeHtml(t(lang, 'enrolBirthdayLabel'))} <span class="opt">(${escapeHtml(t(lang, 'enrolOptional'))})</span></label>
+      <input type="date" id="birthday" name="birthday" autocomplete="bday">
+      <p class="hint">${escapeHtml(t(lang, 'enrolBirthdayHint'))}</p>
+    </div>`
+        : ''
+    }
     <label class="consent">
       <input type="checkbox" name="consent" required>
       <span>${escapeHtml(t(lang, 'enrolConsent', { name: card.name }))}</span>
@@ -5117,7 +5262,12 @@ async function buildPassImagesFor(
 /** Reads and clamps the optional `name`/`phone`/idempotency-token enrolment fields from a POST body — shared by both wallet issuance routes below. A malformed/oversized body must not block enrolment, so any read failure just falls back to "none supplied" rather than a 4xx. */
 async function readEnrolFields(
   req: http.IncomingMessage
-): Promise<{ custName: string; custPhone: string; idempotencyKey: string }> {
+): Promise<{
+  custName: string;
+  custPhone: string;
+  idempotencyKey: string;
+  birthday: { birthdayMonth: number | null; birthdayDay: number | null };
+}> {
   let fields: querystring.ParsedUrlQuery = {};
   try {
     fields = await readUrlencodedBody(req);
@@ -5128,6 +5278,8 @@ async function readEnrolFields(
     custName: String(fields.name ?? '').trim().slice(0, 80),
     custPhone: String(fields.phone ?? '').trim().slice(0, 30),
     idempotencyKey: String(fields.idem ?? '').trim().slice(0, 64),
+    // parseBirthday discards the year at this boundary — see its doc comment.
+    birthday: parseBirthday(String(fields.birthday ?? '')),
   };
 }
 
@@ -5182,13 +5334,13 @@ async function handleIssuePass(req: http.IncomingMessage, res: http.ServerRespon
     return;
   }
 
-  const { custName, custPhone, idempotencyKey } = await readEnrolFields(req);
+  const { custName, custPhone, idempotencyKey, birthday } = await readEnrolFields(req);
   const credentials = resolveAppleCredentials();
 
   const stripSet = await renderAllDensities(PASS_STRIP_STORE, await stripSpecForCard(card, card.starterStamps));
   const images = await buildPassImagesFor(card, stripSet);
 
-  const { pass, created } = await createPassForEnrolment(card, custName, custPhone, idempotencyKey);
+  const { pass, created } = await createPassForEnrolment(card, custName, custPhone, idempotencyKey, birthday);
 
   // If signing/building fails below, a freshly-inserted Pass row must not
   // survive it — an orphan row with no corresponding wallet pass would show
@@ -5307,8 +5459,8 @@ async function handleIssueGooglePass(
     return;
   }
 
-  const { custName, custPhone, idempotencyKey } = await readEnrolFields(req);
-  const { pass, created } = await createPassForEnrolment(card, custName, custPhone, idempotencyKey);
+  const { custName, custPhone, idempotencyKey, birthday } = await readEnrolFields(req);
+  const { pass, created } = await createPassForEnrolment(card, custName, custPhone, idempotencyKey, birthday);
 
   // Same reasoning as POST /:code/pass just above: a freshly-inserted row
   // must not survive a failure in the steps that make it actually usable —
@@ -6268,6 +6420,10 @@ const broadcastWorker = new BroadcastWorker({ sendOne: broadcastSendOne });
 // ---------------------------------------------------------------------------
 const messageSweeper = new MessageSweeper({ sendOne: broadcastSendOne });
 
+// Birthday and win-back (BUILD.md §8.12). Needs no sender of its own — it
+// only enqueues; broadcastWorker above is what actually delivers.
+const automationScheduler = new AutomationScheduler();
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -6416,6 +6572,12 @@ const server = http.createServer(async (req, res) => {
       const merchant = await requireMerchant(req, res);
       if (!merchant) return;
       await handleNotificationsPage(req, res, url, merchant);
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/notifications/automations') {
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleSaveAutomations(req, res, merchant);
       return;
     }
     if (req.method === 'GET' && pathname === '/notifications/recipient-count') {
@@ -6659,12 +6821,17 @@ server.listen(PORT, '0.0.0.0', () => {
   if (process.env.DISABLE_BROADCAST_WORKER !== '1') {
     broadcastWorker.start();
     messageSweeper.start();
+    // Same flag again, same reasoning: a spawned test server must never run
+    // a background job against the shared local test Postgres — and this one
+    // would enqueue real broadcasts for every card in it.
+    automationScheduler.start();
   }
 });
 
 async function shutdown(): Promise<void> {
   await broadcastWorker.stop();
   await messageSweeper.stop();
+  await automationScheduler.stop();
   await prisma.$disconnect();
   process.exit(0);
 }
