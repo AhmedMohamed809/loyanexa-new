@@ -54,7 +54,7 @@ async function spawnServer(): Promise<SpawnedServer> {
   const port = randomPort();
   const proc = spawn(process.execPath, ['apps/demo/server.ts'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(port) },
+    env: { ...process.env, PORT: String(port), DISABLE_BROADCAST_WORKER: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   const baseUrl = `http://127.0.0.1:${port}`;

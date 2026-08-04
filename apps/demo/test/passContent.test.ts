@@ -98,6 +98,31 @@ test('secondaryFields carries the reward and stamps-remaining, in that order, in
   assert.ok(content.secondaryFields?.[1]?.value.startsWith('5 stamps'), 'stampsRemaining should read 8 - 3 = 5');
 });
 
+test('auxiliaryFields carries the "msg" field, sourced verbatim from pass.message, with changeMessage set for the broadcast banner (BUILD.md §9.1/§8.12)', () => {
+  const withMessage = buildPassContentFor(makeCard({ lang: 'en' }), makePass({ message: 'Half price today!​‌' }));
+  assert.equal(withMessage.auxiliaryFields?.length, 1);
+  assert.equal(withMessage.auxiliaryFields?.[0]?.key, 'msg');
+  assert.equal(withMessage.auxiliaryFields?.[0]?.label, 'NEWS');
+  assert.equal(withMessage.auxiliaryFields?.[0]?.value, 'Half price today!​‌', 'must be pass.message verbatim — the marker was already baked in by whoever wrote it, never re-added here');
+  assert.equal(withMessage.auxiliaryFields?.[0]?.changeMessage, '%@');
+});
+
+test('auxiliaryFields\' "msg" field is present even before any broadcast has ever been sent (pass.message === "") — the field must already exist for its first real value to diff against', () => {
+  const content = buildPassContentFor(makeCard({ lang: 'en' }), makePass({ message: '' }));
+  assert.equal(content.auxiliaryFields?.length, 1);
+  assert.equal(content.auxiliaryFields?.[0]?.value, '');
+});
+
+test('the "msg" field label is localised (NEWS in English, translated in Arabic)', () => {
+  const en = buildPassContentFor(makeCard({ lang: 'en' }), makePass({ message: 'Sale!' }));
+  const ar = buildPassContentFor(makeCard({ lang: 'ar' }), makePass({ message: 'Sale!' }));
+  assert.equal(en.auxiliaryFields?.[0]?.label, 'NEWS');
+  assert.notEqual(ar.auxiliaryFields?.[0]?.label, 'NEWS');
+  assert.ok((ar.auxiliaryFields?.[0]?.label.length ?? 0) > 0);
+  // Merchant-authored broadcast text is never translated (docs/COPY.md §4) — only the field's own label is localised.
+  assert.equal(ar.auxiliaryFields?.[0]?.value, 'Sale!');
+});
+
 test('the invisible change marker is still appended to stampsRemaining, and changeMessage is set for the live-update banner', () => {
   const content = buildPassContentFor(makeCard({ lang: 'en' }), makePass({ stamps: 3 }));
   const field = content.secondaryFields?.[1];

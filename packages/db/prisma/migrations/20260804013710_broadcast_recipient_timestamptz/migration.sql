@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "BroadcastRecipient" ALTER COLUMN "claimedAt" SET DATA TYPE TIMESTAMPTZ(3),
+ALTER COLUMN "nextAttemptAt" SET DATA TYPE TIMESTAMPTZ(3);

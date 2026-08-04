@@ -111,6 +111,21 @@ export function buildPassContentFor(
         changeMessage: '%@',
       },
     ],
+    // The merchant-broadcast field (BUILD.md §9.1's "msg"/"NEWS" sample,
+    // §8.12) — always present, even before any broadcast has ever been
+    // sent (pass.message defaults to ""), so the field already exists in
+    // the very first pass.json a device downloads; see PassContent's own
+    // auxiliaryFields doc comment in buildPass.ts for why a field's first
+    // real value needs an "old value" already on the device to diff
+    // against. `value` is pass.message verbatim, never re-marked here —
+    // apps/demo/broadcastWorker.ts computes and stores the invisible
+    // change marker exactly once per broadcast job, at the point it writes
+    // Pass.message, so every subsequent pass.json rebuild (a stamp landing,
+    // a card edit) reads the same already-marked text and causes no
+    // spurious repeat of the news banner.
+    auxiliaryFields: [
+      { key: 'msg', label: t(lang, 'passMessageFieldLabel'), value: pass.message, changeMessage: '%@' },
+    ],
     backFields: [{ key: 'terms', label: t(lang, 'passTermsFieldLabel'), value: buildTermsText(card) }],
     barcodeMessage: pass.serial,
     ...(locations.length > 0 ? { locations, maxDistance: DEFAULT_MAX_DISTANCE_METERS } : {}),

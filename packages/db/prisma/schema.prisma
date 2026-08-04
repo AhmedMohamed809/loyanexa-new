@@ -31,6 +31,7 @@ model Merchant {
   cards        Card[]
   sessions     Session[]
   staff        Staff[]
+  broadcastJobs BroadcastJob[]
   createdAt    DateTime  @default(now())
 
   @@index([firebaseUid])
@@ -177,6 +178,7 @@ model Card {
   locations     Json      @default("[]")
   active        Boolean   @default(false)
   passes        Pass[]
+  broadcastJobs BroadcastJob[]
   createdAt     DateTime  @default(now())
   /// Bumped by Prisma on every write to this row — including every
   /// aesthetic card-designer edit (colours, logo, stamp icon, background
@@ -229,6 +231,116 @@ model Device {
 
   @@id([deviceId, passSerial])
   @@index([passSerial])
+}
+
+/// A merchant broadcast (docs/BUILD.md §8.12 / §18 item 6 / §10) — the
+/// Postgres-backed job queue that replaces BullMQ-on-Redis for now (see
+/// §2's 2026-08-04 note). One row per "send" action: either a merchant
+/// tapping Send on the Notifications screen (`kind: "manual"`) or an
+/// automated trigger (`kind: "welcome"`, fired from enrolment — see
+/// apps/demo/server.ts's handleIssuePass/handleIssueGooglePass;
+/// `"birthday"`/`"winback"` are scaffolded in the UI only and no code path
+/// ever creates a job with either kind, deliberately — their triggers are
+/// not yet scheduled). Created synchronously by apps/demo/broadcast.ts's
+/// enqueueBroadcast() — a plain INSERT, so the request handler that calls
+/// it still returns immediately; the actual APNs fan-out happens later,
+/// entirely inside apps/demo/broadcastWorker.ts's BroadcastWorker, never
+/// inside a request handler (BUILD.md §18 item 6).
+///
+/// `message` is the sanitised, length-capped text a merchant typed (or an
+/// automated template produced) — safe to render back into HTML with the
+/// usual escapeHtml(), never rendered unescaped. `pushMessage` is the exact
+/// string written into every recipient's `Pass.message` column: computed
+/// once, at enqueue time, as `message` plus one
+/// `invisibleChangeMarker()` (packages/pass/src/buildPass.ts) call —
+/// **not** recomputed per recipient or per retry. Fixing it once here is
+/// what makes two things true at the same time: (1) a merchant sending the
+/// exact same text twice still gets a lock-screen banner both times (two
+/// jobs, two markers, two distinct `pushMessage` values), and (2) retrying
+/// a single recipient's failed push never re-shows the same banner twice
+/// on a device that already received it (every retry writes the *same*
+/// `pushMessage` — a no-op diff once the device has already caught up).
+model BroadcastJob {
+  id             String    @id @default(cuid())
+  merchantId     String
+  merchant       Merchant  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  cardId         String
+  card           Card      @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  kind           String    @default("manual")
+  message        String
+  pushMessage    String
+  /// queued (just enqueued, worker hasn't claimed anything yet) · sending
+  /// (at least one recipient claimed) · sent (every recipient reached a
+  /// terminal state — sent or failed; see BroadcastRecipient.status).
+  /// Never rolled back to an earlier value.
+  status         String    @default("queued")
+  recipientCount Int
+  sentCount      Int       @default(0)
+  failedCount    Int       @default(0)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  completedAt    DateTime?
+  recipients     BroadcastRecipient[]
+
+  @@index([merchantId, createdAt])
+  @@index([status])
+}
+
+/// One target of a BroadcastJob — one row per Pass at the time the job was
+/// enqueued (not per Device: a customer with the same pass on two devices
+/// is one recipient, matching the "recipient count" the merchant sees
+/// before sending). `status`/`attempts`/`nextAttemptAt` are the whole
+/// queue: apps/demo/broadcastWorker.ts's BroadcastWorker#claimBatch()
+/// claims a batch with a single atomic
+/// `UPDATE ... FROM (SELECT ... FOR UPDATE SKIP LOCKED) ...` statement —
+/// the standard Postgres job-queue idiom — which is what lets two worker
+/// processes run against the same table without ever claiming the same
+/// row: Postgres itself arbitrates. `claimedAt` also recovers a row a
+/// worker claimed but never finished (e.g. the process was killed
+/// mid-send): claimBatch() re-claims any `"sending"` row whose
+/// `claimedAt` is older than its `staleClaimMs` option, so a crash never
+/// strands a recipient forever — see BroadcastWorker's own doc comment for
+/// why this cannot be made a *perfect* exactly-once guarantee against a
+/// non-transactional external API (APNs), only a safe, self-healing one.
+model BroadcastRecipient {
+  id            String       @id @default(cuid())
+  jobId         String
+  job           BroadcastJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  passSerial    String
+  /// pending (waiting to be claimed, or waiting out a backoff —
+  /// `nextAttemptAt`) · sending (claimed by a worker right now) · sent ·
+  /// failed (attempts exhausted BroadcastWorker's maxAttempts).
+  status        String       @default("pending")
+  attempts      Int          @default(0)
+  lastError     String?
+  /// @db.Timestamptz, deliberately, unlike every other DateTime column in
+  /// this schema: these two are compared against a JS `Date` parameter
+  /// inside apps/demo/broadcastWorker.ts's raw `$queryRaw` claim query
+  /// (`SELECT … FOR UPDATE SKIP LOCKED`, needed because Prisma's own query
+  /// builder cannot express that clause). node-postgres serialises an
+  /// outgoing `Date` parameter for a plain `timestamp` (no time zone)
+  /// column using its *local* wall-clock reading with the zone offset
+  /// attached — and Postgres, per its own documented behaviour, silently
+  /// discards that offset for a `timestamp` (not `timestamptz`) target.
+  /// On a server whose local zone isn't UTC (BST, UTC+1, is what surfaced
+  /// this — see apps/demo/test/broadcastWorker.test.ts's backoff test),
+  /// that combination systematically stores the wrong instant: a value
+  /// written this way and read back through Prisma's own typed API (which
+  /// treats naive timestamps as UTC, consistently, both ways) comes back
+  /// shifted by the server's UTC offset. `timestamptz` carries the offset
+  /// through to Postgres instead of losing it, so both write paths — raw
+  /// SQL and Prisma's typed client — agree on the same absolute instant
+  /// regardless of the machine's local timezone. Every other DateTime
+  /// column in this schema is only ever read/written through Prisma's own
+  /// typed API, so this correction is scoped to just the two columns that
+  /// actually go through a raw SQL parameter.
+  claimedAt     DateTime? @db.Timestamptz(3)
+  nextAttemptAt DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt     DateTime     @updatedAt
+
+  @@unique([jobId, passSerial])
+  @@index([status, nextAttemptAt])
+  @@index([jobId, status])
 }
 
 /// Content-addressed image storage for card logos/covers — interim home for

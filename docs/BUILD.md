@@ -85,6 +85,30 @@ server handles this **provided the strip cache exists** (§10).
 | Frontend | **Next.js** (App Router) | Landing + dashboard |
 | Enrol page | **Plain HTML/CSS/JS** | Must stay ~4 KB |
 
+> **Deviation, 2026-08-04.** Merchant broadcasts (BUILD.md §8.12) shipped on a
+> **Postgres-backed job queue**, not **BullMQ on Redis** as this row specifies:
+> there is no Redis provisioned, and standing one up for this one feature was
+> judged more moving parts than the night warranted, the same trade-off §2's
+> auth note above made for session storage. What's live instead —
+> `packages/db/prisma/schema.prisma`'s `BroadcastJob`/`BroadcastRecipient`
+> tables plus `apps/demo/broadcastWorker.ts`'s in-process `BroadcastWorker`:
+> `enqueueBroadcast()` (`apps/demo/broadcast.ts`) only ever inserts rows, so
+> the request handler that calls it returns immediately (BUILD.md §18 item 6);
+> the worker claims batches with a single atomic
+> `UPDATE … FROM (SELECT … FOR UPDATE SKIP LOCKED) …` statement — the
+> standard Postgres job-queue idiom — which is what lets two machines run
+> this worker at once without ever double-claiming the same recipient row, no
+> distributed lock of its own required. Retries are bounded with exponential
+> backoff, a stale claim (a worker that died mid-send) is reclaimed after a
+> timeout rather than lost, and a `410 Gone` prunes the `Device` row exactly
+> as the existing per-stamp push path already does. **Redis/BullMQ remains
+> the path forward** if throughput ever demands true horizontal fan-out speed
+> a single Postgres table can't give — nothing here forecloses it, the same
+> way `Merchant.firebaseUid` stays reserved for a later Firebase migration.
+> See `apps/demo/broadcastWorker.ts`'s file header for the full design, and
+> `apps/demo/test/broadcastWorker.test.ts` for the two-workers-concurrently
+> proof that no recipient is ever pushed twice.
+
 ### Explicitly rejected
 
 - **Firestore** — the core query ("passes for this merchant not stamped in 21 days") is
@@ -362,6 +386,34 @@ Tabs **Send** · **Automated**. Card selector, live recipient count.
 **Green advisory**: too many notifications push customers to mute or delete the card.
 Message textarea, **150-character cap with a counter**. Send disabled while empty.
 Automated types: **welcome · birthday · win-back**.
+
+> **Shipped, 2026-08-04.** `GET/POST /notifications` — owner session only
+> (`requireMerchant()`, same as every other merchant route; a staff PIN
+> session is simply invisible to it, see `apps/demo/test/notificationsHttp.test.ts`).
+> **Send**: card selector with a live recipient count
+> (`GET /notifications/recipient-count`), a 150-character-capped textarea with
+> a visible counter, and the green advisory above, word for word, in both
+> languages. Submitting enqueues via `apps/demo/broadcast.ts`'s
+> `enqueueBroadcast()` and returns immediately — see §2's 2026-08-04 note for
+> the Postgres-backed queue this rests on — then polls
+> `GET /notifications/jobs/:id` to show queued/sending/sent with live counts.
+> Broadcasts are also rate-limited per merchant (5 / 10 minutes) so a mistake
+> cannot fire fifty in a minute. **Automated**: **welcome** is built end to
+> end — it fires from `handleIssuePass`/`handleIssueGooglePass` on a genuine
+> new enrolment (never a reused pass), through the same queue a manual Send
+> uses. **Birthday** and **win-back** are shown in the UI, clearly marked "not
+> yet scheduled" — no trigger exists for either; `BroadcastJob.kind` reserves
+> the two values but nothing ever creates a job with them.
+>
+> The one part of this easy to get subtly wrong (§18 item 5, §9.3): a Wallet
+> push carries no content, so the banner comes from `Pass`'s new
+> `auxiliaryFields` "msg"/"NEWS" entry (`apps/demo/passContent.ts`) —
+> `changeMessage` on a field whose *value* changed. Re-sending identical text
+> would normally show nothing; `apps/demo/broadcast.ts`'s `enqueueBroadcast()`
+> appends one `invisibleChangeMarker()` call **once per job, at enqueue time**
+> (not per push, not per retry) so a repeated identical broadcast still banks
+> a banner, while a retried push re-writes the *same* already-marked text and
+> never re-shows a banner a device already caught up on.
 
 ### 8.13 Settings
 Business profile · **Billing & subscription** → Manage billing ·

@@ -53,7 +53,7 @@ async function spawnServer(envOverrides: Record<string, string> = {}): Promise<S
   const port = randomPort();
   const proc = spawn(process.execPath, ['apps/demo/server.ts'], {
     cwd: ROOT,
-    env: { ...process.env, PORT: String(port), ...envOverrides },
+    env: { ...process.env, PORT: String(port), DISABLE_BROADCAST_WORKER: '1', ...envOverrides },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdout = '';

@@ -17,6 +17,7 @@ export const en = {
   navReports: 'Reports',
   navStamp: 'Stamp screen',
   navSettings: 'Settings',
+  navNotifications: 'Notifications',
 
   // The lock rule (BUILD.md §8.7) — activation confirmation, the locked-fields
   // banner on the edit page, and the field labels shared by both.
@@ -339,4 +340,40 @@ export const en = {
   passDescription: '{name} loyalty card',
   /** The lock-screen banner text for a location reminder (BUILD.md §9.1's own sample) when the merchant didn't type an override. `{name}` is the card's own (merchant-authored) name, interpolated verbatim — never translated (docs/COPY.md §1). */
   passLocationRelevantTextDefault: "You're near {name}!",
+  /** The auxiliary "NEWS" field's label on the pass itself (BUILD.md §9.1's own sample) — the field a merchant broadcast (BUILD.md §8.12) lands in. */
+  passMessageFieldLabel: 'NEWS',
+
+  // Notifications screen (BUILD.md §8.12) — Send / Automated tabs.
+  notificationsTabSend: 'Send',
+  notificationsTabAutomated: 'Automated',
+  notificationsCardLabel: 'Card',
+  notificationsRecipientCount: '{count} recipients',
+  notificationsNoCards: 'Create and activate a card first — there is nothing to send to yet.',
+  notificationsMessageLabel: 'Message',
+  notificationsMessagePlaceholder: 'Type your offer…',
+  notificationsMessageCounter: '{count} / {max}',
+  /** The green advisory BUILD.md §8.12 asks for, word for word — never softened: it protects the merchant from themselves. */
+  notificationsAdvisory: 'Too many notifications push customers to mute or delete the card. Send only when you have something worth saying.',
+  notificationsSendButton: 'Send',
+  notificationsSending: 'Sending…',
+  notificationsMessageEmpty: 'Write a message before sending.',
+  notificationsSendError: 'Could not send. Please try again.',
+  notificationsRateLimited: 'Too many broadcasts sent recently for this business. Please wait a while and try again.',
+  notificationsHistoryHeading: 'Recent broadcasts',
+  notificationsHistoryEmpty: 'No broadcasts sent yet.',
+  notificationsStatusQueued: 'Queued',
+  notificationsStatusSending: 'Sending',
+  notificationsStatusSent: 'Sent',
+  notificationsProgress: '{sent} of {total} sent',
+  notificationsProgressWithFailed: '{sent} of {total} sent, {failed} failed',
+  notificationsAutomatedWelcomeTitle: 'Welcome',
+  notificationsAutomatedWelcomeDesc: 'Sent automatically the moment a customer joins any of your cards.',
+  notificationsAutomatedWelcomeStatus: 'Live',
+  notificationsAutomatedBirthdayTitle: 'Birthday',
+  notificationsAutomatedBirthdayDesc: 'Would send automatically on a customer’s birthday.',
+  notificationsAutomatedWinbackTitle: 'Win-back',
+  notificationsAutomatedWinbackDesc: 'Would send automatically to customers who haven’t visited in a while.',
+  notificationsAutomatedNotScheduled: 'Not yet scheduled',
+  /** The welcome automation's own message text (BUILD.md §8.12) — sent once per enrolment via the same broadcast queue as a manual Send, never inline in the enrolment request handler. */
+  notifWelcomeMessage: 'Welcome! Collect a stamp every visit and watch your reward get closer.',
 } as const;

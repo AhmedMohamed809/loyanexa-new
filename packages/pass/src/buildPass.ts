@@ -78,6 +78,17 @@ export interface PassContent {
   headerFields?: PkPassField[];
   primaryFields?: PkPassField[];
   secondaryFields?: PkPassField[];
+  /**
+   * The merchant-broadcast "news" field (BUILD.md §9.1's `"msg"`/`"NEWS"`
+   * sample, §8.12) — a single field whose `value` is set from `Pass.message`
+   * and whose `changeMessage` is what puts a merchant's broadcast text on
+   * the lock screen (the push itself carries none, per §9.3). Always
+   * present in this app's own pass.json (see apps/demo/passContent.ts),
+   * even before any broadcast has ever been sent — the field must already
+   * exist in the pass a device first downloads, or its first real value
+   * has no "old value" to diff against and may not show a banner at all.
+   */
+  auxiliaryFields?: PkPassField[];
   backFields?: PkPassField[];
   /** The QR payload — normally the pass's own serial number. */
   barcodeMessage: string;
@@ -132,6 +143,7 @@ export interface PkPassJson {
     headerFields: PkPassField[];
     primaryFields: PkPassField[];
     secondaryFields: PkPassField[];
+    auxiliaryFields: PkPassField[];
     backFields: PkPassField[];
   };
   barcodes: Array<{
@@ -237,6 +249,7 @@ export function buildPassJson(credentials: PassCredentials, content: PassContent
       headerFields: content.headerFields ?? [],
       primaryFields: content.primaryFields ?? [],
       secondaryFields: content.secondaryFields ?? [],
+      auxiliaryFields: content.auxiliaryFields ?? [],
       backFields: content.backFields ?? [],
     },
     barcodes: [

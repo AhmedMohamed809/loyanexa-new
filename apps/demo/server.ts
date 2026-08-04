@@ -40,7 +40,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import querystring from 'node:querystring';
 import { fileURLToPath } from 'node:url';
-import { Prisma, type Card, type Pass, type Merchant, type Staff } from '@prisma/client';
+import { Prisma, type Card, type Pass, type Merchant, type Staff, type BroadcastJob, type Device } from '@prisma/client';
 import { buildPass, type PassCredentials, type PassImages } from '../../packages/pass/src/buildPass.ts';
 import { buildPassContentFor } from './passContent.ts';
 import {
@@ -70,6 +70,15 @@ import { createAppleCredentialsResolver } from './appleCredentials.ts';
 import { csvRow } from './csv.ts';
 import { createPassForEnrolment, deleteOrphanedPass } from './enrol.ts';
 import { RateLimiter, resolveClientIp } from './rateLimit.ts';
+import {
+  enqueueBroadcast,
+  recipientCountForCard,
+  listBroadcastJobs,
+  getBroadcastJob,
+  sanitizeBroadcastMessage,
+  BROADCAST_MESSAGE_MAX_LENGTH,
+} from './broadcast.ts';
+import { BroadcastWorker, type SendPushOutcome } from './broadcastWorker.ts';
 import {
   hashPassword,
   verifyPassword,
@@ -802,7 +811,7 @@ function generateShortCode(): string {
 // same token set already used standalone by renderStampScreen() above — one
 // shell for every merchant page from here on, so the two never drift apart.
 // ---------------------------------------------------------------------------
-type NavKey = 'cards' | 'customers' | 'reports' | 'stamp' | 'settings';
+type NavKey = 'cards' | 'customers' | 'reports' | 'stamp' | 'notifications' | 'settings';
 
 /** The top nav bar BUILD.md §6 wants reachable from every merchant page: Cards · Customers · Reports · Stamp screen · Settings (this build's revision of the historical bottom tab bar list; Settings — BUILD.md §8.13 — added alongside staff PINs and location reminders). Shared between layout() below and renderStampScreen() *only when viewed as the merchant* — a staff session gets its own, deliberately shorter header (see renderStampScreen's own doc comment) that omits every link a staff session cannot reach. */
 function navBar(active: NavKey | undefined, lang: Lang = 'en'): string {
@@ -811,6 +820,7 @@ function navBar(active: NavKey | undefined, lang: Lang = 'en'): string {
     { key: 'customers', href: '/customers', label: t(lang, 'navCustomers') },
     { key: 'reports', href: '/reports', label: t(lang, 'navReports') },
     { key: 'stamp', href: '/stamp', label: t(lang, 'navStamp') },
+    { key: 'notifications', href: '/notifications', label: t(lang, 'navNotifications') },
     { key: 'settings', href: '/settings', label: t(lang, 'navSettings') },
   ];
   return `<header class="top">
@@ -1104,6 +1114,32 @@ function layout(title: string, bodyHtml: string, active?: NavKey, lang: Lang = '
   .staff-row .badge.inactive { background: rgba(148,163,184,.14); color: var(--ink-3); }
   .staff-row .actions { display: flex; gap: 8px; }
   .settings-note { font-size: 13px; color: var(--ink-3); line-height: 1.5; margin: 6px 0 18px; }
+
+  /* Notifications (BUILD.md §8.12). */
+  .notif-tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+  .notif-tabs a { padding: 8px 16px; border-radius: 100px; font-size: 13px; font-weight: 600; text-decoration: none; color: var(--ink-2); border: 1px solid var(--line); }
+  .notif-tabs a.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+  .notif-advisory { background: rgba(34,197,94,.10); border: 1px solid rgba(34,197,94,.35); color: var(--ink-2); border-radius: var(--radius-lg); padding: 14px 18px; margin-bottom: 20px; font-size: 13px; line-height: 1.5; }
+  .notif-advisory b { color: var(--green); }
+  .notif-recipient-count { font-size: 13px; color: var(--ink-3); margin-top: 6px; }
+  .notif-counter { font-size: 12px; color: var(--ink-3); text-align: end; margin-top: 4px; }
+  .notif-counter.over { color: var(--red); }
+  .notif-history { margin-top: 28px; }
+  .notif-job { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .notif-job:last-child { border-bottom: none; }
+  .notif-job .msg { color: var(--ink); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .notif-job .meta { color: var(--ink-3); white-space: nowrap; }
+  .notif-job .status-pill { font-size: 11px; padding: 3px 10px; border-radius: 100px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
+  .notif-job .status-pill.queued { background: rgba(148,163,184,.14); color: var(--ink-3); }
+  .notif-job .status-pill.sending { background: rgba(242,140,56,.14); color: var(--accent-light); }
+  .notif-job .status-pill.sent { background: rgba(34,197,94,.14); color: var(--green); }
+  .automated-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
+  .automated-card { background: var(--sunk); border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 18px; }
+  .automated-card h3 { margin: 0 0 6px; font-size: 15px; color: var(--ink); display: flex; align-items: center; gap: 8px; }
+  .automated-card p { margin: 0; font-size: 13px; color: var(--ink-3); line-height: 1.5; }
+  .automated-card .status-pill { font-size: 10px; padding: 3px 9px; border-radius: 100px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+  .automated-card .status-pill.live { background: rgba(34,197,94,.14); color: var(--green); }
+  .automated-card .status-pill.pending { background: rgba(148,163,184,.14); color: var(--ink-3); }
 </style>
 </head>
 <body>
@@ -3387,6 +3423,364 @@ async function handleStaffAction(
 }
 
 // ---------------------------------------------------------------------------
+// Notifications (BUILD.md §8.12) — Send · Automated tabs. Owner session
+// only: every handler below is reached exclusively via requireMerchant()
+// at the router, the same guard as /customers, /reports and /settings — a
+// staff PIN session (`lnx-staff` cookie) is simply invisible to it and
+// 302s to /signin exactly as if there were no session at all (see
+// requireMerchant's own doc comment). apps/demo/test/notificationsHttp.test.ts
+// proves the refusal.
+//
+// Enqueuing (POST /notifications/send) only ever inserts rows via
+// apps/demo/broadcast.ts's enqueueBroadcast() and returns — no push, no
+// APNs client, nothing that could time out the request (BUILD.md §18 item
+// 6). The actual fan-out is broadcastWorker's job, started once at boot
+// (see the bottom of this file) and running independently of any request.
+// ---------------------------------------------------------------------------
+
+/** One broadcast per merchant per BROADCAST_WINDOW_MS at most — BUILD.md: "so a mistake cannot fire fifty in a minute." Keyed by merchant id, not IP: the whole point is limiting *this business's* messages to *its own* customers, regardless of which device/IP the owner is on. */
+const broadcastLimiter = new RateLimiter({ limit: 5, windowMs: 10 * 60 * 1000 });
+
+function checkBroadcastRateLimit(merchantId: string): boolean {
+  return broadcastLimiter.check(merchantId);
+}
+
+type NotifTab = 'send' | 'automated';
+
+function parseNotifTab(url: URL): NotifTab {
+  return url.searchParams.get('tab') === 'automated' ? 'automated' : 'send';
+}
+
+function broadcastJobStatusLabel(job: Pick<BroadcastJob, 'status'>, lang: Lang): string {
+  if (job.status === 'sending') return t(lang, 'notificationsStatusSending');
+  if (job.status === 'sent') return t(lang, 'notificationsStatusSent');
+  return t(lang, 'notificationsStatusQueued');
+}
+
+function broadcastJobProgressText(job: Pick<BroadcastJob, 'sentCount' | 'failedCount' | 'recipientCount'>, lang: Lang): string {
+  const vars = {
+    sent: arabicDigits(job.sentCount, lang),
+    total: arabicDigits(job.recipientCount, lang),
+    failed: arabicDigits(job.failedCount, lang),
+  };
+  return job.failedCount > 0
+    ? t(lang, 'notificationsProgressWithFailed', vars)
+    : t(lang, 'notificationsProgress', vars);
+}
+
+/** One `<div class="notif-job">` row — shared between the initial server-rendered list and the JS template string the Send tab's own `<script>` uses to render newly-submitted/polled jobs, so the two can never visually drift apart. */
+function renderBroadcastJobRow(
+  job: Pick<BroadcastJob, 'id' | 'status' | 'sentCount' | 'failedCount' | 'recipientCount'> & { cardName: string; message: string },
+  lang: Lang
+): string {
+  return `<div class="notif-job" data-job-id="${escapeHtml(job.id)}" data-status="${escapeHtml(job.status)}">
+    <span class="msg">${escapeHtml(job.cardName)} — ${escapeHtml(job.message)}</span>
+    <span class="meta">${escapeHtml(broadcastJobProgressText(job, lang))}</span>
+    <span class="status-pill ${escapeHtml(job.status)}">${escapeHtml(broadcastJobStatusLabel(job, lang))}</span>
+  </div>`;
+}
+
+function renderNotificationsPage(
+  lang: Lang,
+  tab: NotifTab,
+  cards: Card[],
+  selectedCardId: string | undefined,
+  initialRecipientCount: number,
+  jobs: Array<BroadcastJob & { card: { name: string } }>
+): string {
+  const tabsHtml = `<div class="notif-tabs">
+    <a href="/notifications?tab=send"${tab === 'send' ? ' class="active"' : ''}>${escapeHtml(t(lang, 'notificationsTabSend'))}</a>
+    <a href="/notifications?tab=automated"${tab === 'automated' ? ' class="active"' : ''}>${escapeHtml(t(lang, 'notificationsTabAutomated'))}</a>
+  </div>`;
+
+  if (cards.length === 0) {
+    return `<h1>${escapeHtml(t(lang, 'navNotifications'))}</h1>${tabsHtml}<div class="panel empty"><p class="muted">${escapeHtml(t(lang, 'notificationsNoCards'))}</p></div>`;
+  }
+
+  if (tab === 'automated') {
+    const body = `<h1>${escapeHtml(t(lang, 'navNotifications'))}</h1>
+    ${tabsHtml}
+    <div class="automated-grid">
+      <div class="automated-card">
+        <h3>${escapeHtml(t(lang, 'notificationsAutomatedWelcomeTitle'))} <span class="status-pill live">${escapeHtml(t(lang, 'notificationsAutomatedWelcomeStatus'))}</span></h3>
+        <p>${escapeHtml(t(lang, 'notificationsAutomatedWelcomeDesc'))}</p>
+      </div>
+      <div class="automated-card">
+        <h3>${escapeHtml(t(lang, 'notificationsAutomatedBirthdayTitle'))} <span class="status-pill pending">${escapeHtml(t(lang, 'notificationsAutomatedNotScheduled'))}</span></h3>
+        <p>${escapeHtml(t(lang, 'notificationsAutomatedBirthdayDesc'))}</p>
+      </div>
+      <div class="automated-card">
+        <h3>${escapeHtml(t(lang, 'notificationsAutomatedWinbackTitle'))} <span class="status-pill pending">${escapeHtml(t(lang, 'notificationsAutomatedNotScheduled'))}</span></h3>
+        <p>${escapeHtml(t(lang, 'notificationsAutomatedWinbackDesc'))}</p>
+      </div>
+    </div>`;
+    return body;
+  }
+
+  const selected = selectedCardId ?? cards[0]!.id;
+  const cardOptions = cards
+    .map((c) => `<option value="${escapeHtml(c.id)}"${c.id === selected ? ' selected' : ''}>${escapeHtml(c.name)}</option>`)
+    .join('');
+
+  const historyHtml =
+    jobs.length === 0
+      ? `<p class="muted">${escapeHtml(t(lang, 'notificationsHistoryEmpty'))}</p>`
+      : jobs.map((j) => renderBroadcastJobRow({ ...j, cardName: j.card.name }, lang)).join('\n');
+
+  const body = `<h1>${escapeHtml(t(lang, 'navNotifications'))}</h1>
+  ${tabsHtml}
+  <div class="notif-advisory"><b>${escapeHtml(t(lang, 'notificationsTabSend'))}:</b> ${escapeHtml(t(lang, 'notificationsAdvisory'))}</div>
+  <div class="panel">
+    <form id="broadcastForm">
+      <div class="field">
+        <label for="cardId">${escapeHtml(t(lang, 'notificationsCardLabel'))}</label>
+        <select id="cardId" name="cardId">${cardOptions}</select>
+        <p class="notif-recipient-count" id="recipientCount">${escapeHtml(t(lang, 'notificationsRecipientCount', { count: arabicDigits(initialRecipientCount, lang) }))}</p>
+      </div>
+      <div class="field">
+        <label for="message">${escapeHtml(t(lang, 'notificationsMessageLabel'))}</label>
+        <textarea id="message" name="message" rows="4" maxlength="${BROADCAST_MESSAGE_MAX_LENGTH}" placeholder="${escapeHtml(t(lang, 'notificationsMessagePlaceholder'))}"></textarea>
+        <p class="notif-counter" id="messageCounter">${escapeHtml(t(lang, 'notificationsMessageCounter', { count: arabicDigits(0, lang), max: arabicDigits(BROADCAST_MESSAGE_MAX_LENGTH, lang) }))}</p>
+      </div>
+      <p class="error" id="broadcastError" style="display:none;"></p>
+      <button type="submit" class="btn" id="sendButton" disabled>${escapeHtml(t(lang, 'notificationsSendButton'))}</button>
+    </form>
+  </div>
+  <div class="notif-history">
+    <h2>${escapeHtml(t(lang, 'notificationsHistoryHeading'))}</h2>
+    <div class="panel" id="jobList">${historyHtml}</div>
+  </div>
+  <script>
+    (function () {
+      var MAX_LEN = ${BROADCAST_MESSAGE_MAX_LENGTH};
+      var LABELS = {
+        queued: ${JSON.stringify(t(lang, 'notificationsStatusQueued'))},
+        sending: ${JSON.stringify(t(lang, 'notificationsStatusSending'))},
+        sent: ${JSON.stringify(t(lang, 'notificationsStatusSent'))}
+      };
+      var counterTpl = ${JSON.stringify(t(lang, 'notificationsMessageCounter', { count: '__N__', max: String(BROADCAST_MESSAGE_MAX_LENGTH) }))};
+      var progressTpl = ${JSON.stringify(t(lang, 'notificationsProgress', { sent: '__S__', total: '__T__' }))};
+      var progressFailedTpl = ${JSON.stringify(t(lang, 'notificationsProgressWithFailed', { sent: '__S__', total: '__T__', failed: '__F__' }))};
+      var msgEmptyText = ${JSON.stringify(t(lang, 'notificationsMessageEmpty'))};
+      var sendErrorText = ${JSON.stringify(t(lang, 'notificationsSendError'))};
+      var sendingText = ${JSON.stringify(t(lang, 'notificationsSending'))};
+      var sendText = ${JSON.stringify(t(lang, 'notificationsSendButton'))};
+      var recipientTpl = ${JSON.stringify(t(lang, 'notificationsRecipientCount', { count: '__N__' }))};
+
+      var cardSelect = document.getElementById('cardId');
+      var messageEl = document.getElementById('message');
+      var counterEl = document.getElementById('messageCounter');
+      var sendBtn = document.getElementById('sendButton');
+      var errorEl = document.getElementById('broadcastError');
+      var recipientEl = document.getElementById('recipientCount');
+      var jobList = document.getElementById('jobList');
+      var form = document.getElementById('broadcastForm');
+
+      function updateCounter() {
+        var len = Array.from(messageEl.value.trim()).length;
+        counterEl.textContent = counterTpl.replace('__N__', String(len));
+        counterEl.classList.toggle('over', len > MAX_LEN);
+        sendBtn.disabled = len === 0 || len > MAX_LEN;
+      }
+      messageEl.addEventListener('input', updateCounter);
+      updateCounter();
+
+      function refreshRecipientCount() {
+        recipientEl.textContent = '…';
+        fetch('/notifications/recipient-count?cardId=' + encodeURIComponent(cardSelect.value))
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            recipientEl.textContent = recipientTpl.replace('__N__', String(data.count));
+          })
+          .catch(function () {});
+      }
+      cardSelect.addEventListener('change', refreshRecipientCount);
+
+      function progressText(job) {
+        if (job.failedCount > 0) {
+          return progressFailedTpl.replace('__S__', String(job.sentCount)).replace('__T__', String(job.recipientCount)).replace('__F__', String(job.failedCount));
+        }
+        return progressTpl.replace('__S__', String(job.sentCount)).replace('__T__', String(job.recipientCount));
+      }
+
+      function renderRow(job) {
+        var row = document.createElement('div');
+        row.className = 'notif-job';
+        row.setAttribute('data-job-id', job.id);
+        row.setAttribute('data-status', job.status);
+        var msg = document.createElement('span');
+        msg.className = 'msg';
+        msg.textContent = job.cardName + ' — ' + job.message;
+        var meta = document.createElement('span');
+        meta.className = 'meta';
+        meta.textContent = progressText(job);
+        var pill = document.createElement('span');
+        pill.className = 'status-pill ' + job.status;
+        pill.textContent = LABELS[job.status] || job.status;
+        row.appendChild(msg);
+        row.appendChild(meta);
+        row.appendChild(pill);
+        return row;
+      }
+
+      function pollJob(jobId) {
+        var attempts = 0;
+        var interval = setInterval(function () {
+          attempts++;
+          fetch('/notifications/jobs/' + encodeURIComponent(jobId))
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (data) {
+              if (!data || !data.job) { clearInterval(interval); return; }
+              var existing = jobList.querySelector('[data-job-id="' + jobId + '"]');
+              var fresh = renderRow(data.job);
+              if (existing) existing.replaceWith(fresh);
+              if (data.job.status === 'sent' || attempts > 120) clearInterval(interval);
+            })
+            .catch(function () { clearInterval(interval); });
+        }, 1500);
+      }
+
+      // Any job the page loaded with that isn't finished yet — a merchant
+      // who refreshes mid-send should see it keep moving, not look stuck.
+      Array.prototype.forEach.call(jobList.querySelectorAll('.notif-job'), function (row) {
+        var status = row.getAttribute('data-status');
+        if (status !== 'sent') pollJob(row.getAttribute('data-job-id'));
+      });
+
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        errorEl.style.display = 'none';
+        var message = messageEl.value.trim();
+        if (!message) {
+          errorEl.textContent = msgEmptyText;
+          errorEl.style.display = 'block';
+          return;
+        }
+        sendBtn.disabled = true;
+        sendBtn.textContent = sendingText;
+        fetch('/notifications/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cardId: cardSelect.value, message: message })
+        })
+          .then(function (r) { return r.json().then(function (data) { return { status: r.status, data: data }; }); })
+          .then(function (res) {
+            if (res.status !== 200 || !res.data.ok) {
+              errorEl.textContent = res.data && res.data.message ? res.data.message : sendErrorText;
+              errorEl.style.display = 'block';
+              return;
+            }
+            var emptyState = jobList.querySelector('.muted');
+            if (emptyState) emptyState.remove();
+            jobList.insertBefore(renderRow(res.data.job), jobList.firstChild);
+            if (res.data.job.status !== 'sent') pollJob(res.data.job.id);
+            messageEl.value = '';
+            updateCounter();
+          })
+          .catch(function () {
+            errorEl.textContent = sendErrorText;
+            errorEl.style.display = 'block';
+          })
+          .then(function () {
+            sendBtn.textContent = sendText;
+            updateCounter();
+          });
+      });
+    })();
+  </script>`;
+  return body;
+}
+
+async function handleNotificationsPage(req: http.IncomingMessage, res: http.ServerResponse, url: URL, merchant: Merchant): Promise<void> {
+  const lang = resolveLang(req);
+  const tab = parseNotifTab(url);
+  const cards = await prisma.card.findMany({ where: { merchantId: merchant.id }, orderBy: { createdAt: 'desc' } });
+
+  const requestedCardId = url.searchParams.get('cardId') ?? undefined;
+  const selectedCard = cards.find((c) => c.id === requestedCardId) ?? cards[0];
+  const initialRecipientCount = selectedCard ? await recipientCountForCard(selectedCard) : 0;
+
+  const jobs = tab === 'send' ? await listBroadcastJobs(merchant.id) : [];
+
+  sendHtml(res, 200, layout(t(lang, 'navNotifications'), renderNotificationsPage(lang, tab, cards, selectedCard?.id, initialRecipientCount, jobs), 'notifications', lang));
+}
+
+async function handleRecipientCount(req: http.IncomingMessage, res: http.ServerResponse, url: URL, merchant: Merchant): Promise<void> {
+  const cardId = url.searchParams.get('cardId') ?? '';
+  const card = await findOwnedCard(cardId, merchant.id);
+  if (!card) {
+    sendJson(res, 404, { ok: false, count: 0 });
+    return;
+  }
+  const count = await recipientCountForCard(card);
+  sendJson(res, 200, { ok: true, count });
+}
+
+function broadcastJobJson(job: BroadcastJob & { card?: { name: string } }) {
+  return {
+    id: job.id,
+    status: job.status,
+    message: job.message,
+    recipientCount: job.recipientCount,
+    sentCount: job.sentCount,
+    failedCount: job.failedCount,
+    cardName: job.card?.name ?? '',
+  };
+}
+
+async function handleSendBroadcast(req: http.IncomingMessage, res: http.ServerResponse, merchant: Merchant): Promise<void> {
+  const lang = resolveLang(req);
+
+  if (!checkBroadcastRateLimit(merchant.id)) {
+    sendJson(res, 429, { ok: false, message: t(lang, 'notificationsRateLimited') });
+    return;
+  }
+
+  let body: unknown;
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    const status = isHttpError(err) ? err.statusCode : 400;
+    sendJson(res, status, { ok: false, message: t(lang, 'notificationsSendError') });
+    return;
+  }
+
+  const cardId =
+    typeof body === 'object' && body !== null && 'cardId' in body && typeof (body as { cardId: unknown }).cardId === 'string'
+      ? (body as { cardId: string }).cardId
+      : '';
+  const rawMessage =
+    typeof body === 'object' && body !== null && 'message' in body && typeof (body as { message: unknown }).message === 'string'
+      ? (body as { message: string }).message
+      : '';
+
+  const card = await findOwnedCard(cardId, merchant.id);
+  if (!card) {
+    sendJson(res, 404, { ok: false, message: t(lang, 'cardNotFound') });
+    return;
+  }
+
+  const message = sanitizeBroadcastMessage(rawMessage);
+  if (!message) {
+    sendJson(res, 400, { ok: false, message: t(lang, 'notificationsMessageEmpty') });
+    return;
+  }
+
+  const job = await enqueueBroadcast(card, message, 'manual');
+  sendJson(res, 200, { ok: true, job: broadcastJobJson({ ...job, card: { name: card.name } }) });
+}
+
+async function handleBroadcastJobStatus(req: http.IncomingMessage, res: http.ServerResponse, jobId: string, merchant: Merchant): Promise<void> {
+  const job = await getBroadcastJob(jobId, merchant.id);
+  if (!job) {
+    sendJson(res, 404, { ok: false });
+    return;
+  }
+  const card = await prisma.card.findUnique({ where: { id: job.cardId }, select: { name: true } });
+  sendJson(res, 200, { ok: true, job: broadcastJobJson({ ...job, card: card ?? undefined }) });
+}
+
+// ---------------------------------------------------------------------------
 // The stamp screen's own sign-in: a staff PIN (BUILD.md §8.13). Reached
 // only when resolveStampAuth() finds neither a merchant session nor a
 // staff session already (see the router's own GET /stamp handling below).
@@ -3805,6 +4199,7 @@ async function handleIssuePass(req: http.IncomingMessage, res: http.ServerRespon
       kind: 'ENROLL',
     },
   });
+  await enqueueWelcomeBroadcast(card, pass, created);
 
   res.writeHead(200, {
     'Content-Type': 'application/vnd.apple.pkpass',
@@ -3813,6 +4208,39 @@ async function handleIssuePass(req: http.IncomingMessage, res: http.ServerRespon
     'Cache-Control': 'no-store',
   });
   res.end(pkpass);
+}
+
+/**
+ * The welcome automation (BUILD.md §8.12's "Automated" tab, built end to
+ * end here — unlike birthday/win-back, which the Notifications page shows
+ * clearly marked "not yet scheduled" rather than pretending to work).
+ * Fires once per genuine new enrolment (`created`, from
+ * createPassForEnrolment's EnrolmentResult) — never on a reused Pass, or a
+ * returning customer re-scanning the same QR would get "welcomed" again
+ * every time. Goes through the exact same queue a manual Send uses
+ * (apps/demo/broadcast.ts's enqueueBroadcast(), `kind: 'welcome'`) instead
+ * of pushing inline: enqueueBroadcast() only ever inserts rows, so calling
+ * it from inside this request handler cannot be the "fan out APNs inside
+ * a request handler" mistake BUILD.md §18 item 6 warns about — the actual
+ * push happens later, entirely on broadcastWorker's own schedule.
+ *
+ * Passes `onlySerial: pass.serial` down to enqueueBroadcast() so the
+ * welcome job's recipient snapshot is this one newly-enrolled Pass only —
+ * without it, enqueueBroadcast's default "every Pass this card has right
+ * now" snapshot would welcome-broadcast to every *existing* customer of
+ * the card too, each time anyone new enrols.
+ */
+async function enqueueWelcomeBroadcast(card: Card, pass: Pass, created: boolean): Promise<void> {
+  if (!created) return;
+  const lang: Lang = card.lang === 'en' ? 'en' : 'ar';
+  try {
+    await enqueueBroadcast(card, t(lang, 'notifWelcomeMessage'), 'welcome', { onlySerial: pass.serial });
+  } catch (err) {
+    // The customer's pass has already been created by the time this runs
+    // — never let a welcome-automation hiccup fail (or even flag) a real
+    // enrolment.
+    console.error(`[broadcast] welcome enqueue failed for card ${card.id}:`, err);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3901,6 +4329,7 @@ async function handleIssueGooglePass(
       kind: 'ENROLL',
     },
   });
+  await enqueueWelcomeBroadcast(card, pass, created);
 
   res.writeHead(302, { Location: saveLink });
   res.end();
@@ -4804,6 +5233,37 @@ function serveStaticFile(res: http.ServerResponse, pathname: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Broadcast worker (BUILD.md §8.12 / §18 item 6 / §10) — the consumer side
+// of the Postgres-backed queue apps/demo/broadcast.ts's enqueueBroadcast()
+// writes into. `sendOne` is wired to the exact same ApnsClient every other
+// push path in this file uses (getApnsClient() above): one warm HTTP/2
+// session for the whole process, never a client built per push. Started
+// once, at boot (see server.listen's callback below); stopped cleanly —
+// waiting for any cycle already in flight — on shutdown.
+// ---------------------------------------------------------------------------
+async function broadcastSendOne(device: Device): Promise<SendPushOutcome> {
+  const client = getApnsClient();
+  if (!client) return { ok: false, error: 'APNs not configured' }; // getApnsClient() already logged why, once.
+  const passTypeId = process.env.APPLE_PASS_TYPE_ID;
+  if (!passTypeId) return { ok: false, error: '.env is missing APPLE_PASS_TYPE_ID' };
+
+  const result = await client.sendPush(device.pushToken, passTypeId);
+  if (result.ok) return { ok: true };
+  if (result.reason === 'gone') return { ok: false, gone: true };
+  if (isBadEnvironmentKeyError(result.status, result.body)) {
+    // Same actionable shape as pushApnsUpdate's own line — see that
+    // function's comment for the full explanation.
+    return {
+      ok: false,
+      error: `BadEnvironmentKeyInToken — APNs key not provisioned for '${APNS_ENV}' (host=${client.host})`,
+    };
+  }
+  return { ok: false, error: `status=${result.status} auth=${client.authMode} host=${client.host} body=${result.body}` };
+}
+
+const broadcastWorker = new BroadcastWorker({ sendOne: broadcastSendOne });
+
+// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 const server = http.createServer(async (req, res) => {
@@ -4924,6 +5384,37 @@ const server = http.createServer(async (req, res) => {
       const merchant = await requireMerchant(req, res);
       if (!merchant) return;
       await handleStaffAction(req, res, staffActionMatch[1]!, staffActionMatch[2] as 'activate' | 'deactivate' | 'delete', merchant);
+      return;
+    }
+    // GET /notifications and its two AJAX endpoints (BUILD.md §8.12) —
+    // literal/regex paths registered here for the same reason /settings
+    // and /staff are: above the `GET /:code` catch-all, owner session only
+    // (requireMerchant() — see this section's own doc comment above
+    // handleNotificationsPage for why a staff session can never reach any
+    // of these).
+    if (req.method === 'GET' && pathname === '/notifications') {
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleNotificationsPage(req, res, url, merchant);
+      return;
+    }
+    if (req.method === 'GET' && pathname === '/notifications/recipient-count') {
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleRecipientCount(req, res, url, merchant);
+      return;
+    }
+    if (req.method === 'POST' && pathname === '/notifications/send') {
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleSendBroadcast(req, res, merchant);
+      return;
+    }
+    const broadcastJobMatch = pathname.match(/^\/notifications\/jobs\/([^/]+)$/);
+    if (req.method === 'GET' && broadcastJobMatch) {
+      const merchant = await requireMerchant(req, res);
+      if (!merchant) return;
+      await handleBroadcastJobStatus(req, res, broadcastJobMatch[1]!, merchant);
       return;
     }
     // /cards/:id/print, /cards/:id/activate, /cards/:id/edit — two-segment
@@ -5112,9 +5603,26 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`  Local: http://localhost:${PORT}`);
   console.log(`  LAN:   ${LAN_URL}   (open this on an iPhone on the same network)`);
   if (PUBLIC_BASE_URL) console.log(`  Public: ${PUBLIC_BASE_URL}   (used for enrol links and QR codes)`);
+  // DISABLE_BROADCAST_WORKER=1 is test-only: every apps/demo/test/*.test.ts
+  // file that spawns this server as a real child process sets it, so that
+  // process never runs a live BroadcastWorker against the shared local
+  // test Postgres. Without this, a broadcast job/recipient row created by
+  // one test file's fixture could be claimed by a *different* spawned
+  // server's background worker (claimBatch() is deliberately global, not
+  // scoped to one job — see broadcastWorker.ts's own file comment) and
+  // pushed through the real ApnsClient this server wires up below —
+  // exactly the "contact Apple from a test" outcome the job's own
+  // constraints forbid. apps/demo/test/broadcastWorker.test.ts is the only
+  // place a BroadcastWorker ever actually runs under test, and it always
+  // constructs its own instance directly with an injected stub `sendOne`,
+  // never through this server process.
+  if (process.env.DISABLE_BROADCAST_WORKER !== '1') broadcastWorker.start();
 });
 
-process.on('SIGINT', async () => {
+async function shutdown(): Promise<void> {
+  await broadcastWorker.stop();
   await prisma.$disconnect();
   process.exit(0);
-});
+}
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown); // Fly.io/most container platforms send this on deploy/stop, not just Ctrl-C
