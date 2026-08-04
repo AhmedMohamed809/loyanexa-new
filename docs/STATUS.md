@@ -1,6 +1,39 @@
 # Where the project stands — 4 August 2026
 
-**Live: https://loyanexa-new.fly.dev** · `main` at `0a89471` · **438 tests** · typecheck clean
+**Live: https://loyanexa-new.fly.dev** · `main` at `7c121c6` · **474 tests** · typecheck clean
+
+---
+
+## Notifications are now a moment, not card content
+
+Your report: send two notifications, then a new customer installs the card — and they see
+every previous notification. Fixed, plus a second bug found on the way.
+
+**What caused your report.** Enrolment is idempotent by phone number: re-scanning with the
+same number returns your *existing* card, so your stamps are still on it. Correct — but that
+existing card came back carrying its old message too. A genuinely new phone number always
+got a clean card; the sending side was never broken.
+
+**Now:** a message expires **15 minutes** after it is sent (`BROADCAST_MESSAGE_TTL_MINUTES`).
+Once it expires the card stops carrying it, and a sweeper pushes the update so the phones
+already out there drop it too — not just cards issued later. A customer who enrols after you
+sent something sees nothing until you send the next one. The full history stays on
+`/notifications`: what was sent, when, to how many, and whether it has expired.
+
+**The second bug.** The first version read "no expiry set" as "never expires". That exempted
+every card issued before the change from the whole feature — **9 of the 12 cards carrying a
+message on the live database**, each pinned to a months-old broadcast permanently. That was
+your original complaint, unfixed for exactly the customers who had it. A NULL expiry now
+means expired, the sweeper clears those rows, and a migration retired the 9. Verified live:
+0 remaining.
+
+**One honest caveat.** A back field's *first ever* appearance may not raise a lock-screen
+banner, because iOS has no previous on-device value to compare against. Apple does not
+document its diffing precisely enough to settle it, and it could not be tested without a
+device. So the very first notification a given customer receives may appear on the card
+without a banner; every one after that behaves normally. **Worth watching next time you
+send one.** The alternative — keeping a permanently blank field on every card so there is
+always something to diff — is what caused the bug you reported.
 
 ---
 

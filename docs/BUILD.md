@@ -454,6 +454,28 @@ Automated types: **welcome · birthday · win-back**.
 >    had an "old value" on the device to diff against for the
 >    `changeMessage` banner — see §9.3's own note below for what was found
 >    about that trade-off).
+>
+> **Corrected the same day, before the owner ever saw it.** The predicate
+> above first shipped as `!pass.messageExpiresAt || expiry > now` — reading
+> "no expiry set" as **never expires** — and the sweeper's `WHERE` matched
+> it (`"messageExpiresAt" IS NOT NULL AND ...`). That exempted every `Pass`
+> written *before* the migration from the entire feature. On the live
+> database that was **9 of the 12 passes carrying a message**, each pinned
+> to display a months-old broadcast permanently: the owner's original report
+> left unfixed for precisely the customers who had it, while passing every
+> test, because every test built its fixture fresh.
+>
+> A NULL expiry now means **expired**. `Pass.message` has exactly one writer
+> (`broadcastWorker.ts`) and it stamps an expiry alongside every write — the
+> welcome message included, since that goes through `enqueueBroadcast()` with
+> `onlySerial` — so a non-empty message with no expiry can only be a
+> pre-migration leftover. Reading NULL as expired also fails *closed* on a
+> half-written row (a rolled-back deploy, a manual edit). Migration
+> `20260804090000_expire_legacy_messages` retired the 9 existing rows so the
+> fix did not wait on the sweeper's next tick; it deliberately does not touch
+> rows with a real future expiry, which are live broadcasts customers are
+> meant to be reading. The test that asserted the old behaviour was inverted
+> — it was the bug, written down.
 > 2. **The sweeper.** An expired field only disappearing the next time a
 >    pass happens to be rebuilt (a stamp, a card edit) is not good enough —
 >    a customer's card would keep showing it for hours. `apps/demo/messageSweeper.ts`'s
