@@ -10,11 +10,11 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="preload" as="style"
-  href="https://fonts.googleapis.com/css2?family=Alexandria:wght@300;400;500;600;700;800&display=swap">
+  href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&display=swap">
 <link rel="stylesheet"
-  href="https://fonts.googleapis.com/css2?family=Alexandria:wght@300;400;500;600;700;800&display=swap">
+  href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&display=swap">
 <noscript><link rel="stylesheet"
-  href="https://fonts.googleapis.com/css2?family=Alexandria:wght@300;400;500;600;700;800&display=swap"></noscript>
+  href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&display=swap"></noscript>
 <style>
 /* ============================================================
    LoyaNexa — design tokens
@@ -68,8 +68,8 @@
 
   /* shape and motion ---------------------------------------------- */
   --r-sm:10px; --r-md:14px; --r-lg:16px; --r-xl:18px; --r-2xl:22px;
-  --sans:'Alexandria',system-ui,sans-serif;
-  --mono:'Alexandria',system-ui,sans-serif;   /* label/figure role, same family */
+  --sans:'IBM Plex Sans Arabic',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  --mono:'IBM Plex Sans Arabic',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;   /* label/figure role, same family */
   --shell:1200px; --t:300ms;
   --ease:cubic-bezier(.22,1,.36,1); --ease-2:cubic-bezier(.4,0,.2,1);
 
@@ -93,7 +93,7 @@
   --c-denim:#8FA6C4;  --c-denim-t:rgba(143,166,196,.09);
   --c-orange:#F28C38; --c-orange-t:rgba(242,140,56,.10);
 }
-/* Alexandria is bilingual, so no per-language family swap is required.
+/* IBM Plex Sans Arabic is bilingual, so no per-language family swap is required.
    Arabic still gets a little more leading — its ascenders/descenders run deeper. */
 html[lang="ar"] body{line-height:1.75}
 /* BUILD.md §4, non-negotiable: tracking breaks Arabic letter joining. A few
@@ -124,7 +124,7 @@ h1,h2,h3,h4,p{margin:0}
 ::selection{background:var(--accent);color:var(--on-accent)}
 
 /* type scale ------------------------------------------------ */
-.display{font-size:clamp(2.4rem,7vw,4.4rem);line-height:1.04;letter-spacing:-.025em;font-weight:800}
+.display{font-size:clamp(2.4rem,7vw,4.4rem);line-height:1.04;letter-spacing:-.025em;font-weight:700}
 .h2{font-size:clamp(1.8rem,3.9vw,2.8rem);line-height:1.14;letter-spacing:-.02em;font-weight:700}
 .h3{font-size:clamp(1.12rem,2vw,1.38rem);line-height:1.3;letter-spacing:-.01em;font-weight:700}
 .lede{font-size:clamp(1rem,1.55vw,1.16rem);line-height:1.7;font-weight:400;color:var(--ink-2)}
@@ -465,7 +465,7 @@ html[dir="rtl"] .plan-top::before{clip-path:polygon(100% 0,100% 100%,0 0);
 .plan-top:hover{border-color:var(--accent)}
 .plan-top .price b{color:var(--brand-bg)}
 .plan-top .tick{background:var(--c-olive-t);color:var(--c-olive)}
-.plan h3{font-size:1.5rem;font-weight:800;letter-spacing:-.02em}
+.plan h3{font-size:1.5rem;font-weight:700;letter-spacing:-.02em}
 .plan-ic{width:42px;height:42px;border-radius:12px;margin:14px auto 0;display:grid;place-items:center;
   background:var(--accent-t);color:var(--accent);border:1px solid var(--accent-line)}
 /* "cancel anytime" between two hairlines, as in the reference */
@@ -474,7 +474,7 @@ html[dir="rtl"] .plan-top::before{clip-path:polygon(100% 0,100% 100%,0 0);
 .plan-any span{padding:6px 14px;border-radius:99px;border:1px solid var(--accent-line);
   color:var(--accent);font-size:.76rem;font-weight:700;white-space:nowrap}
 .price{display:flex;align-items:flex-end;justify-content:center;gap:6px;margin:18px 0 4px}
-.price b{font-size:3rem;line-height:1;letter-spacing:-.03em;font-weight:800;font-family:var(--mono);
+.price b{font-size:3rem;line-height:1;letter-spacing:-.03em;font-weight:700;font-family:var(--mono);
   font-variant-numeric:tabular-nums;font-feature-settings:'tnum' 1}
 /* the spelled-out unit is a phrase, not a symbol — looser and a touch smaller */
 html[lang="ar"] .price{align-items:baseline;flex-wrap:wrap;gap:8px}
@@ -631,7 +631,7 @@ html[lang="ar"] .hwmeta span{letter-spacing:0}
   box-shadow:0 -2px 22px rgba(0,0,0,.35);padding:0 0 18px;display:flex;flex-direction:column;
   align-items:center;overflow:hidden}
 .a4-top{width:100%;padding:14px 16px;background:var(--navy);display:flex;justify-content:center}
-.a4 h4{font-size:1.05rem;font-weight:800;letter-spacing:-.02em;margin:16px 0 4px;text-align:center}
+.a4 h4{font-size:1.05rem;font-weight:700;letter-spacing:-.02em;margin:16px 0 4px;text-align:center}
 .a4 .sub{font-size:.72rem;color:#475569;margin-bottom:12px}
 .a4 .qrbox{background:#fff;padding:6px;border:1px solid #E2E8F0;border-radius:8px;color:#0F172A}
 .a4 .qrbox .qr{width:86px;max-width:86px}
