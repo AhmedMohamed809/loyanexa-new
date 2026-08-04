@@ -829,122 +829,22 @@ function generateShortCode(): string {
 // same token set already used standalone by renderStampScreen() above — one
 // shell for every merchant page from here on, so the two never drift apart.
 // ---------------------------------------------------------------------------
-type NavKey = 'cards' | 'customers' | 'reports' | 'stamp' | 'notifications' | 'settings';
-
-/** The top nav bar BUILD.md §6 wants reachable from every merchant page: Cards · Customers · Reports · Stamp screen · Settings (this build's revision of the historical bottom tab bar list; Settings — BUILD.md §8.13 — added alongside staff PINs and location reminders). Shared between layout() below and renderStampScreen() *only when viewed as the merchant* — a staff session gets its own, deliberately shorter header (see renderStampScreen's own doc comment) that omits every link a staff session cannot reach. */
-function navBar(active: NavKey | undefined, lang: Lang = 'en'): string {
-  const items: Array<{ key: NavKey; href: string; label: string }> = [
-    { key: 'cards', href: '/app', label: t(lang, 'navCards') },
-    { key: 'customers', href: '/customers', label: t(lang, 'navCustomers') },
-    { key: 'reports', href: '/reports', label: t(lang, 'navReports') },
-    { key: 'stamp', href: '/stamp', label: t(lang, 'navStamp') },
-    { key: 'notifications', href: '/notifications', label: t(lang, 'navNotifications') },
-    { key: 'settings', href: '/settings', label: t(lang, 'navSettings') },
-  ];
-  const otherLang: Lang = lang === 'ar' ? 'en' : 'ar';
-  return `<header class="top">
-  <a class="brand" href="/app">LoyaNexa</a>
-  <nav class="nav">
-    ${items
-      .map(
-        (i) =>
-          `<a href="${i.href}"${i.key === active ? ' class="active" aria-current="page"' : ''}>${escapeHtml(i.label)}</a>`
-      )
-      .join('\n    ')}
-    <a class="lang-toggle" href="/lang/${otherLang}" lang="${otherLang}">${escapeHtml(t(lang, 'navSwitchLang'))}</a>
-  </nav>
-  <form method="POST" action="/signout" style="margin:0;">
-    <button type="submit" class="btn secondary small">${escapeHtml(t(lang, 'navSignOut'))}</button>
-  </form>
-</header>`;
-}
-
 /**
- * The five tab-bar icons, as inline SVG paths.
+ * The chrome every merchant page shares: the design tokens, the top bar,
+ * the mobile bottom tab bar, and the button family.
  *
- * Inline and not an icon font or sprite sheet: the tab bar is on every
- * merchant page, and BUILD.md's "no framework, no bundler" rule applies to
- * the dashboard too. `stroke="currentColor"` is what lets one path serve
- * both the muted and the active-accent state without a second asset.
- * `vector-effect` is deliberately omitted — these render at a single size.
+ * Extracted 2026-08-04 because it had been copied. The stamp screen keeps
+ * its own standalone shell (it needs camera CSS no other page wants, and a
+ * staff session gets a different header), and that copy had silently drifted
+ * in two ways the owner could see: its `:root` never declared `--sunk`, so
+ * `header.top`'s background resolved to nothing and the bar rendered flat
+ * against the canvas; and it never declared `.btn` at all, so the sign-out
+ * button it renders came out as a raw white browser button. It also never
+ * got the bottom tab bar, so /stamp was the one page with no bottom nav.
+ *
+ * One constant, emitted by both shells, is what stops that recurring.
  */
-const TAB_ICONS: Record<TabKey, string> = {
-  cards: '<rect x="2.5" y="5.5" width="19" height="13" rx="2.5"/><path d="M2.5 10h19"/>',
-  customers: '<circle cx="9" cy="8.5" r="3.2"/><path d="M3.2 19.2a6 6 0 0 1 11.6 0"/><path d="M16.5 6.2a3 3 0 0 1 0 5.6"/><path d="M17.6 14.4a5.6 5.6 0 0 1 3.2 4.8"/>',
-  stamp: '<circle cx="12" cy="12" r="8.2"/><path d="M8.6 12.2l2.3 2.3 4.5-4.6"/>',
-  notifications: '<path d="M12 3.5a5.6 5.6 0 0 0-5.6 5.6c0 4-1.5 5.4-1.5 5.4h14.2s-1.5-1.4-1.5-5.4A5.6 5.6 0 0 0 12 3.5Z"/><path d="M10.3 18a1.9 1.9 0 0 0 3.4 0"/>',
-  more: '<circle cx="5.5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="18.5" cy="12" r="1.3"/>',
-};
-
-type TabKey = 'cards' | 'customers' | 'stamp' | 'notifications' | 'more';
-
-/**
- * The mobile bottom tab bar (owner's ask, 2026-08-04: *"when I open the
- * website on the mobile phone I need to see the nav bar at the bottom, and
- * it should look like a mobile application"*).
- *
- * Five tabs, not the top nav's six. Native tab bars cap at five because
- * below ~64px a target stops being reliably tappable — Reports and Settings
- * move into "More", which is a pure-CSS `<details>` sheet needing no
- * JavaScript. Reports is the one judgement call here: it is genuinely useful
- * but not a per-shift action, whereas Stamp is used dozens of times a day
- * and keeps its own tab.
- *
- * `active` reuses NavKey so a page never has to know about both navs; the
- * two Reports/Settings keys simply light up the More tab instead.
- *
- * The bar is hidden entirely above 720px, where the top nav takes over — so
- * desktop is untouched and only one of the two is ever visible.
- */
-function tabBar(active: NavKey | undefined, lang: Lang = 'en'): string {
-  const tabs: Array<{ key: TabKey; href: string; label: string }> = [
-    { key: 'cards', href: '/app', label: t(lang, 'navCards') },
-    { key: 'customers', href: '/customers', label: t(lang, 'navCustomers') },
-    { key: 'stamp', href: '/stamp', label: t(lang, 'navStamp') },
-    { key: 'notifications', href: '/notifications', label: t(lang, 'navNotifications') },
-  ];
-  // Reports and Settings have no tab of their own, so they light up "More".
-  const activeTab: TabKey | undefined =
-    active === 'reports' || active === 'settings' ? 'more' : active;
-
-  const icon = (key: TabKey): string =>
-    `<svg class="tabicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${TAB_ICONS[key]}</svg>`;
-
-  const links = tabs
-    .map(
-      (tab) =>
-        `<a href="${tab.href}" class="tab${tab.key === activeTab ? ' active' : ''}"${
-          tab.key === activeTab ? ' aria-current="page"' : ''
-        }>${icon(tab.key)}<span>${escapeHtml(tab.label)}</span></a>`
-    )
-    .join('\n    ');
-
-  const otherLang: Lang = lang === 'ar' ? 'en' : 'ar';
-  return `<nav class="tabbar" aria-label="${escapeHtml(t(lang, 'navPrimary'))}">
-    ${links}
-    <details class="tab-more">
-      <summary class="tab${activeTab === 'more' ? ' active' : ''}">${icon('more')}<span>${escapeHtml(t(lang, 'navMore'))}</span></summary>
-      <div class="more-sheet">
-        <a href="/reports">${escapeHtml(t(lang, 'navReports'))}</a>
-        <a href="/settings">${escapeHtml(t(lang, 'navSettings'))}</a>
-        <a href="/lang/${otherLang}">${escapeHtml(t(lang, 'navSwitchLang'))}</a>
-        <form method="POST" action="/signout"><button type="submit">${escapeHtml(t(lang, 'navSignOut'))}</button></form>
-      </div>
-    </details>
-  </nav>`;
-}
-
-function layout(title: string, bodyHtml: string, active?: NavKey, lang: Lang = 'en'): string {
-  return `<!doctype html>
-<html lang="${lang}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(title)} · LoyaNexa</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Alexandria:wght@300;400;500;600;700;800&display=swap">
-<style>
+const CHROME_CSS = `
   :root {
     --canvas: #0F172A;
     --paper: #1C2A42;
@@ -1103,7 +1003,146 @@ function layout(title: string, bodyHtml: string, active?: NavKey, lang: Lang = '
        underneath it. */
     main { padding-bottom: calc(76px + env(safe-area-inset-bottom, 0px)); }
   }
+  .btn {
+    display: inline-block;
+    background: var(--accent);
+    color: var(--on-accent);
+    border: none;
+    border-radius: 100px;
+    padding: 12px 22px;
+    font-weight: 700;
+    font-size: 15px;
+    text-decoration: none;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .btn:hover { background: var(--accent-hover); }
+  .btn.secondary {
+    background: transparent;
+    color: var(--ink);
+    border: 1px solid var(--line);
+  }
+  .btn.secondary:hover { background: var(--raise); }
+  .btn[disabled] { opacity: .5; cursor: default; }
+`;
 
+type NavKey = 'cards' | 'customers' | 'reports' | 'stamp' | 'notifications' | 'settings';
+
+/** The top nav bar BUILD.md §6 wants reachable from every merchant page: Cards · Customers · Reports · Stamp screen · Settings (this build's revision of the historical bottom tab bar list; Settings — BUILD.md §8.13 — added alongside staff PINs and location reminders). Shared between layout() below and renderStampScreen() *only when viewed as the merchant* — a staff session gets its own, deliberately shorter header (see renderStampScreen's own doc comment) that omits every link a staff session cannot reach. */
+function navBar(active: NavKey | undefined, lang: Lang = 'en'): string {
+  const items: Array<{ key: NavKey; href: string; label: string }> = [
+    { key: 'cards', href: '/app', label: t(lang, 'navCards') },
+    { key: 'customers', href: '/customers', label: t(lang, 'navCustomers') },
+    { key: 'reports', href: '/reports', label: t(lang, 'navReports') },
+    { key: 'stamp', href: '/stamp', label: t(lang, 'navStamp') },
+    { key: 'notifications', href: '/notifications', label: t(lang, 'navNotifications') },
+    { key: 'settings', href: '/settings', label: t(lang, 'navSettings') },
+  ];
+  const otherLang: Lang = lang === 'ar' ? 'en' : 'ar';
+  return `<header class="top">
+  <a class="brand" href="/app">LoyaNexa</a>
+  <nav class="nav">
+    ${items
+      .map(
+        (i) =>
+          `<a href="${i.href}"${i.key === active ? ' class="active" aria-current="page"' : ''}>${escapeHtml(i.label)}</a>`
+      )
+      .join('\n    ')}
+    <a class="lang-toggle" href="/lang/${otherLang}" lang="${otherLang}">${escapeHtml(t(lang, 'navSwitchLang'))}</a>
+  </nav>
+  <form method="POST" action="/signout" style="margin:0;">
+    <button type="submit" class="btn secondary small">${escapeHtml(t(lang, 'navSignOut'))}</button>
+  </form>
+</header>`;
+}
+
+/**
+ * The five tab-bar icons, as inline SVG paths.
+ *
+ * Inline and not an icon font or sprite sheet: the tab bar is on every
+ * merchant page, and BUILD.md's "no framework, no bundler" rule applies to
+ * the dashboard too. `stroke="currentColor"` is what lets one path serve
+ * both the muted and the active-accent state without a second asset.
+ * `vector-effect` is deliberately omitted — these render at a single size.
+ */
+const TAB_ICONS: Record<TabKey, string> = {
+  cards: '<rect x="2.5" y="5.5" width="19" height="13" rx="2.5"/><path d="M2.5 10h19"/>',
+  customers: '<circle cx="9" cy="8.5" r="3.2"/><path d="M3.2 19.2a6 6 0 0 1 11.6 0"/><path d="M16.5 6.2a3 3 0 0 1 0 5.6"/><path d="M17.6 14.4a5.6 5.6 0 0 1 3.2 4.8"/>',
+  stamp: '<circle cx="12" cy="12" r="8.2"/><path d="M8.6 12.2l2.3 2.3 4.5-4.6"/>',
+  notifications: '<path d="M12 3.5a5.6 5.6 0 0 0-5.6 5.6c0 4-1.5 5.4-1.5 5.4h14.2s-1.5-1.4-1.5-5.4A5.6 5.6 0 0 0 12 3.5Z"/><path d="M10.3 18a1.9 1.9 0 0 0 3.4 0"/>',
+  more: '<circle cx="5.5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="18.5" cy="12" r="1.3"/>',
+};
+
+type TabKey = 'cards' | 'customers' | 'stamp' | 'notifications' | 'more';
+
+/**
+ * The mobile bottom tab bar (owner's ask, 2026-08-04: *"when I open the
+ * website on the mobile phone I need to see the nav bar at the bottom, and
+ * it should look like a mobile application"*).
+ *
+ * Five tabs, not the top nav's six. Native tab bars cap at five because
+ * below ~64px a target stops being reliably tappable — Reports and Settings
+ * move into "More", which is a pure-CSS `<details>` sheet needing no
+ * JavaScript. Reports is the one judgement call here: it is genuinely useful
+ * but not a per-shift action, whereas Stamp is used dozens of times a day
+ * and keeps its own tab.
+ *
+ * `active` reuses NavKey so a page never has to know about both navs; the
+ * two Reports/Settings keys simply light up the More tab instead.
+ *
+ * The bar is hidden entirely above 720px, where the top nav takes over — so
+ * desktop is untouched and only one of the two is ever visible.
+ */
+function tabBar(active: NavKey | undefined, lang: Lang = 'en'): string {
+  const tabs: Array<{ key: TabKey; href: string; label: string }> = [
+    { key: 'cards', href: '/app', label: t(lang, 'navCards') },
+    { key: 'customers', href: '/customers', label: t(lang, 'navCustomers') },
+    { key: 'stamp', href: '/stamp', label: t(lang, 'navStamp') },
+    { key: 'notifications', href: '/notifications', label: t(lang, 'navNotifications') },
+  ];
+  // Reports and Settings have no tab of their own, so they light up "More".
+  const activeTab: TabKey | undefined =
+    active === 'reports' || active === 'settings' ? 'more' : active;
+
+  const icon = (key: TabKey): string =>
+    `<svg class="tabicon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${TAB_ICONS[key]}</svg>`;
+
+  const links = tabs
+    .map(
+      (tab) =>
+        `<a href="${tab.href}" class="tab${tab.key === activeTab ? ' active' : ''}"${
+          tab.key === activeTab ? ' aria-current="page"' : ''
+        }>${icon(tab.key)}<span>${escapeHtml(tab.label)}</span></a>`
+    )
+    .join('\n    ');
+
+  const otherLang: Lang = lang === 'ar' ? 'en' : 'ar';
+  return `<nav class="tabbar" aria-label="${escapeHtml(t(lang, 'navPrimary'))}">
+    ${links}
+    <details class="tab-more">
+      <summary class="tab${activeTab === 'more' ? ' active' : ''}">${icon('more')}<span>${escapeHtml(t(lang, 'navMore'))}</span></summary>
+      <div class="more-sheet">
+        <a href="/reports">${escapeHtml(t(lang, 'navReports'))}</a>
+        <a href="/settings">${escapeHtml(t(lang, 'navSettings'))}</a>
+        <a href="/lang/${otherLang}">${escapeHtml(t(lang, 'navSwitchLang'))}</a>
+        <form method="POST" action="/signout"><button type="submit">${escapeHtml(t(lang, 'navSignOut'))}</button></form>
+      </div>
+    </details>
+  </nav>`;
+}
+
+function layout(title: string, bodyHtml: string, active?: NavKey, lang: Lang = 'en'): string {
+  return `<!doctype html>
+<html lang="${lang}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(title)} · LoyaNexa</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Alexandria:wght@300;400;500;600;700;800&display=swap">
+<style>
+${CHROME_CSS}
   main {
     max-width: 1000px;
     margin: 0 auto;
@@ -1132,27 +1171,6 @@ function layout(title: string, bodyHtml: string, active?: NavKey, lang: Lang = '
   p { line-height: 1.5; }
   .muted { color: var(--ink-3); }
   .row { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
-  .btn {
-    display: inline-block;
-    background: var(--accent);
-    color: var(--on-accent);
-    border: none;
-    border-radius: 100px;
-    padding: 12px 22px;
-    font-weight: 700;
-    font-size: 15px;
-    text-decoration: none;
-    cursor: pointer;
-    font-family: inherit;
-  }
-  .btn:hover { background: var(--accent-hover); }
-  .btn.secondary {
-    background: transparent;
-    color: var(--ink);
-    border: 1px solid var(--line);
-  }
-  .btn.secondary:hover { background: var(--raise); }
-  .btn[disabled] { opacity: .5; cursor: default; }
   .cards-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
@@ -5607,41 +5625,14 @@ function renderStampScreen(lang: Lang = 'en', viewer: StampScreenViewer = { kind
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Alexandria:wght@400;600;700;800&display=swap">
 <style>
-  :root {
-    --canvas: #0F172A;
-    --paper: #1C2A42;
-    --raise: #22314C;
-    --accent: #F28C38;
-    --accent-hover: #E67E22;
-    --on-accent: #0F172A;
-    --ink: #FFFFFF;
-    --ink-2: #CBD5E1;
-    --ink-3: #94A3B8;
-    --line: rgba(255,255,255,.10);
-    --green: #22C55E;
-    --red: #EF4444;
-    --amber: #F7B267;
-  }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; min-height: 100%; }
-  body {
-    background: var(--canvas);
-    color: var(--ink);
-    font-family: 'Alexandria', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-  }
-  header.top {
-    display: flex; align-items: center; gap: 28px;
-    padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--sunk);
-  }
-  header.top a.brand { color: var(--ink); text-decoration: none; font-weight: 800; font-size: 17px; }
-  header.top nav.nav { display: flex; gap: 4px; flex-wrap: wrap; margin-inline-start: auto; }
-  header.top nav.nav a {
-    color: var(--ink-2); text-decoration: none; font-weight: 600; font-size: 14px;
-    padding: 8px 14px; border-radius: 100px;
-  }
-  header.top nav.nav a:hover { color: var(--ink); background: var(--raise); }
-  header.top nav.nav a.active { color: var(--on-accent); background: var(--accent); }
+${CHROME_CSS}
+  /* Stamp-screen-only chrome overrides: this page is a single narrow
+     column at a counter, not a dashboard page, so its main is tighter
+     than CHROME_CSS's. The bottom-tab-bar clearance still applies. */
   main { max-width: 480px; margin: 0 auto; padding: 20px 20px 56px; }
+  @media (max-width: 720px) {
+    main { padding-bottom: calc(76px + env(safe-area-inset-bottom, 0px)); }
+  }
   h1 { font-size: 22px; margin: 4px 0 6px; }
   p.sub { color: var(--ink-3); font-size: 14px; margin: 0 0 18px; line-height: 1.5; }
   .notice {
@@ -5708,6 +5699,13 @@ ${viewer.kind === 'staff' ? staffHeader(lang) : navBar('stamp', lang)}
     </form>
   </div>
 </main>
+${
+  // A staff session gets no tab bar, for the same reason staffHeader() exists:
+  // every destination on it (Cards, Customers, Notifications, More) 302s a
+  // staff cookie to /signin, so it would be a row of dead ends under their
+  // thumb. A merchant viewing this page gets the same bar as everywhere else.
+  viewer.kind === 'staff' ? '' : tabBar('stamp', lang)
+}
 <canvas id="canvas" style="display:none;"></canvas>
 <script src="/jsQR.js"></script>
 <script>
