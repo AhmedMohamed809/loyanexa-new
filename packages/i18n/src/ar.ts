@@ -253,6 +253,11 @@ export const ar: Record<keyof typeof en, string> = {
   autoWinbackDaysRange: 'ÙØ¬Ø¨ Ø£Ù ÙÙÙÙ Ø¹Ø¯Ø¯ Ø§ÙØ£ÙØ§Ù Ø¯ÙÙ Ø²ÙØ§Ø±Ø© Ø¨ÙÙ {min} Ù{max}.',
   autoStatusOn: 'ÙÙØ¹ÙÙ',
   autoStatusOff: 'ÙØªÙÙÙ',
+  simTitle: 'معاينة مباشرة',
+  simHint: 'هكذا ستظهر البطاقة لعملائك داخل المحفظة.',
+  simStampsOf: '{filled} من {goal} أختام',
+  simRewardLabel: 'المكافأة',
+  simYourBusiness: 'اسم متجرك',
   navPrimary: 'التنقل الرئيسي',
   navMore: 'المزيد',
   /** See en.ts — this always reads in the language being switched to, so it stays Latin here. */

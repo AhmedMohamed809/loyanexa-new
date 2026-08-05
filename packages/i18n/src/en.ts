@@ -259,6 +259,12 @@ export const en = {
   autoWinbackDaysRange: 'Days without a visit must be between {min} and {max}.',
   autoStatusOn: 'On',
   autoStatusOff: 'Off',
+  // The live card simulation beside the create form (owner's ask, 5 Aug 2026).
+  simTitle: 'Live preview',
+  simHint: 'This is what your customers will see in their wallet.',
+  simStampsOf: '{filled} of {goal} stamps',
+  simRewardLabel: 'Reward',
+  simYourBusiness: 'Your business name',
   navPrimary: 'Main navigation',
   /** The fifth tab, holding what does not fit in a five-tab bar (Reports, Settings, language, sign out). */
   navMore: 'More',

@@ -234,6 +234,30 @@ test('picking a template prefills the create form, icon included', async () => {
   assert.ok(html.includes(`data-seed-en="${barber.rewardEn}"`));
 });
 
+test('the create form carries a live card simulation whose side follows the page and whose content follows the CARD', async () => {
+  // The owner's ask: see the card before releasing it. Two things are easy to
+  // get subtly wrong here and both are checked.
+  const res = await fetch(`${server.baseUrl}/cards/new?template=cafe`, { headers: { Cookie: cookie } });
+  const html = await res.text();
+
+  assert.match(html, /class="with-sim"/, 'the form and the simulation must sit in one two-column grid');
+  assert.match(html, /class="sim-rail"/);
+
+  // 1. SIDE follows the document. Nothing may hardcode left or right — the
+  //    grid plus the document dir is what puts it on the correct side, and an
+  //    explicit side would have to be undone for the other language.
+  assert.ok(!/\.sim-rail[^}]*(^|[^-])(right|left)\s*:/.test(html), 'the rail must not pin itself to a side');
+
+  // 2. CONTENT follows the card, not the dashboard. A merchant reading an
+  //    English dashboard may be building an Arabic card, and the preview is a
+  //    picture of what the CUSTOMER will hold.
+  assert.match(html, /id="simCard" dir="rtl" lang="ar"/, 'a card defaulting to Arabic must preview right-to-left');
+
+  // The strip is the real renderer, never a second drawing of it.
+  assert.match(html, /id="preview" src="\/preview\.png\?/);
+  assert.match(html, /builtinIcon=coffee/, "the template's stamp icon must show in the preview");
+});
+
 test('an unknown template id opens an ordinary blank form rather than an error', async () => {
   const res = await fetch(`${server.baseUrl}/cards/new?template=not-a-real-template`, {
     headers: { Cookie: cookie },
