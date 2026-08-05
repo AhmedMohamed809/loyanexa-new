@@ -1242,6 +1242,45 @@ ${CHROME_CSS}
   .warn { background: rgba(247,178,103,.10); border: 1px solid rgba(247,178,103,.32); color: var(--amber); border-radius: 12px; padding: 12px 16px; margin-bottom: 18px; font-size: 14px; line-height: 1.5; }
   .ok-banner { background: rgba(34,197,94,.10); border: 1px solid rgba(34,197,94,.32); color: #86EFAC; border-radius: 12px; padding: 12px 16px; margin-bottom: 18px; font-size: 14px; }
 
+  /* -------------------------------------------------------------------
+     Live card simulation (owner's ask, 5 Aug 2026: "simulate that card on
+     the right or the left, depending on the language, so he can imagine the
+     design before releasing it").
+
+     Which side it lands on needs no logic: it is simply the second column of
+     a two-column grid, and the document's own dir flips that to the left in
+     Arabic. Writing an explicit right:0 here would have to be undone for RTL; letting
+     the grid do it means there is nothing to undo.
+     ------------------------------------------------------------------- */
+  .with-sim { display: grid; grid-template-columns: minmax(0,1fr) 340px; gap: 26px; align-items: start; }
+  .sim-rail { position: sticky; top: 20px; }
+  .sim-head { font-size: 13px; font-weight: 600; color: var(--ink-3); margin: 0 0 10px; }
+  .sim-card {
+    border-radius: 18px;
+    padding: 18px 18px 16px;
+    border: 1px solid rgba(255,255,255,.14);
+    /* A wallet pass sits on the phone's own surface, so it carries a real
+       shadow. Without one the mock reads as a flat swatch of colour rather
+       than as a card. */
+    box-shadow: 0 18px 40px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.10);
+    transition: background-color .25s ease, color .25s ease;
+  }
+  .sim-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+  .sim-brand { font-size: 13px; font-weight: 600; opacity: .9; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sim-chip { font-size: 10px; font-weight: 600; letter-spacing: .06em; opacity: .65; text-transform: uppercase; }
+  html[lang="ar"] .sim-chip { text-transform: none; letter-spacing: 0; }
+  .sim-reward { font-size: 21px; font-weight: 700; line-height: 1.25; margin: 0 0 14px; word-break: break-word; }
+  .sim-strip { display: block; width: 100%; height: auto; border-radius: 10px; }
+  .sim-foot { margin-top: 12px; font-size: 12px; opacity: .78; display: flex; justify-content: space-between; gap: 10px; }
+  .sim-hint { margin: 12px 2px 0; font-size: 12px; color: var(--ink-3); line-height: 1.5; }
+  @media (max-width: 900px) {
+    /* Below this the two columns would each be too narrow to read, so the
+       simulation moves above the form — where it is still the first thing
+       seen, which is the point of it. */
+    .with-sim { grid-template-columns: 1fr; }
+    .sim-rail { position: static; order: -1; }
+  }
+
   /* Template gallery (BUILD.md §8.4). Reuses .cards-grid so a template tile
      and a real card tile line up on the same grid. */
   .tpl-search { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
@@ -2055,6 +2094,9 @@ function renderNewCardForm(
   lang: Lang = 'en'
 ): string {
   const goalNum = clampInt(goal, MIN_GOAL, MAX_GOAL, 8);
+  // NewCardFormValues carries `lang` as a loose string (it comes off a form).
+  // Narrow it once here so the simulation below can pass it to t() directly.
+  const simLang: Lang = cardLang === 'en' ? 'en' : 'ar';
   const previewQs = new URLSearchParams({
     goal: String(goalNum),
     filled: String(defaultFilled(goalNum)),
@@ -2071,6 +2113,7 @@ function renderNewCardForm(
     <h1>${escapeHtml(t(lang, 'newCardTitle'))}</h1>
     ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
     ${template ? `<div class="ok-banner">${escapeHtml(t(lang, 'templatesAppliedBanner'))}</div>` : ''}
+    <div class="with-sim">
     <div class="panel">
       <form method="POST" action="/cards">
         ${
@@ -2110,12 +2153,31 @@ function renderNewCardForm(
           </div>
         </div>
 ${renderLangToggle(cardLang, lang)}
-        <div class="field preview-panel">
-          <img id="preview" src="/preview.png?${previewQs.toString()}" alt="Live stamp strip preview" width="375" height="144">
-        </div>
         <button class="btn" type="submit">${escapeHtml(t(lang, 'createCardButton'))}</button>
         <a class="btn secondary" href="/app">${escapeHtml(t(lang, 'cancelButton'))}</a>
       </form>
+    </div>
+
+    <!-- The simulation. Its own dir follows the CARD's language, not the
+         dashboard's: this is a picture of what the customer will hold, and a
+         merchant reading an English dashboard may well be building an Arabic
+         card. Which SIDE it sits on follows the page, via the grid. -->
+    <aside class="sim-rail">
+      <p class="sim-head">${escapeHtml(t(lang, 'simTitle'))}</p>
+      <div class="sim-card" id="simCard" dir="${cardLang === 'ar' ? 'rtl' : 'ltr'}" lang="${cardLang}"
+        style="background:${escapeHtml(bg)};color:#FFFFFF;">
+        <div class="sim-top">
+          <span class="sim-brand" id="simBrand">${escapeHtml(name || t(simLang, 'simYourBusiness'))}</span>
+          <span class="sim-chip">${escapeHtml(t(simLang, 'simRewardLabel'))}</span>
+        </div>
+        <p class="sim-reward" id="simReward">${escapeHtml(rewardText || t(simLang, 'newCardRewardPlaceholder'))}</p>
+        <img class="sim-strip" id="preview" src="/preview.png?${previewQs.toString()}" alt="" width="375" height="144">
+        <div class="sim-foot">
+          <span id="simCount">${escapeHtml(t(simLang, 'simStampsOf', { filled: arabicDigits(defaultFilled(goalNum), simLang), goal: arabicDigits(goalNum, simLang) }))}</span>
+        </div>
+      </div>
+      <p class="sim-hint">${escapeHtml(t(lang, 'simHint'))}</p>
+    </aside>
     </div>
     <script>
       (function () {
@@ -2169,6 +2231,61 @@ ${LANG_TOGGLE_SCRIPT}
             });
           });
         }
+
+        /* --- the live simulation ------------------------------------------
+           Everything the merchant can change is mirrored onto the mock as
+           they type, so the card they are imagining is the card in front of
+           them. The strip itself is the real renderer (see refresh above) —
+           the surrounding chrome is what this fills in. */
+        var simCard = document.getElementById('simCard');
+        var simBrand = document.getElementById('simBrand');
+        var simReward = document.getElementById('simReward');
+        var simCount = document.getElementById('simCount');
+        var nameInput = document.getElementById('name');
+        var stampsOfTpl = ${JSON.stringify(t(simLang, 'simStampsOf', { filled: '__F__', goal: '__G__' }))};
+        var brandFallback = ${JSON.stringify(t(simLang, 'simYourBusiness'))};
+        var rewardFallback = ${JSON.stringify(t(simLang, 'newCardRewardPlaceholder'))};
+        var simDigits = ${JSON.stringify(simLang)} === 'ar';
+
+        /* Arabic cards show Arabic-Indic digits, exactly as the real pass
+           does — a preview that prints 8 where the pass will print ٨ is not
+           a preview of that pass. */
+        function simNum(v) {
+          if (!simDigits) return String(v);
+          return String(v).replace(/[0-9]/g, function (d) {
+            return String.fromCharCode(0x0660 + Number(d));
+          });
+        }
+
+        function refreshSim() {
+          var goal = parseInt(goalInput.value, 10);
+          var filled = Math.max(1, Math.floor(goal / 3));
+          simCard.style.background = bgInput.value;
+          simBrand.textContent = nameInput.value.trim() || brandFallback;
+          simReward.textContent = rewardInput.value.trim() || rewardFallback;
+          simCount.textContent = stampsOfTpl
+            .replace('__F__', simNum(filled))
+            .replace('__G__', simNum(goal));
+        }
+
+        [goalInput, bgInput, activeInput, inactiveInput, nameInput, rewardInput].forEach(function (el) {
+          if (el) el.addEventListener('input', refreshSim);
+        });
+
+        /* Switching the CARD's language flips the mock too. A preview that
+           keeps showing a left-to-right card after the merchant has chosen
+           Arabic is showing them a card that will not exist. */
+        document.querySelectorAll('input[name="lang"]').forEach(function (radio) {
+          radio.addEventListener('change', function () {
+            var ar = radio.value !== 'en';
+            simCard.setAttribute('dir', ar ? 'rtl' : 'ltr');
+            simCard.setAttribute('lang', ar ? 'ar' : 'en');
+            simDigits = ar;
+            refreshSim();
+          });
+        });
+
+        refreshSim();
 
         goalInput.addEventListener('input', refresh);
         bgInput.addEventListener('input', refresh);
