@@ -6361,7 +6361,25 @@ function resolveStaticPath(pathname: string): string | undefined {
 }
 
 /** Serves a file from apps/demo/public/. Returns false (no response sent) when there is no such file, so the caller can fall through to the next route. */
-function serveStaticFile(res: http.ServerResponse, pathname: string): boolean {
+/**
+ * Serves a file from apps/demo/public/.
+ *
+ * `signedIn` exists for one reason: the landing page's header offers "Sign
+ * in" and "Start free trial" to everybody, including a merchant who is
+ * already signed in and simply navigated to the site root. It cannot work
+ * this out for itself — the session cookie is `HttpOnly` precisely so that
+ * page scripts cannot read it — so the server states it, as a single flag
+ * injected into the HTML. No session id, no merchant id, nothing but "yes or
+ * no", because that is all the page needs to choose a button label.
+ */
+/** True when this request carries a session that is still valid. Used only to pick a button label on the landing page — never to authorise anything. */
+async function isSignedIn(req: http.IncomingMessage): Promise<boolean> {
+  const sessionId = sessionIdFromRequest(req);
+  if (!sessionId) return false;
+  return (await getMerchantForSession(sessionId)) !== null;
+}
+
+function serveStaticFile(res: http.ServerResponse, pathname: string, signedIn = false): boolean {
   const filePath = resolveStaticPath(pathname);
   if (!filePath) return false;
 
@@ -6384,6 +6402,17 @@ function serveStaticFile(res: http.ServerResponse, pathname: string): boolean {
   // every page load; see scripts/resize-logo.ts's before/after byte sizes
   // for why that matters).
   const cacheControl = ext === '.html' ? 'no-cache' : 'public, max-age=31536000, immutable';
+  if (ext === '.html' && signedIn) {
+    // Injected immediately after <head> so it is set before any page script
+    // runs. Only ever written for HTML, and only ever this one boolean.
+    const marked = data
+      .toString('utf8')
+      .replace('<head>', '<head>\n<script>window.__LNX_SIGNED_IN__=true;</script>');
+    const body = Buffer.from(marked, 'utf8');
+    res.writeHead(200, { 'Content-Type': contentType, 'Content-Length': body.length, 'Cache-Control': cacheControl });
+    res.end(body);
+    return true;
+  }
   res.writeHead(200, {
     'Content-Type': contentType,
     'Content-Length': data.length,
@@ -6454,7 +6483,7 @@ const server = http.createServer(async (req, res) => {
     // under apps/demo/public/. Only succeeds when a real file exists at
     // that path, so it can never shadow a route below it (e.g. GET /app,
     // or the /:code catch-all further down) — it just falls through.
-    if (req.method === 'GET' && serveStaticFile(res, pathname)) {
+    if (req.method === 'GET' && serveStaticFile(res, pathname, await isSignedIn(req))) {
       return;
     }
     // Sign-up / sign-in / sign-out — public (a session is what every route
