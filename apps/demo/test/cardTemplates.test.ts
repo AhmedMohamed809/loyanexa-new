@@ -185,7 +185,7 @@ let cookie: string;
 before(async () => {
   server = await spawnServer();
   const merchant = await prisma.merchant.create({
-    data: { email: `templates-${randomHex(8)}@example.test`, name: 'Template Test Cafe' },
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), email: `templates-${randomHex(8)}@example.test`, name: 'Template Test Cafe' },
   });
   merchantId = merchant.id;
   const sessionId = randomHex(24);

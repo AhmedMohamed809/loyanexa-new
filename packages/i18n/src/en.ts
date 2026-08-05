@@ -278,6 +278,15 @@ export const en = {
   setupStaff: 'Add a staff PIN',
   setupDoneTitle: 'You are all set',
   setupDoneBody: 'Everything is ready. This panel will not come back.',
+  // Plan limits (BUILD.md §14).
+  planLimitCards: 'Your plan includes {limit} cards and you have {used}. Upgrade to add more.',
+  planLimitStaff: 'Your plan includes {limit} staff PINs and you have {used}. Upgrade to add more.',
+  planLimitStaffNone: 'Staff PINs are not included on your plan. Upgrade to add them.',
+  planCurrent: 'Your plan',
+  planTrialEnds: 'Free trial — ends {date}',
+  planUsageCards: 'Cards',
+  planUsageStaff: 'Staff PINs',
+  planUpgradeSoon: 'Upgrading is not available yet. Get in touch and we will move you across.',
   navPrimary: 'Main navigation',
   /** The fifth tab, holding what does not fit in a five-tab bar (Reports, Settings, language, sign out). */
   navMore: 'More',

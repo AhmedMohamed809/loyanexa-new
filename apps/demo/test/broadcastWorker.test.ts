@@ -42,7 +42,7 @@ interface Fixture {
 
 async function makeMerchantAndCard(): Promise<Fixture> {
   const merchant = await prisma.merchant.create({
-    data: { email: `broadcastworker-test-${randomHex(8)}@example.test`, name: 'Broadcast Worker Test Merchant' },
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), email: `broadcastworker-test-${randomHex(8)}@example.test`, name: 'Broadcast Worker Test Merchant' },
   });
   const card = await prisma.card.create({
     data: {

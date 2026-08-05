@@ -43,7 +43,7 @@ async function makeFixture(
   opts: { stampsGoal?: number; stamps?: number; lastStampAt?: Date | null; lang?: string } = {}
 ): Promise<Fixture> {
   const merchant = await prisma.merchant.create({
-    data: {
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       firebaseUid: `stamp-test-${randomHex(8)}`,
       email: `stamp-test-${randomHex(8)}@example.test`,
       name: 'Stamp Test Merchant',

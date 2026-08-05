@@ -40,7 +40,7 @@ function randomHex(bytes: number): string {
 
 async function makeMerchant(): Promise<{ id: string }> {
   const merchant = await prisma.merchant.create({
-    data: { email: `auth-test-${randomHex(8)}@example.test`, name: 'Auth Test Merchant' },
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), email: `auth-test-${randomHex(8)}@example.test`, name: 'Auth Test Merchant' },
   });
   return { id: merchant.id };
 }

@@ -151,7 +151,7 @@ test('POST /signup rejects a short password, a common password, a missing busine
   assert.equal(noName.status, 400);
 
   const merchant = await prisma.merchant.create({
-    data: { email, name: 'Existing Merchant', passwordHash: 'scrypt$16384$8$1$aa$bb' },
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), email, name: 'Existing Merchant', passwordHash: 'scrypt$16384$8$1$aa$bb' },
   });
   try {
     const duplicate = await fetch(`${server.baseUrl}/signup`, {
@@ -232,7 +232,7 @@ test('sign in, sign out, and sign in again: sign-out invalidates the session ser
 test('sign-in returns the exact same generic message and status for a wrong password and for no such account', async () => {
   const email = `wrongpw-${randomHex(8)}@example.test`;
   const merchant = await prisma.merchant.create({
-    data: {
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       email,
       name: 'Wrong Password Test',
       // A real scrypt hash of a *different* password than the one the test submits below.
@@ -284,7 +284,7 @@ test('a wrong password and no-such-account also cost about the same time — not
   // specific "one path skips hashing entirely" regression this guards.
   const email = `timing-${randomHex(8)}@example.test`;
   const merchant = await prisma.merchant.create({
-    data: { email, name: 'Timing Test', passwordHash: (await import('../auth.ts')).hashPassword('the-real-password-for-timing-test') },
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), email, name: 'Timing Test', passwordHash: (await import('../auth.ts')).hashPassword('the-real-password-for-timing-test') },
   });
   try {
     const time = async (attemptEmail: string): Promise<number> => {
@@ -324,7 +324,7 @@ test('sign-in is rate-limited per email: repeated wrong attempts against the sam
   const isolated = await spawnServer();
   const email = `ratelimit-${randomHex(8)}@example.test`;
   const merchant = await prisma.merchant.create({
-    data: { email, name: 'Rate Limit Test', passwordHash: (await import('../auth.ts')).hashPassword('the-real-password-abc-123') },
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), email, name: 'Rate Limit Test', passwordHash: (await import('../auth.ts')).hashPassword('the-real-password-abc-123') },
   });
   try {
     const statuses: number[] = [];
@@ -394,7 +394,7 @@ test('sign-in shows a specific "needs a password set" message, not the generic o
   const email = `nullhash-${randomHex(8)}@example.test`;
   // No passwordHash at all — exactly the shape the auth migration leaves
   // a pre-existing Merchant row in.
-  const merchant = await prisma.merchant.create({ data: { email, name: 'Null Password Hash Test' } });
+  const merchant = await prisma.merchant.create({ data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), email, name: 'Null Password Hash Test' } });
   try {
     assert.equal(merchant.passwordHash, null);
     const res = await fetch(`${server.baseUrl}/signin`, {
@@ -425,7 +425,7 @@ async function makePublicRouteFixture(): Promise<{
   pass: Awaited<ReturnType<typeof prisma.pass.create>>;
 }> {
   const merchant = await prisma.merchant.create({
-    data: { firebaseUid: `pubroute-${randomHex(8)}`, email: `pubroute-${randomHex(8)}@example.test`, name: 'Public Route Test' },
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), firebaseUid: `pubroute-${randomHex(8)}`, email: `pubroute-${randomHex(8)}@example.test`, name: 'Public Route Test' },
   });
   const card = await prisma.card.create({
     data: {
@@ -477,7 +477,7 @@ test('GET / and the customer enrol page work with zero cookies', async () => {
 // enrol page. This is the regression test for that fix.
 test('the customer enrol page renders in Arabic, RTL, with Arabic-Indic digits, for a card whose lang is ar (the Prisma default)', async () => {
   const merchant = await prisma.merchant.create({
-    data: { firebaseUid: `pubroute-${randomHex(8)}`, email: `pubroute-${randomHex(8)}@example.test`, name: 'Public Route Test AR' },
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), firebaseUid: `pubroute-${randomHex(8)}`, email: `pubroute-${randomHex(8)}@example.test`, name: 'Public Route Test AR' },
   });
   const card = await prisma.card.create({
     data: {

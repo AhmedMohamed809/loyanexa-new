@@ -85,7 +85,7 @@ let cookie: string;
 before(async () => {
   server = await spawnServer();
   const merchant = await prisma.merchant.create({
-    data: { email: `printsheet-${randomHex(8)}@example.test`, name: 'Print Sheet Test Cafe' },
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), email: `printsheet-${randomHex(8)}@example.test`, name: 'Print Sheet Test Cafe' },
   });
   merchantId = merchant.id;
   const sessionId = randomHex(24);
@@ -231,7 +231,7 @@ test('the setup checklist counts real progress and disappears when finished', as
   // step is done when it is not is worse than none, because it stops them
   // looking.
   const own = await prisma.merchant.create({
-    data: { email: `checklist-${randomHex(8)}@example.test`, name: 'Checklist Cafe' },
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), email: `checklist-${randomHex(8)}@example.test`, name: 'Checklist Cafe' },
   });
   const sessionId = randomHex(24);
   await prisma.session.create({

@@ -34,7 +34,7 @@ interface Fixture {
 
 async function makeFixture(opts: { expiryType?: string; expiryDays?: number } = {}): Promise<Fixture> {
   const merchant = await prisma.merchant.create({
-    data: {
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       firebaseUid: `enrol-test-${randomHex(8)}`,
       email: `enrol-test-${randomHex(8)}@example.test`,
       name: 'Enrol Test Merchant',

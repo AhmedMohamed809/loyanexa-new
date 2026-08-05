@@ -88,7 +88,7 @@ interface Fixture {
 /** A merchant with one active card, one enrolled customer (Pass, stampable), and one active staff member with a known PIN — plus a real StaffSession cookie for that staff member, minted directly (bypassing the PIN-login HTTP flow, which is covered separately below). */
 async function makeFixture(pin = '4821'): Promise<Fixture> {
   const email = `staffscope-${randomHex(8)}@example.test`;
-  const merchant = await prisma.merchant.create({ data: { email, name: 'Staff Scoping Test' } });
+  const merchant = await prisma.merchant.create({ data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), email, name: 'Staff Scoping Test' } });
   const card = await prisma.card.create({
     data: {
       merchantId: merchant.id,

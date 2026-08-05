@@ -55,7 +55,7 @@ interface Fixture {
 
 async function makeFixture(): Promise<Fixture> {
   const merchant = await prisma.merchant.create({
-    data: { email: `ephemeral-test-${randomHex(8)}@example.test`, name: 'Ephemeral Test Merchant' },
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), email: `ephemeral-test-${randomHex(8)}@example.test`, name: 'Ephemeral Test Merchant' },
   });
   const card = await prisma.card.create({
     data: {

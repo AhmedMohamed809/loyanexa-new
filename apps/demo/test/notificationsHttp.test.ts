@@ -98,7 +98,7 @@ interface MerchantFixture {
 
 async function makeMerchantFixture(label: string, recipientCount = 0): Promise<MerchantFixture> {
   const email = `notif-${label}-${randomHex(8)}@example.test`;
-  const merchant = await prisma.merchant.create({ data: { email, name: `Notif Test ${label}` } });
+  const merchant = await prisma.merchant.create({ data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), email, name: `Notif Test ${label}` } });
   const card = await prisma.card.create({
     data: {
       merchantId: merchant.id,

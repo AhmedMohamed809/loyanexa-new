@@ -34,7 +34,7 @@ let merchantId: string;
 
 before(async () => {
   const merchant = await prisma.merchant.create({
-    data: { email: `automations-${randomHex(8)}@example.test`, name: 'Automations Test Cafe' },
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), email: `automations-${randomHex(8)}@example.test`, name: 'Automations Test Cafe' },
   });
   merchantId = merchant.id;
 });

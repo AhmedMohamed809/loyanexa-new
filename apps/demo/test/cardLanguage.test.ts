@@ -91,7 +91,7 @@ function closeProc(proc: ChildProcessByStdio<null, Readable, Readable>): Promise
 
 async function makeMerchant(): Promise<{ merchantId: string; cookie: string }> {
   const merchant = await prisma.merchant.create({
-    data: { email: `cardlang-test-${randomHex(8)}@example.test`, name: 'Card Language Test Merchant' },
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), email: `cardlang-test-${randomHex(8)}@example.test`, name: 'Card Language Test Merchant' },
   });
   const cookie = await sessionCookieFor(merchant.id);
   return { merchantId: merchant.id, cookie };
