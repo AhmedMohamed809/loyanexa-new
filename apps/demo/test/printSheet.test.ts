@@ -203,6 +203,28 @@ test('the poster follows the CARD language, not the merchant dashboard cookie', 
   assert.ok(html.includes('كيكة مجانية'), 'merchant-authored reward text is never translated');
 });
 
+test('the strip image scales instead of overflowing its panel on a phone', async () => {
+  // Reported from a 430px screenshot: the strip burst out of its dashed panel
+  // on both sides. The <img> carried an inline max-width:375px, which beats
+  // the stylesheet's max-width:100% on specificity, so it stayed 375px wide
+  // inside a padded panel roughly 335px across.
+  const cardId = await makeCard();
+  const html = await (await fetch(`${server.baseUrl}/cards/${cardId}`, { headers: { Cookie: cookie } })).text();
+
+  assert.ok(
+    !/<img[^>]*style="[^"]*max-width:\s*375px/.test(html),
+    'no inline max-width may override the responsive rule'
+  );
+  // width/height attributes stay — they reserve space and prevent a layout
+  // jump — which is exactly why the CSS must set height:auto alongside them.
+  assert.match(html, /<img src="\/preview\.png\?[^"]*"[^>]*width="375" height="144">/);
+  assert.match(
+    html,
+    /\.preview-panel img \{ max-width: 100%; height: auto; \}/,
+    'without height:auto a shrinking width leaves the fixed height and stretches the strip'
+  );
+});
+
 test('the wallet chips are our own mark, not a reproduction of Apple or Google badge artwork', async () => {
   const cardId = await makeCard();
   const html = await fetchSheet(cardId);

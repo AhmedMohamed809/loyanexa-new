@@ -16,7 +16,8 @@
     "bench": "node packages/image/bench/strip.bench.ts",
     "serve:pass": "node scripts/serve-pass.ts",
     "demo": "node apps/demo/server.ts",
-    "create-merchant": "node scripts/create-merchant.ts"
+    "create-merchant": "node scripts/create-merchant.ts",
+    "test:css": "node scripts/check-css-literals.ts"
   },
   "devDependencies": {
     "@types/node": "^25",

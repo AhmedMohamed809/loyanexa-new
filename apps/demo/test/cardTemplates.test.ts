@@ -38,6 +38,31 @@ function randomHex(bytes: number): string {
 // The catalogue itself
 // ---------------------------------------------------------------------------
 
+test('every trade offers three templates, and every photo it names exists on disk', async () => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const assetDir = path.join(ROOT, 'apps/demo/assets/templates');
+
+  // Three per trade was the ask. A trade with one is a trade nobody browses.
+  const byTrade = new Map<string, number>();
+  for (const tpl of CARD_TEMPLATES) {
+    const trade = tpl.id.split('-')[0]!;
+    byTrade.set(trade, (byTrade.get(trade) ?? 0) + 1);
+  }
+  for (const [trade, count] of byTrade) {
+    assert.equal(count, 3, `${trade} should offer exactly three templates, has ${count}`);
+  }
+
+  // A template naming a photo that is not there renders as a flat colour and
+  // nothing anywhere reports it — so check the file, not just the field.
+  for (const tpl of CARD_TEMPLATES) {
+    if (!tpl.photo) continue;
+    const file = path.join(assetDir, `${tpl.photo}.jpg`);
+    assert.ok(fs.existsSync(file), `${tpl.id} names a missing photo: ${tpl.photo}.jpg`);
+    assert.ok(fs.statSync(file).size > 8000, `${tpl.photo}.jpg looks truncated`);
+  }
+});
+
 test('every template is internally consistent: unique id and code, a real icon, a goal in range', () => {
   const ids = new Set<string>();
   const codes = new Set<string>();
@@ -256,6 +281,22 @@ test('the create form carries a live card simulation whose side follows the page
   // The strip is the real renderer, never a second drawing of it.
   assert.match(html, /id="preview" src="\/preview\.png\?/);
   assert.match(html, /builtinIcon=coffee/, "the template's stamp icon must show in the preview");
+});
+
+test('choosing English translates the whole preview, not just its direction', async () => {
+  // Reported from a screenshot: "Card language: English" was selected and the
+  // preview still read المكافأة and «من ١٤ أختام ٤». Every string in the mock
+  // was baked at render time in the card's default language and only the
+  // direction flipped, so picking English left an Arabic card on screen —
+  // the exact opposite of what a preview is for.
+  const html = await (await fetch(`${server.baseUrl}/cards/new`, { headers: { Cookie: cookie } })).text();
+
+  // Both languages must reach the page, or the toggle has nothing to switch to.
+  assert.match(html, /var SIM_COPY = \{[\s\S]*?ar: \{[\s\S]*?en: \{/, 'both dictionaries must be shipped');
+  assert.match(html, /id="simRewardLabel"/, 'the Reward chip must be addressable to be translated');
+  assert.match(html, /simLangNow = ar \? 'ar' : 'en'/, 'the toggle must switch the language, not only the direction');
+  // And the English copy must actually be present, not just the Arabic.
+  assert.ok(html.includes('of __G__ stamps'), 'the English stamp-count template must be shipped');
 });
 
 test('an unknown template id opens an ordinary blank form rather than an error', async () => {
