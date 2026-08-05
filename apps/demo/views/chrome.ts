@@ -610,6 +610,44 @@ ${CHROME_CSS}
     .sim-rail { position: static; order: -1; }
   }
 
+  /* Setup checklist (BUILD.md §8.3). A band, not a panel: it sits above the
+     page's own content and has to read as guidance rather than as another
+     thing to manage. Collapsible via <details>, so remembering the open state
+     costs no JavaScript and no cookie. */
+  .setup {
+    background: linear-gradient(180deg, rgba(242,140,56,.09), rgba(242,140,56,.03));
+    border: 1px solid rgba(242,140,56,.26);
+    border-radius: var(--radius-lg);
+    padding: 14px 18px;
+    margin-bottom: 20px;
+    animation: lnx-rise var(--dur-3) var(--ease) both;
+  }
+  .setup > summary {
+    display: flex; align-items: center; gap: 12px; cursor: pointer;
+    list-style: none; font-size: 14px;
+  }
+  .setup > summary::-webkit-details-marker { display: none; }
+  .setup .setup-title { font-weight: 700; color: var(--ink); }
+  .setup .setup-count { color: var(--accent-light); font-weight: 600; margin-inline-start: auto; font-variant-numeric: tabular-nums; }
+  .setup-pills { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  .setup-pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    border: 1px solid var(--line); border-radius: 100px;
+    padding: 8px 15px; font-size: 13px; font-weight: 600;
+    color: var(--ink-2); text-decoration: none; background: var(--sunk);
+    transition: border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease), transform var(--dur-1) var(--ease);
+  }
+  .setup-pill:hover { color: var(--ink); border-color: var(--accent); transform: translateY(-1px); }
+  .setup-pill .setup-tick {
+    width: 16px; height: 16px; border-radius: 50%; flex: none;
+    border: 1px solid var(--line); display: inline-flex;
+    align-items: center; justify-content: center; font-size: 10px;
+  }
+  /* A finished step stays visible rather than disappearing: seeing what you
+     have already done is most of why a checklist works. */
+  .setup-pill.done { color: var(--ink-3); }
+  .setup-pill.done .setup-tick { background: var(--green); border-color: var(--green); color: #0F172A; font-weight: 700; }
+
   /* Template gallery (BUILD.md §8.4). Reuses .cards-grid so a template tile
      and a real card tile line up on the same grid. */
   .tpl-search { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }

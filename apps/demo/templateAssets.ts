@@ -30,6 +30,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { normalizeUpload, storeCardImage } from './cardImages.ts';
+import { log, errorFields } from './log.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ASSET_DIR = path.join(__dirname, 'assets', 'templates');
@@ -55,14 +56,14 @@ async function ingestAll(): Promise<Map<string, string>> {
     try {
       const result = normalizeUpload('cover', fs.readFileSync(path.join(ASSET_DIR, file)));
       if (!result.ok) {
-        console.error(`[templates] ${file} rejected by the image pipeline: ${result.error}`);
+        log.warn('templates.photo_rejected', { file, reason: result.error });
         continue;
       }
       await storeCardImage(result);
       map.set(id, result.hash);
     } catch (err) {
       // One unreadable photo must not cost the whole gallery its imagery.
-      console.error(`[templates] ${file} could not be ingested:`, err);
+      log.error('templates.photo_failed', { file, ...errorFields(err) });
     }
   }
   return map;
@@ -80,7 +81,7 @@ export async function templatePhotoHashes(): Promise<Map<string, string>> {
     inFlight = ingestAll()
       .then((map) => {
         cache = map;
-        console.log(`[templates] ${map.size} cover photos ready`);
+        log.info('templates.photos_ready', { count: map.size });
         return map;
       })
       .finally(() => {

@@ -225,6 +225,59 @@ test('the strip image scales instead of overflowing its panel on a phone', async
   );
 });
 
+test('the setup checklist counts real progress and disappears when finished', async () => {
+  // Derived from data, never from a "completed_step" flag: a flag drifts the
+  // moment a merchant deletes their only card, and a checklist claiming a
+  // step is done when it is not is worse than none, because it stops them
+  // looking.
+  const own = await prisma.merchant.create({
+    data: { email: `checklist-${randomHex(8)}@example.test`, name: 'Checklist Cafe' },
+  });
+  const sessionId = randomHex(24);
+  await prisma.session.create({
+    data: { id: sessionId, merchantId: own.id, expiresAt: new Date(Date.now() + 3_600_000) },
+  });
+  const jar = { Cookie: `lnx-session=${sessionId}; lnx-lang=en` };
+  const count = async (): Promise<string | null> => {
+    const html = await (await fetch(`${server.baseUrl}/app`, { headers: jar })).text();
+    return (/setup-count">([^<]*)</.exec(html) ?? [])[1] ?? null;
+  };
+
+  try {
+    // Signing up is itself step one, so it opens at 1/5 rather than 0/5 —
+    // a checklist that says you have done nothing when you have reads broken.
+    assert.equal(await count(), '1/5 complete');
+
+    const card = await prisma.card.create({
+      data: {
+        merchantId: own.id, slot: 1, linkCode: randomLinkCode(),
+        shortCode: `C${randomHex(4)}`.toUpperCase(), name: 'Checklist Card',
+        stampsGoal: 8, bgColor: '#203757', fgColor: '#FFFFFF',
+        stampActive: '#F96400', stampInactive: '#8794A5', rewardText: 'Free coffee',
+      },
+    });
+    assert.equal(await count(), '2/5 complete');
+
+    await prisma.card.update({ where: { id: card.id }, data: { active: true } });
+    assert.equal(await count(), '3/5 complete');
+
+    await prisma.card.update({
+      where: { id: card.id },
+      data: { locations: [{ name: 'Shop', lat: 51.5, lng: -0.1 }] },
+    });
+    assert.equal(await count(), '4/5 complete');
+
+    await prisma.staff.create({ data: { merchantId: own.id, name: 'Sam', pinHash: 'x' } });
+    // Finished: the band goes for good. A permanent nag on the dashboard of a
+    // merchant who set up months ago is clutter, not guidance.
+    const html = await (await fetch(`${server.baseUrl}/app`, { headers: jar })).text();
+    assert.ok(!/class="setup"/.test(html), 'a completed checklist must not keep showing');
+  } finally {
+    await prisma.stampEvent.deleteMany({ where: { merchantId: own.id } });
+    await prisma.merchant.delete({ where: { id: own.id } }).catch(() => {});
+  }
+});
+
 test('the wallet chips are our own mark, not a reproduction of Apple or Google badge artwork', async () => {
   const cardId = await makeCard();
   const html = await fetchSheet(cardId);
