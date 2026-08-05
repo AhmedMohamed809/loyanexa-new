@@ -129,6 +129,7 @@ import {
   MAX_UPLOAD_REQUEST_BYTES,
   type UploadKind,
 } from './cardImages.ts';
+import { log, errorFields } from './log.ts';
 import { escapeHtml } from './views/html.ts';
 import { CHROME_CSS, navBar, tabBar, layout, type NavKey } from './views/chrome.ts';
 import { renderStampScreen, type StampScreenViewer } from './views/stampScreen.ts';
@@ -523,7 +524,7 @@ async function pushApnsUpdate(serial: string): Promise<void> {
         // Logged on success, not only on failure. A system that is silent
         // when it works and loud when it breaks cannot answer "is it slow
         // today?" — which is the actual question being asked.
-        console.log(`[apns] pass ${serial} pushed in ${Date.now() - pushStartedAt}ms`);
+        log.info('apns.push', { serial, ms: Date.now() - pushStartedAt });
         return;
       }
       if (result.reason === 'gone') {
@@ -707,7 +708,7 @@ async function cachedBuildPass(
   const startedAt = Date.now();
   const hit = await PKPASS_STORE.get(key);
   if (hit) {
-    console.log(`[pass] ${pass.serial} served from cache in ${Date.now() - startedAt}ms`);
+    log.info('pass.cache_hit', { serial: pass.serial, ms: Date.now() - startedAt });
     return hit;
   }
 
@@ -725,7 +726,7 @@ async function cachedBuildPass(
     // strip rendering plus CMS signing — so it is the piece most able to make
     // an otherwise-instant stamp feel slow. Nothing measured it until now,
     // which is why "sometimes it's slow" had no answer.
-    console.log(`[pass] ${pass.serial} rebuilt and signed in ${Date.now() - startedAt}ms`);
+    log.info('pass.rebuilt', { serial: pass.serial, ms: Date.now() - startedAt });
     return pkpass;
   })();
   pkpassInFlight.set(key, task);
@@ -1389,9 +1390,74 @@ function cardThumbSrc(card: Card): string {
   return `/preview.png?${stripPreviewParams(card, defaultFilled(card.stampsGoal)).toString()}`;
 }
 
+/**
+ * The setup checklist (BUILD.md §8.3 — "cheap to build, high impact on
+ * activation").
+ *
+ * Five steps, each derived from data that already exists rather than from a
+ * "has_completed_step" flag. A flag would drift the moment a merchant undid
+ * something — deleted their only card, removed their last location — and a
+ * checklist that says a step is done when it is not is worse than no
+ * checklist, because it stops them looking.
+ *
+ * It disappears for good once everything is done. A permanent nag panel on
+ * the dashboard of a merchant who finished setting up months ago is clutter.
+ */
+interface SetupStep {
+  key: string;
+  label: string;
+  href: string;
+  done: boolean;
+}
+
+async function setupSteps(merchant: Merchant, lang: Lang): Promise<SetupStep[]> {
+  const [cardCount, activeCount, locatedCount, staffCount] = await Promise.all([
+    prisma.card.count({ where: { merchantId: merchant.id } }),
+    prisma.card.count({ where: { merchantId: merchant.id, active: true } }),
+    // A card counts as located when its locations JSON holds anything at all.
+    prisma.card.count({ where: { merchantId: merchant.id, NOT: { locations: { equals: [] } } } }),
+    prisma.staff.count({ where: { merchantId: merchant.id } }),
+  ]);
+
+  return [
+    // Signing up is itself the first step, so it starts ticked — a checklist
+    // that opens at 0/5 when you have already done something reads as broken.
+    { key: 'business', label: t(lang, 'setupBusinessInfo'), href: '/settings', done: true },
+    { key: 'card', label: t(lang, 'setupFirstCard'), href: '/cards/new/templates', done: cardCount > 0 },
+    { key: 'activate', label: t(lang, 'setupActivate'), href: '/app', done: activeCount > 0 },
+    { key: 'location', label: t(lang, 'setupLocation'), href: '/app', done: locatedCount > 0 },
+    { key: 'staff', label: t(lang, 'setupStaff'), href: '/settings', done: staffCount > 0 },
+  ];
+}
+
+function renderSetupChecklist(steps: SetupStep[], lang: Lang): string {
+  const done = steps.filter((s) => s.done).length;
+  if (done === steps.length) return '';
+
+  const pills = steps
+    .map(
+      (s) =>
+        `<a class="setup-pill${s.done ? ' done' : ''}" href="${s.href}">
+        <span class="setup-tick" aria-hidden="true">${s.done ? '&#10003;' : ''}</span>${escapeHtml(s.label)}
+      </a>`
+    )
+    .join('\n      ');
+
+  return `<details class="setup" open>
+    <summary>
+      <span class="setup-title">${escapeHtml(t(lang, 'setupTitle'))}</span>
+      <span class="setup-count">${escapeHtml(t(lang, 'setupProgress', { done: arabicDigits(done, lang), total: arabicDigits(steps.length, lang) }))}</span>
+    </summary>
+    <div class="setup-pills">
+      ${pills}
+    </div>
+  </details>`;
+}
+
 async function handleCardsList(req: http.IncomingMessage, res: http.ServerResponse, merchant: Merchant): Promise<void> {
   const lang = resolveLang(req);
   const cards = await prisma.card.findMany({ where: { merchantId: merchant.id }, orderBy: { createdAt: 'desc' } });
+  const checklist = renderSetupChecklist(await setupSteps(merchant, lang), lang);
 
   const body = cards.length
     ? `<div class="row" style="margin-bottom:18px;">
@@ -1426,7 +1492,7 @@ async function handleCardsList(req: http.IncomingMessage, res: http.ServerRespon
          </p>
        </div>`;
 
-  sendHtml(res, 200, layout(t(lang, 'cardsListTitle'), body, 'cards', lang));
+  sendHtml(res, 200, layout(t(lang, 'cardsListTitle'), checklist + body, 'cards', lang));
 }
 
 /**

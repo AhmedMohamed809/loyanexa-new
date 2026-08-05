@@ -265,6 +265,19 @@ export const en = {
   simStampsOf: '{filled} of {goal} stamps',
   simRewardLabel: 'Reward',
   simYourBusiness: 'Your business name',
+  // Setup checklist (BUILD.md §8.3) — the band under the header that shows a
+  // new merchant what is left before their card is actually working.
+  setupTitle: 'Getting set up',
+  setupProgress: '{done}/{total} complete',
+  setupHide: 'Hide',
+  setupShow: 'Show',
+  setupBusinessInfo: 'Business details',
+  setupFirstCard: 'Create your first card',
+  setupActivate: 'Activate a card',
+  setupLocation: 'Add your shop location',
+  setupStaff: 'Add a staff PIN',
+  setupDoneTitle: 'You are all set',
+  setupDoneBody: 'Everything is ready. This panel will not come back.',
   navPrimary: 'Main navigation',
   /** The fifth tab, holding what does not fit in a five-tab bar (Reports, Settings, language, sign out). */
   navMore: 'More',

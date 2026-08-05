@@ -34,6 +34,7 @@ import type { Card } from '@prisma/client';
 
 import { prisma } from '../../packages/db/src/index.ts';
 import { enqueueBroadcast } from './broadcast.ts';
+import { log, errorFields } from './log.ts';
 
 /**
  * The zone "today" is measured in.
@@ -246,7 +247,7 @@ export class AutomationRunner {
             await enqueueBroadcast(card, card.birthdayMessage, 'birthday', { onlySerial: serial });
             birthdaysSent++;
           } catch (err) {
-            console.error(`[automations] birthday enqueue failed for ${serial}:`, err);
+            log.error('automations.birthday_failed', { serial, ...errorFields(err) });
           }
         }
       }
@@ -256,14 +257,14 @@ export class AutomationRunner {
             await enqueueBroadcast(card, card.winbackMessage, 'winback', { onlySerial: serial });
             winbacksSent++;
           } catch (err) {
-            console.error(`[automations] winback enqueue failed for ${serial}:`, err);
+            log.error('automations.winback_failed', { serial, ...errorFields(err) });
           }
         }
       }
     }
 
     if (birthdaysSent || winbacksSent) {
-      console.log(`[automations] sent ${birthdaysSent} birthday, ${winbacksSent} win-back`);
+      log.info('automations.sent', { birthdays: birthdaysSent, winbacks: winbacksSent });
     }
     return { birthdaysSent, winbacksSent };
   }
