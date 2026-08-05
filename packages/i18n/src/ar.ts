@@ -369,6 +369,7 @@ export const ar: Record<keyof typeof en, string> = {
   enrolOptional: 'اختياري',
   enrolNamePlaceholder: 'اسمك',
   enrolPhonePlaceholder: 'رقم هاتفك',
+  enrolPrivacyLink: 'كيف تُستخدم بياناتك',
   enrolConsent: 'أوافق على الانضمام إلى بطاقة ولاء {name} وتلقي تحديثات حول مكافآتي.',
   walletAddApple: 'أضف إلى محفظة آبل',
   walletAddGoogle: 'أضف إلى محفظة جوجل',

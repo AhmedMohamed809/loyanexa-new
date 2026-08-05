@@ -243,6 +243,59 @@ test('HSTS is sent, and only when the public origin is actually HTTPS', async ()
 });
 
 // ---------------------------------------------------------------------------
+// Legal pages (BUILD.md §15 Phase 7)
+// ---------------------------------------------------------------------------
+
+test('the privacy policy and terms are public — no account needed to read them', async () => {
+  // The people most likely to want the privacy policy are customers who will
+  // never have an account. Putting it behind requireMerchant would make it
+  // unreadable by exactly its audience.
+  for (const path of ['/privacy', '/terms']) {
+    const res = await fetch(`${server.baseUrl}${path}`);
+    assert.equal(res.status, 200, `${path} must be readable without a session`);
+    const html = await res.text();
+    assert.match(html, /<html lang="(en|ar)"/);
+    assert.ok(html.length > 2000, `${path} looks empty`);
+  }
+});
+
+test('the legal pages follow the reader\'s language, in both directions', async () => {
+  const ar = await (await fetch(`${server.baseUrl}/privacy`, { headers: { Cookie: 'lnx-lang=ar' } })).text();
+  assert.match(ar, /<html lang="ar" dir="rtl">/);
+  assert.ok(/[؀-ۿ]/.test(ar), 'the Arabic policy must actually be in Arabic');
+
+  const en = await (await fetch(`${server.baseUrl}/privacy`, { headers: { Cookie: 'lnx-lang=en' } })).text();
+  assert.match(en, /<html lang="en" dir="ltr">/);
+  assert.ok(en.includes('Privacy policy'));
+});
+
+test('the privacy policy states the specific things this system actually does', async () => {
+  // A policy that does not match the code is worse than none: it is a written
+  // claim that happens to be false. These are the four the code makes true.
+  const html = await (await fetch(`${server.baseUrl}/privacy`, { headers: { Cookie: 'lnx-lang=en' } })).text();
+
+  assert.ok(/only the day and month/i.test(html), 'the discarded birth year is a real, checkable promise');
+  assert.ok(/scrypt/i.test(html), 'password storage is stated');
+  assert.ok(/fifteen minutes/i.test(html), 'the notification TTL is stated and is real');
+  assert.ok(/We do not collect your location/i.test(html), 'geofencing happens on-device and the policy says so');
+  // And the processors that genuinely receive data.
+  for (const who of ['Apple', 'Google', 'Fly.io']) {
+    assert.ok(html.includes(who), `${who} processes data and must be named`);
+  }
+});
+
+test('the join page links to the privacy policy from the consent line itself', async () => {
+  // Consent that cannot be informed is not consent. The link has to be where
+  // the customer is asked to agree, not only in a footer somewhere else.
+  // Made here rather than reused: the deletion tests in this file remove
+  // ownerA's cards, so anything relying on one already existing is racing them.
+  const cardId = await makeCard(ownerA.merchantId, 'Consent Link Card');
+  const card = await prisma.card.findUniqueOrThrow({ where: { id: cardId } });
+  const html = await (await fetch(`${server.baseUrl}/${card.linkCode}`)).text();
+  assert.match(html, /class="consent"[\s\S]{0,400}href="\/privacy"/, 'the consent line must carry the link');
+});
+
+// ---------------------------------------------------------------------------
 // Landing page -> real product
 // ---------------------------------------------------------------------------
 

@@ -394,6 +394,7 @@ export const en = {
   enrolOptional: 'optional',
   enrolNamePlaceholder: 'Your name',
   enrolPhonePlaceholder: 'Your phone number',
+  enrolPrivacyLink: 'How your details are used',
   enrolConsent: "I agree to join {name}’s loyalty card and receive updates about my rewards.",
   walletAddApple: 'Add to Apple Wallet',
   walletAddGoogle: 'Add to Google Wallet',
