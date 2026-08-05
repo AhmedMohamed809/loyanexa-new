@@ -207,6 +207,42 @@ test('GET /lang/:lang falls back to English for an unknown language, and to /app
 });
 
 // ---------------------------------------------------------------------------
+// Transport and method hygiene (BUILD.md §15 Phase 7)
+// ---------------------------------------------------------------------------
+
+test('HEAD is treated as GET, not as a 404', async () => {
+  // Every HEAD in the application used to 404, including HEAD / on the
+  // landing page, because the router only ever matched req.method === 'GET'.
+  // Uptime monitors, link checkers and some crawlers use HEAD by default and
+  // were all being told the site did not exist.
+  for (const path of ['/', '/signin', '/health']) {
+    const head = await fetch(`${server.baseUrl}${path}`, { method: 'HEAD' });
+    const get = await fetch(`${server.baseUrl}${path}`);
+    assert.equal(head.status, get.status, `HEAD ${path} must match GET ${path}`);
+    assert.equal(head.headers.get('content-type'), get.headers.get('content-type'));
+  }
+});
+
+test('HSTS is sent, and only when the public origin is actually HTTPS', async () => {
+  // The header is conditional on PUBLIC_URL being https. That condition is
+  // not decoration: max-age is a promise browsers keep even after the header
+  // stops being sent, so announcing it from a host that cannot serve HTTPS
+  // makes that host unreachable until the age expires. The test reads the
+  // same env the server does rather than assuming either way.
+  const res = await fetch(`${server.baseUrl}/signin`);
+  const hsts = res.headers.get('strict-transport-security');
+  const httpsOrigin = (process.env.PUBLIC_BASE_URL ?? '').startsWith('https://');
+
+  if (httpsOrigin) {
+    assert.ok(hsts, 'an https origin must send HSTS');
+    assert.match(hsts!, /max-age=\d+/);
+    assert.match(hsts!, /includeSubDomains/);
+  } else {
+    assert.equal(hsts, null, 'a plain-http origin must not announce HSTS');
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Landing page -> real product
 // ---------------------------------------------------------------------------
 

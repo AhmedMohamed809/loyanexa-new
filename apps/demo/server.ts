@@ -885,6 +885,23 @@ const loginLimiterByIp = new RateLimiter({ limit: 30, windowMs: 15 * 60 * 1000 }
 const signupLimiterByIp = new RateLimiter({ limit: 5, windowMs: 15 * 60 * 1000 });
 
 /**
+ * POST /api/stamp, keyed by merchant (BUILD.md §15 Phase 7 asks for this
+ * endpoint and the enrol endpoint to be limited; only enrol was).
+ *
+ * It is already authenticated, so this is not about anonymous abuse — it is
+ * about a staff PIN that has been shared, guessed, or left open on a counter
+ * phone. The 24-hour guard already stops the same customer being stamped
+ * twice, so the damage from a loop is not fraudulent stamps; it is a busy
+ * shop's stamp screen becoming unresponsive because one device is issuing
+ * hundreds of writes a minute against a 512MB machine.
+ *
+ * 240 in 5 minutes is roughly one stamp every 1.2 seconds sustained — far
+ * beyond a real counter, where each stamp needs a customer to physically
+ * present a phone, and far below what would hurt.
+ */
+const stampLimiterByMerchant = new RateLimiter({ limit: 240, windowMs: 5 * 60 * 1000 });
+
+/**
  * A fixed, valid-shaped scrypt hash that no real password will ever match,
  * computed once at module load. handleSignIn() always runs a verifyPassword
  * call against *some* hash — this one when there's no real merchant/password
@@ -5713,7 +5730,28 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
     const { pathname } = url;
 
-    if (req.method === 'GET' && pathname === '/health') {
+    // HSTS (BUILD.md §15 Phase 7). fly.toml already redirects HTTP to HTTPS,
+    // but a redirect still means the FIRST request of a session can go out in
+    // clear text — and on this product that request can carry a session
+    // cookie. This tells the browser never to try HTTP for this host again.
+    //
+    // Two years, subdomains included, and preload-eligible. Worth knowing
+    // before changing it: max-age is a promise browsers keep even if the
+    // header later disappears, so a host that stops serving HTTPS stays
+    // unreachable until the age expires. That is the point of it.
+    if (PUBLIC_URL.startsWith('https://')) {
+      res.setHeader('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload');
+    }
+
+    // HEAD is GET without a body. Node will not send a body for a HEAD
+    // response, so routing it as GET gives correct status codes and headers
+    // for free — where previously every HEAD in the application 404'd,
+    // including HEAD / on the landing page. Uptime monitors, link checkers
+    // and some crawlers use HEAD by default and were all being told the site
+    // did not exist.
+    const method = req.method === 'HEAD' ? 'GET' : req.method;
+
+    if (method === 'GET' && pathname === '/health') {
       handleHealth(res);
       return;
     }
@@ -5721,35 +5759,35 @@ const server = http.createServer(async (req, res) => {
     // under apps/demo/public/. Only succeeds when a real file exists at
     // that path, so it can never shadow a route below it (e.g. GET /app,
     // or the /:code catch-all further down) — it just falls through.
-    if (req.method === 'GET' && serveStaticFile(res, pathname, await isSignedIn(req))) {
+    if (method === 'GET' && serveStaticFile(res, pathname, await isSignedIn(req))) {
       return;
     }
     // Sign-up / sign-in / sign-out — public (a session is what every route
     // below this point exists to require).
-    if (req.method === 'GET' && pathname === '/signin') {
+    if (method === 'GET' && pathname === '/signin') {
       handleSignInForm(req, res, url);
       return;
     }
-    if (req.method === 'POST' && pathname === '/signin') {
+    if (method === 'POST' && pathname === '/signin') {
       await handleSignIn(req, res);
       return;
     }
-    if (req.method === 'GET' && pathname === '/signup') {
+    if (method === 'GET' && pathname === '/signup') {
       handleSignUpForm(req, res, url);
       return;
     }
-    if (req.method === 'POST' && pathname === '/signup') {
+    if (method === 'POST' && pathname === '/signup') {
       await handleSignUp(req, res);
       return;
     }
-    if (req.method === 'POST' && pathname === '/signout') {
+    if (method === 'POST' && pathname === '/signout') {
       await handleSignOut(req, res);
       return;
     }
 
     // Language switch. Deliberately above requireMerchant: the sign-in page
     // needs it too, and it exposes nothing — it only writes a cookie.
-    if (req.method === 'GET' && pathname.startsWith('/lang/')) {
+    if (method === 'GET' && pathname.startsWith('/lang/')) {
       handleLangSwitch(req, res, pathname.slice('/lang/'.length));
       return;
     }
@@ -5758,7 +5796,7 @@ const server = http.createServer(async (req, res) => {
     // route: requireMerchant() 302s to /signin when there is no valid
     // session, and every handler below is scoped to the merchant it
     // resolves — never a bare client-supplied id (BUILD.md job brief).
-    if (req.method === 'GET' && pathname === '/app') {
+    if (method === 'GET' && pathname === '/app') {
       const merchant = await requireMerchant(req, res);
       if (!merchant) return;
       await handleCardsList(req, res, merchant);
@@ -5766,19 +5804,19 @@ const server = http.createServer(async (req, res) => {
     }
     // Registered before /cards/new so the more specific path wins — the
     // catch-all order rule from docs/CLAUDE.md applies within a prefix too.
-    if (req.method === 'GET' && pathname === '/cards/new/templates') {
+    if (method === 'GET' && pathname === '/cards/new/templates') {
       const merchant = await requireMerchant(req, res);
       if (!merchant) return;
       await handleTemplateGallery(req, res, url);
       return;
     }
-    if (req.method === 'GET' && pathname === '/cards/new') {
+    if (method === 'GET' && pathname === '/cards/new') {
       const merchant = await requireMerchant(req, res);
       if (!merchant) return;
       await handleNewCardForm(req, res, url);
       return;
     }
-    if (req.method === 'POST' && pathname === '/cards') {
+    if (method === 'POST' && pathname === '/cards') {
       const merchant = await requireMerchant(req, res);
       if (!merchant) return;
       await handleCreateCard(req, res, merchant);
@@ -5787,34 +5825,34 @@ const server = http.createServer(async (req, res) => {
     // /preview.png, /qr.png, /icon-swatch.png stay fully public — the
     // customer enrol page and print sheet embed them with no session
     // (BUILD.md job brief's "what stays public" list).
-    if (req.method === 'GET' && pathname === '/preview.png') {
+    if (method === 'GET' && pathname === '/preview.png') {
       await handlePreviewPng(res, url.searchParams);
       return;
     }
-    if (req.method === 'GET' && pathname === '/qr.png') {
+    if (method === 'GET' && pathname === '/qr.png') {
       handleQrPng(res, url.searchParams);
       return;
     }
-    if (req.method === 'GET' && pathname === '/icon-swatch.png') {
+    if (method === 'GET' && pathname === '/icon-swatch.png') {
       handleIconSwatchPng(res, url.searchParams);
       return;
     }
     // GET /customers and its CSV export (BUILD.md §8.11), and GET /reports
     // (BUILD.md §8.14) — literal single-segment paths, registered here
     // above the /:code catch-all for the same reason /app and /stamp are.
-    if (req.method === 'GET' && pathname === '/customers/export.csv') {
+    if (method === 'GET' && pathname === '/customers/export.csv') {
       const merchant = await requireMerchant(req, res);
       if (!merchant) return;
       await handleCustomersExport(req, res, url, merchant);
       return;
     }
-    if (req.method === 'GET' && pathname === '/customers') {
+    if (method === 'GET' && pathname === '/customers') {
       const merchant = await requireMerchant(req, res);
       if (!merchant) return;
       await handleCustomersList(req, res, url, merchant);
       return;
     }
-    if (req.method === 'GET' && pathname === '/reports') {
+    if (method === 'GET' && pathname === '/reports') {
       const merchant = await requireMerchant(req, res);
       if (!merchant) return;
       await handleReports(req, res, url, merchant);
@@ -5824,20 +5862,20 @@ const server = http.createServer(async (req, res) => {
     // literal/regex paths registered here for the same reason /customers and
     // /reports are: above the `GET /:code` catch-all, and never colliding
     // with the /cards/... group below regardless.
-    if (req.method === 'GET' && pathname === '/settings') {
+    if (method === 'GET' && pathname === '/settings') {
       const merchant = await requireMerchant(req, res);
       if (!merchant) return;
       await handleSettingsPage(req, res, merchant);
       return;
     }
-    if (req.method === 'POST' && pathname === '/staff') {
+    if (method === 'POST' && pathname === '/staff') {
       const merchant = await requireMerchant(req, res);
       if (!merchant) return;
       await handleCreateStaff(req, res, merchant);
       return;
     }
     const staffActionMatch = pathname.match(/^\/staff\/([^/]+)\/(activate|deactivate|delete)$/);
-    if (req.method === 'POST' && staffActionMatch) {
+    if (method === 'POST' && staffActionMatch) {
       const merchant = await requireMerchant(req, res);
       if (!merchant) return;
       await handleStaffAction(req, res, staffActionMatch[1]!, staffActionMatch[2] as 'activate' | 'deactivate' | 'delete', merchant);
@@ -5849,32 +5887,32 @@ const server = http.createServer(async (req, res) => {
     // (requireMerchant() — see this section's own doc comment above
     // handleNotificationsPage for why a staff session can never reach any
     // of these).
-    if (req.method === 'GET' && pathname === '/notifications') {
+    if (method === 'GET' && pathname === '/notifications') {
       const merchant = await requireMerchant(req, res);
       if (!merchant) return;
       await handleNotificationsPage(req, res, url, merchant);
       return;
     }
-    if (req.method === 'POST' && pathname === '/notifications/automations') {
+    if (method === 'POST' && pathname === '/notifications/automations') {
       const merchant = await requireMerchant(req, res);
       if (!merchant) return;
       await handleSaveAutomations(req, res, merchant);
       return;
     }
-    if (req.method === 'GET' && pathname === '/notifications/recipient-count') {
+    if (method === 'GET' && pathname === '/notifications/recipient-count') {
       const merchant = await requireMerchant(req, res);
       if (!merchant) return;
       await handleRecipientCount(req, res, url, merchant);
       return;
     }
-    if (req.method === 'POST' && pathname === '/notifications/send') {
+    if (method === 'POST' && pathname === '/notifications/send') {
       const merchant = await requireMerchant(req, res);
       if (!merchant) return;
       await handleSendBroadcast(req, res, merchant);
       return;
     }
     const broadcastJobMatch = pathname.match(/^\/notifications\/jobs\/([^/]+)$/);
-    if (req.method === 'GET' && broadcastJobMatch) {
+    if (method === 'GET' && broadcastJobMatch) {
       const merchant = await requireMerchant(req, res);
       if (!merchant) return;
       await handleBroadcastJobStatus(req, res, broadcastJobMatch[1]!, merchant);
@@ -5886,7 +5924,7 @@ const server = http.createServer(async (req, res) => {
     // versa; order between the two groups does not matter, only that both
     // are above the `GET /:code` catch-all at the bottom of this router.
     const cardPrintMatch = pathname.match(/^\/cards\/([^/]+)\/print$/);
-    if (req.method === 'GET' && cardPrintMatch) {
+    if (method === 'GET' && cardPrintMatch) {
       const merchant = await requireMerchant(req, res);
       if (!merchant) return;
       await handleCardPrint(req, res, cardPrintMatch[1]!, merchant);
@@ -5894,13 +5932,13 @@ const server = http.createServer(async (req, res) => {
     }
     const cardActivateMatch = pathname.match(/^\/cards\/([^/]+)\/activate$/);
     if (cardActivateMatch) {
-      if (req.method === 'GET') {
+      if (method === 'GET') {
         const merchant = await requireMerchant(req, res);
         if (!merchant) return;
         await handleActivateConfirm(req, res, cardActivateMatch[1]!, merchant);
         return;
       }
-      if (req.method === 'POST') {
+      if (method === 'POST') {
         const merchant = await requireMerchant(req, res);
         if (!merchant) return;
         await handleActivateCard(req, res, cardActivateMatch[1]!, merchant);
@@ -5909,13 +5947,13 @@ const server = http.createServer(async (req, res) => {
     }
     const cardEditMatch = pathname.match(/^\/cards\/([^/]+)\/edit$/);
     if (cardEditMatch) {
-      if (req.method === 'GET') {
+      if (method === 'GET') {
         const merchant = await requireMerchant(req, res);
         if (!merchant) return;
         await handleEditCardForm(req, res, cardEditMatch[1]!, merchant);
         return;
       }
-      if (req.method === 'POST') {
+      if (method === 'POST') {
         const merchant = await requireMerchant(req, res);
         if (!merchant) return;
         await handleUpdateCard(req, res, cardEditMatch[1]!, merchant);
@@ -5924,13 +5962,13 @@ const server = http.createServer(async (req, res) => {
     }
     const cardDeleteMatch = pathname.match(/^\/cards\/([^/]+)\/delete$/);
     if (cardDeleteMatch) {
-      if (req.method === 'GET') {
+      if (method === 'GET') {
         const merchant = await requireMerchant(req, res);
         if (!merchant) return;
         await handleCardDeleteConfirm(req, res, merchant, cardDeleteMatch[1]!);
         return;
       }
-      if (req.method === 'POST') {
+      if (method === 'POST') {
         const merchant = await requireMerchant(req, res);
         if (!merchant) return;
         await handleCardDelete(req, res, merchant, cardDeleteMatch[1]!);
@@ -5938,7 +5976,7 @@ const server = http.createServer(async (req, res) => {
       }
     }
     const cardImageMatch = pathname.match(/^\/cards\/([^/]+)\/image$/);
-    if (req.method === 'POST' && cardImageMatch) {
+    if (method === 'POST' && cardImageMatch) {
       const merchant = await requireMerchant(req, res);
       if (!merchant) return;
       await handleUploadCardImage(req, res, cardImageMatch[1]!, merchant);
@@ -5948,13 +5986,13 @@ const server = http.createServer(async (req, res) => {
     // hash, served to the customer enrol page and the print sheet with no
     // session (BUILD.md job brief's "what stays public" list).
     const imgMatch = pathname.match(/^\/img\/([0-9a-f]{64})$/);
-    if (req.method === 'GET' && imgMatch) {
+    if (method === 'GET' && imgMatch) {
       await handleGetImage(res, imgMatch[1]!);
       return;
     }
     const cardMatch = pathname.match(/^\/cards\/([^/]+)$/);
     const cardId = cardMatch?.[1];
-    if (req.method === 'GET' && cardId !== undefined) {
+    if (method === 'GET' && cardId !== undefined) {
       const merchant = await requireMerchant(req, res);
       if (!merchant) return;
       await handleCardDetail(req, res, cardId, merchant);
@@ -5969,7 +6007,7 @@ const server = http.createServer(async (req, res) => {
     // browser to /signin (a page it has no credentials for and must never
     // reach). GET /stamp with neither shows the staff PIN entry screen
     // instead of redirecting.
-    if (req.method === 'GET' && pathname === '/stamp') {
+    if (method === 'GET' && pathname === '/stamp') {
       const auth = await resolveStampAuth(req);
       if (!auth) {
         handleStaffPinForm(req, res);
@@ -5978,18 +6016,22 @@ const server = http.createServer(async (req, res) => {
       handleStampScreen(req, res, auth);
       return;
     }
-    if (req.method === 'POST' && pathname === '/stamp/pin') {
+    if (method === 'POST' && pathname === '/stamp/pin') {
       await handleStaffPinLogin(req, res);
       return;
     }
-    if (req.method === 'POST' && pathname === '/stamp/signout') {
+    if (method === 'POST' && pathname === '/stamp/signout') {
       await handleStaffSignOut(req, res);
       return;
     }
-    if (req.method === 'POST' && pathname === '/api/stamp') {
+    if (method === 'POST' && pathname === '/api/stamp') {
       const auth = await resolveStampAuth(req);
       if (!auth) {
         sendJson(res, 401, { ok: false, message: t(resolveLang(req), 'staffPinRequired') });
+        return;
+      }
+      if (!stampLimiterByMerchant.check(auth.merchant.id)) {
+        sendJson(res, 429, { ok: false, message: t(resolveLang(req), 'rateLimited') });
         return;
       }
       await handleApiStamp(req, res, auth.merchant, auth.staff);
@@ -6002,7 +6044,7 @@ const server = http.createServer(async (req, res) => {
     // as the first path segment never collides with the single- or
     // two-segment catch-alls below regardless, but literal routes belong
     // above the catch-all on principle (BUILD.md §18 item 10).
-    if (pathname === '/apple/v1/log' && req.method === 'POST') {
+    if (pathname === '/apple/v1/log' && method === 'POST') {
       await handleApplePassLog(req, res);
       return;
     }
@@ -6011,22 +6053,22 @@ const server = http.createServer(async (req, res) => {
     );
     if (registrationMatch) {
       const [, deviceId, , serial] = registrationMatch;
-      if (req.method === 'POST') {
+      if (method === 'POST') {
         await handleRegisterDevice(req, res, deviceId!, serial!);
         return;
       }
-      if (req.method === 'DELETE') {
+      if (method === 'DELETE') {
         await handleUnregisterDevice(req, res, deviceId!, serial!);
         return;
       }
     }
     const serialsMatch = pathname.match(/^\/apple\/v1\/devices\/([^/]+)\/registrations\/([^/]+)$/);
-    if (req.method === 'GET' && serialsMatch) {
+    if (method === 'GET' && serialsMatch) {
       await handleGetUpdatedSerials(req, res, serialsMatch[1]!, url);
       return;
     }
     const getPassMatch = pathname.match(/^\/apple\/v1\/passes\/([^/]+)\/([^/]+)$/);
-    if (req.method === 'GET' && getPassMatch) {
+    if (method === 'GET' && getPassMatch) {
       await handleGetLatestPass(req, res, getPassMatch[2]!);
       return;
     }
@@ -6038,17 +6080,17 @@ const server = http.createServer(async (req, res) => {
     // POST /:code/google-pass, both distinct two-segment patterns) is
     // matched first.
     const passIssueMatch = pathname.match(/^\/([^/]+)\/pass$/);
-    if (req.method === 'POST' && passIssueMatch) {
+    if (method === 'POST' && passIssueMatch) {
       await handleIssuePass(req, res, passIssueMatch[1]!);
       return;
     }
     const googlePassIssueMatch = pathname.match(/^\/([^/]+)\/google-pass$/);
-    if (req.method === 'POST' && googlePassIssueMatch) {
+    if (method === 'POST' && googlePassIssueMatch) {
       await handleIssueGooglePass(req, res, googlePassIssueMatch[1]!);
       return;
     }
     const enrolMatch = pathname.match(/^\/([^/]+)$/);
-    if (req.method === 'GET' && enrolMatch) {
+    if (method === 'GET' && enrolMatch) {
       await handleEnrolPage(res, enrolMatch[1]!);
       return;
     }
