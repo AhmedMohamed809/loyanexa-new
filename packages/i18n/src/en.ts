@@ -287,6 +287,10 @@ export const en = {
   planUsageCards: 'Cards',
   planUsageStaff: 'Staff PINs',
   planUpgradeSoon: 'Upgrading is not available yet. Get in touch and we will move you across.',
+  // Footer on the sign-in / sign-up pages.
+  legalPrivacy: 'Privacy',
+  legalTerms: 'Terms',
+  authTagline: 'Loyalty cards that live in your customers’ wallets.',
   navPrimary: 'Main navigation',
   /** The fifth tab, holding what does not fit in a five-tab bar (Reports, Settings, language, sign out). */
   navMore: 'More',

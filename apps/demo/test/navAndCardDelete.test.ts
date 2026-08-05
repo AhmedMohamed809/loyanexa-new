@@ -210,6 +210,30 @@ test('GET /lang/:lang falls back to English for an unknown language, and to /app
 // Transport and method hygiene (BUILD.md §15 Phase 7)
 // ---------------------------------------------------------------------------
 
+test('every shell emits the WHOLE stylesheet, not half of it', async () => {
+  // The stylesheet was split into CHROME_CSS (tokens, header, tab bar) and a
+  // block living inline inside layout(). Any shell that was not layout()
+  // emitted only the first half — and three of them are not: the stamp
+  // screen, the legal pages, and sign-in.
+  //
+  // The visible symptom was two browser-default white boxes on the sign-in
+  // page, because the rule giving an input its background and border was in
+  // the half those shells never saw. Nothing in the markup was wrong and
+  // nothing failed a typecheck, which is why it survived a redesign.
+  for (const path of ['/signin', '/signup', '/privacy', '/terms', '/stamp']) {
+    const html = await (await fetch(`${server.baseUrl}${path}`)).text();
+
+    // From CHROME_CSS.
+    assert.match(html, /--sunk: #162338/, `${path} is missing the design tokens`);
+    // From PAGE_CSS — this is the half that used to go missing.
+    assert.ok(
+      html.includes('input[type="email"]'),
+      `${path} is missing the input styling, so its fields render as browser defaults`
+    );
+    assert.match(html, /\.panel \{/, `${path} is missing the panel styling`);
+  }
+});
+
 test('HEAD is treated as GET, not as a 404', async () => {
   // Every HEAD in the application used to 404, including HEAD / on the
   // landing page, because the router only ever matched req.method === 'GET'.

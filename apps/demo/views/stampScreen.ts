@@ -13,7 +13,7 @@
 
 import { t, type Lang } from '../../../packages/i18n/src/index.ts';
 import { escapeHtml } from './html.ts';
-import { CHROME_CSS, navBar, tabBar } from './chrome.ts';
+import { CHROME_CSS, PAGE_CSS, navBar, tabBar } from './chrome.ts';
 
 // Route: GET /stamp — the merchant stamp screen (BUILD.md §8.15). Our
 // replacement for the competitor's scanner app: a browser page, opened on
@@ -62,6 +62,7 @@ export function renderStampScreen(lang: Lang = 'en', viewer: StampScreenViewer =
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&display=swap">
 <style>
 ${CHROME_CSS}
+${PAGE_CSS}
   /* Stamp-screen-only chrome overrides: this page is a single narrow
      column at a counter, not a dashboard page, so its main is tighter
      than CHROME_CSS's. The bottom-tab-bar clearance still applies. */

@@ -448,18 +448,25 @@ export function tabBar(active: NavKey | undefined, lang: Lang = 'en'): string {
   </nav>`;
 }
 
-export function layout(title: string, bodyHtml: string, active?: NavKey, lang: Lang = 'en'): string {
-  return `<!doctype html>
-<html lang="${lang}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(title)} · LoyaNexa</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&display=swap">
-<style>
-${CHROME_CSS}
+
+/**
+ * The page-level stylesheet: panels, forms, inputs, tables, grids — every
+ * rule that is about a PAGE rather than about the frame around it.
+ *
+ * Split out on 5 August 2026 because the original split was arbitrary and
+ * silently wrong. CHROME_CSS held the tokens, the header and the tab bar,
+ * while everything else lived inline inside layout(). Any shell that was not
+ * layout() therefore emitted half a stylesheet — and three of them are not:
+ * the stamp screen, the legal pages, and the sign-in page.
+ *
+ * That is why sign-in rendered two browser-default white boxes: the rule that
+ * gives an input its background and border was in the half those shells never
+ * saw. Nothing in the markup was wrong, and nothing failed a typecheck.
+ *
+ * Emit both constants together, always. A shell may have its own extra rules;
+ * it may not have a subset of these.
+ */
+export const PAGE_CSS = `
   main {
     max-width: 1000px;
     margin: 0 auto;
@@ -518,7 +525,16 @@ ${CHROME_CSS}
   }
   form .field { margin-bottom: 18px; }
   label { display: block; font-weight: 600; font-size: 13px; margin-bottom: 6px; color: var(--ink-2); }
-  input[type="text"], input[type="number"], input[type="tel"], select, textarea {
+  /* Every text-entry type, not a subset.
+     email and password were missing from this list, which is why the sign-in
+     page rendered two browser-default white boxes on a dark panel — they were
+     picking up the focus ring and the transition added later, but never the
+     background, border or colour that make an input look like part of the
+     product. A selector list is exactly the kind of thing that gets extended
+     by one type at a time and quietly falls behind. */
+  input[type="text"], input[type="number"], input[type="tel"], input[type="email"],
+  input[type="password"], input[type="search"], input[type="date"], input[type="url"],
+  select, textarea {
     width: 100%;
     border: 1px solid var(--line);
     border-radius: 10px;
@@ -842,6 +858,21 @@ ${CHROME_CSS}
   .automated-card .status-pill { font-size: 10px; padding: 3px 9px; border-radius: 100px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
   .automated-card .status-pill.live { background: rgba(34,197,94,.14); color: var(--green); }
   .automated-card .status-pill.pending { background: rgba(148,163,184,.14); color: var(--ink-3); }
+`;
+
+export function layout(title: string, bodyHtml: string, active?: NavKey, lang: Lang = 'en'): string {
+  return `<!doctype html>
+<html lang="${lang}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(title)} · LoyaNexa</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&display=swap">
+<style>
+${CHROME_CSS}
+${PAGE_CSS}
 </style>
 </head>
 <body>
