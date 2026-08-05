@@ -1,6 +1,53 @@
-# Where the project stands — 4 August 2026
+# Where the project stands — 5 August 2026
 
-**Live: https://loyanexa-new.fly.dev** · `main` at `28c024c` · **492 tests** · typecheck clean
+**Live: https://loyanexa-new.fly.dev** · `main` at `9be447a` · **526 tests** · typecheck clean
+
+---
+
+## Overnight, 5 August
+
+**Typeface.** Alexandria out, IBM Plex Sans Arabic in. The problem was structural rather than
+taste: Alexandria is a *display* face — drawn to be set large — doing body-text work at
+14–15px, which is the size of almost every word in the dashboard. Fourteen places also asked
+for a weight of 800 that the family does not have, so the browser was faking it by smearing
+the outlines. All of those are now 700, and `font-synthesis-weight: none` means a missing
+weight fails visibly instead of quietly.
+
+**The stamp icons.** I rendered the old set to a contact sheet and looked at it. The complaint
+was justified: the "star" was a four-pointed **diamond**, the "croissant" was a crescent
+**moon**, the "dumbbell" read as an infinity sign, and the "heart" had a white seam through
+the middle. The cause was the drawing primitives — only convex fills existed, and a convex
+fill *cannot* express a star. Added proper path primitives and redrew all ten as line art at
+one shared stroke weight, with a floor so they survive at 22px.
+
+**The landing page now leads into the product.** It didn't before: "Start free trial" opened
+a prototype dashboard *inside the marketing page*, so a visitor could click through, browse
+customers, and never have an account. Every CTA now points at the real sign-up. If you are
+already signed in, the header offers your dashboard instead — the server tells the page with
+a single boolean, because the session cookie is deliberately unreadable from JavaScript.
+421 lines of prototype removed.
+
+**A live card simulation** sits beside the create form — name, reward, the real stamp strip,
+the count — updating as you type. Which side it appears on follows the page language; what it
+*says* follows the **card's** language, because it is a picture of what your customer will
+hold. An Arabic card previews right-to-left with Arabic-Indic digits.
+
+**Design and motion.** One vocabulary in one place: three durations, one ease-out curve, all
+short. Buttons depress on press, tiles lift only when they are actually links, inputs take a
+focus ring rather than a thicker border. `prefers-reduced-motion` is honoured first — for
+people with vestibular disorders that is nausea, not preference.
+
+**Refactor.** `server.ts` went from 7,090 to 6,032 lines, with the view layer extracted to
+`apps/demo/views/`. New: **`docs/ARCHITECTURE.md`** — a map of every module and the rules
+that are not obvious from reading the code.
+
+## One thing I got wrong, and fixed
+
+Seventeen strings I added on 4 August reached production **unreadable** — Arabic `تاريخ`
+rendering as `ØªØ§Ø±ÙØ®`. My insertion script decoded UTF-8 as Latin-1. Every check
+passed: the keys were present, non-empty, and identical in both dictionaries. The only thing
+wrong was that a person could not read them, and nothing looked for that. Fixed, rewritten
+properly, and `npm run test:i18n` now fails on the signature — verified by injecting one.
 
 ---
 
