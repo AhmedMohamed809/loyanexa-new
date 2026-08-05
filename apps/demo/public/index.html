@@ -2087,7 +2087,10 @@ function homeView(){
         <div><h4>${t('f_industries')}</h4><ul>
           ${t('inds').slice(0,5).map(x=>`<li><a href="#sectors">${x}</a></li>`).join('')}</ul></div>
         <div><h4>${t('f_company')}</h4><ul>
-          ${(isAr()?['من نحن','تواصل معنا','الخصوصية','الشروط']:['About','Contact','Privacy','Terms']).map(x=>`<li><a href="#/">${x}</a></li>`).join('')}</ul></div>
+          ${(isAr()
+              ? [['من نحن','#/'],['تواصل معنا','#/'],['الخصوصية','/privacy'],['الشروط','/terms']]
+              : [['About','#/'],['Contact','#/'],['Privacy','/privacy'],['Terms','/terms']]
+            ).map(([label,href])=>`<li><a href="${href}">${label}</a></li>`).join('')}</ul></div>
       </div>
       <div class="foot-bar"><span>${t('f_rights')}</span>
         <span style="display:flex;gap:10px;align-items:center;color:var(--logo-orange)">${stampRow(8,8)}</span></div>

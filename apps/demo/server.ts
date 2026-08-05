@@ -132,6 +132,7 @@ import {
 import { escapeHtml } from './views/html.ts';
 import { CHROME_CSS, navBar, tabBar, layout, type NavKey } from './views/chrome.ts';
 import { renderStampScreen, type StampScreenViewer } from './views/stampScreen.ts';
+import { renderPrivacy, renderTerms } from './views/legal.ts';
 import { templatePhotoHashes } from './templateAssets.ts';
 import { readMultipart } from './multipart.ts';
 import { AutomationScheduler } from './automations.ts';
@@ -4748,7 +4749,8 @@ function renderEnrolPage(card: Card): string {
     }
     <label class="consent">
       <input type="checkbox" name="consent" required>
-      <span>${escapeHtml(t(lang, 'enrolConsent', { name: card.name }))}</span>
+      <span>${escapeHtml(t(lang, 'enrolConsent', { name: card.name }))}
+        <a href="/privacy" target="_blank" rel="noopener">${escapeHtml(t(lang, 'enrolPrivacyLink'))}</a></span>
     </label>
     <div class="wallet-buttons">
       <button class="cta apple" type="submit" formaction="/${card.linkCode}/pass">${escapeHtml(t(lang, 'walletAddApple'))}</button>
@@ -5782,6 +5784,15 @@ const server = http.createServer(async (req, res) => {
     }
     if (method === 'POST' && pathname === '/signout') {
       await handleSignOut(req, res);
+      return;
+    }
+
+    // The legal pages. Public and unauthenticated on purpose: a privacy
+    // policy you need an account to read is not a privacy policy, and the
+    // people most likely to want it are customers who will never have one.
+    if (method === 'GET' && (pathname === '/privacy' || pathname === '/terms')) {
+      const lang = resolveLang(req);
+      sendHtml(res, 200, pathname === '/privacy' ? renderPrivacy(lang) : renderTerms(lang));
       return;
     }
 
