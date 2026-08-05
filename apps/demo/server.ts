@@ -132,7 +132,7 @@ import {
 import { log, errorFields } from './log.ts';
 import { effectivePlan, checkLimit, TRIAL_DAYS } from './plans.ts';
 import { escapeHtml } from './views/html.ts';
-import { CHROME_CSS, navBar, tabBar, layout, type NavKey } from './views/chrome.ts';
+import { CHROME_CSS, PAGE_CSS, navBar, tabBar, layout, type NavKey } from './views/chrome.ts';
 import { renderStampScreen, type StampScreenViewer } from './views/stampScreen.ts';
 import { renderPrivacy, renderTerms } from './views/legal.ts';
 import { templatePhotoHashes } from './templateAssets.ts';
@@ -919,8 +919,73 @@ const stampLimiterByMerchant = new RateLimiter({ limit: 240, windowMs: 5 * 60 * 
  */
 const DUMMY_PASSWORD_HASH = hashPassword(crypto.randomBytes(24).toString('hex'));
 
+/**
+ * The shell for sign-in and sign-up.
+ *
+ * These used to go through layout(), which meant a signed-out visitor was
+ * shown the full merchant nav — Cards, Customers, Reports, Stamp screen,
+ * Settings — where every single link 302s straight back to the page they were
+ * already on. Six dead ends above a sign-in form is worse than no navigation:
+ * it invites a click and punishes it.
+ *
+ * So this is its own shell. Brand and a language toggle at the top, the form
+ * centred in the viewport rather than pinned to it, and a footer carrying the
+ * privacy policy and terms — which is the one place a person actually looks
+ * for them before handing over an email address.
+ */
 function authPageShell(title: string, bodyHtml: string, lang: Lang): string {
-  return layout(title, `<div class="panel" style="max-width:420px;margin:40px auto;">${bodyHtml}</div>`, undefined, lang);
+  const other: Lang = lang === 'ar' ? 'en' : 'ar';
+  return `<!doctype html>
+<html lang="${lang}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(title)} · LoyaNexa</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&display=swap">
+<style>
+${CHROME_CSS}
+${PAGE_CSS}
+  /* Centred in the viewport, with the footer pushed to the bottom by the
+     grid rather than by a margin that guesses at the content height. */
+  body { min-height: 100vh; display: grid; grid-template-rows: auto 1fr auto; }
+  .auth-top { padding: 20px 24px; display: flex; align-items: center; gap: 16px; }
+  .auth-top .brand { color: var(--ink); text-decoration: none; font-weight: 700; font-size: 17px; }
+  .auth-top .lang { margin-inline-start: auto; color: var(--ink-3); text-decoration: none; font-size: 13px; font-weight: 600; border: 1px solid var(--line); border-radius: 100px; padding: 7px 14px; }
+  .auth-top .lang:hover { color: var(--ink); border-color: var(--accent); }
+  .auth-main { display: flex; align-items: center; justify-content: center; padding: 24px 20px 40px; }
+  .auth-card {
+    width: 100%; max-width: 400px;
+    background: var(--paper); border: 1px solid var(--line);
+    border-radius: var(--radius-lg); padding: 30px 28px;
+    box-shadow: var(--shadow-3);
+    animation: lnx-rise var(--dur-3) var(--ease) both;
+  }
+  .auth-card h1 { font-size: 23px; margin: 0 0 6px; }
+  .auth-lede { color: var(--ink-3); font-size: 14px; margin: 0 0 22px; line-height: 1.5; }
+  .auth-card .btn { width: 100%; text-align: center; margin-top: 4px; }
+  .auth-alt { margin: 20px 0 0; font-size: 14px; color: var(--ink-3); text-align: center; }
+  .auth-alt a { color: var(--accent); font-weight: 600; }
+  .auth-foot { padding: 20px 24px 28px; text-align: center; font-size: 13px; color: var(--ink-3); }
+  .auth-foot a { color: var(--ink-3); text-decoration: none; margin: 0 10px; }
+  .auth-foot a:hover { color: var(--ink); text-decoration: underline; }
+</style>
+</head>
+<body>
+<header class="auth-top">
+  <a class="brand" href="/">LoyaNexa</a>
+  <a class="lang" href="/lang/${other}" lang="${other}">${escapeHtml(t(lang, 'navSwitchLang'))}</a>
+</header>
+<main class="auth-main">
+  <div class="auth-card">${bodyHtml}</div>
+</main>
+<footer class="auth-foot">
+  <a href="/privacy">${escapeHtml(t(lang, 'legalPrivacy'))}</a>
+  <a href="/terms">${escapeHtml(t(lang, 'legalTerms'))}</a>
+</footer>
+</body>
+</html>`;
 }
 
 /** A safe `next` path to redirect to after sign-in — only ever an in-app, same-origin path (starts with exactly one `/`, never `//…` which browsers treat as protocol-relative), so this can never be turned into an open redirect off a query parameter. */
@@ -934,6 +999,7 @@ function renderSignInForm(opts: { email?: string; next: string; error?: string }
   const { email = '', next, error } = opts;
   const body = `
     <h1>${escapeHtml(t(lang, 'signInTitle'))}</h1>
+    <p class="auth-lede">${escapeHtml(t(lang, 'authTagline'))}</p>
     ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
     <form method="POST" action="/signin">
       <input type="hidden" name="next" value="${escapeHtml(next)}">
@@ -948,7 +1014,7 @@ function renderSignInForm(opts: { email?: string; next: string; error?: string }
           <button type="button" class="btn secondary small" id="toggleSignInPassword">${escapeHtml(t(lang, 'signInShowPassword'))}</button>
         </div>
       </div>
-      <button class="btn" type="submit" style="width:100%;">${escapeHtml(t(lang, 'signInSubmitButton'))}</button>
+      <button class="btn" type="submit">${escapeHtml(t(lang, 'signInSubmitButton'))}</button>
     </form>
     <p class="muted" style="margin-top:16px;">${escapeHtml(t(lang, 'signInNoAccountText'))} <a href="/signup">${escapeHtml(t(lang, 'signInSignUpLink'))}</a></p>
     <script>
@@ -974,6 +1040,7 @@ function renderSignUpForm(
   const { businessName = '', email = '', next, error } = opts;
   const body = `
     <h1>${escapeHtml(t(lang, 'signUpTitle'))}</h1>
+    <p class="auth-lede">${escapeHtml(t(lang, 'authTagline'))}</p>
     ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
     <form method="POST" action="/signup">
       <input type="hidden" name="next" value="${escapeHtml(next)}">
@@ -990,9 +1057,9 @@ function renderSignUpForm(
         <input type="password" id="password" name="password" required autocomplete="new-password" dir="ltr" autocapitalize="none" autocorrect="off" spellcheck="false" minlength="${MIN_PASSWORD_LENGTH}">
         <p class="field-hint">${escapeHtml(t(lang, 'signUpPasswordHint'))}</p>
       </div>
-      <button class="btn" type="submit" style="width:100%;">${escapeHtml(t(lang, 'signUpSubmitButton'))}</button>
+      <button class="btn" type="submit">${escapeHtml(t(lang, 'signUpSubmitButton'))}</button>
     </form>
-    <p class="muted" style="margin-top:16px;">${escapeHtml(t(lang, 'signUpHaveAccountText'))} <a href="/signin">${escapeHtml(t(lang, 'signUpSignInLink'))}</a></p>
+    <p class="auth-alt">${escapeHtml(t(lang, 'signUpHaveAccountText'))} <a href="/signin">${escapeHtml(t(lang, 'signUpSignInLink'))}</a></p>
   `;
   return authPageShell(t(lang, 'signUpTitle'), body, lang);
 }

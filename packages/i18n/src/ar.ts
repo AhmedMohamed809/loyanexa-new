@@ -277,6 +277,9 @@ export const ar: Record<keyof typeof en, string> = {
   planUsageCards: 'البطاقات',
   planUsageStaff: 'رموز الموظفين',
   planUpgradeSoon: 'الترقية غير متاحة بعد. تواصل معنا وسننقلك إلى الباقة المناسبة.',
+  legalPrivacy: 'الخصوصية',
+  legalTerms: 'الشروط',
+  authTagline: 'بطاقات ولاء تعيش داخل محافظ عملائك.',
   navPrimary: 'التنقل الرئيسي',
   navMore: 'المزيد',
   /** See en.ts — this always reads in the language being switched to, so it stays Latin here. */

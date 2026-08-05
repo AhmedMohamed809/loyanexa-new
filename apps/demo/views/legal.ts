@@ -22,7 +22,7 @@
 
 import { type Lang } from '../../../packages/i18n/src/index.ts';
 import { escapeHtml } from './html.ts';
-import { CHROME_CSS } from './chrome.ts';
+import { CHROME_CSS, PAGE_CSS } from './chrome.ts';
 
 /** The date the current text took effect. Update it whenever the wording changes materially — people are entitled to know which version they agreed to. */
 export const LEGAL_EFFECTIVE_DATE = '5 August 2026';
@@ -58,6 +58,7 @@ function renderDoc(lang: Lang, title: string, effective: string, sections: Secti
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&display=swap">
 <style>
 ${CHROME_CSS}
+${PAGE_CSS}
   /* A legal document is read, not scanned. A narrower measure and a taller
      line-height than the dashboard uses, because the failure mode here is
      someone giving up halfway rather than someone not finding a button. */
