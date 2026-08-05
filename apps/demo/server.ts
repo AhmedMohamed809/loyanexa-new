@@ -132,6 +132,7 @@ import {
 import { escapeHtml } from './views/html.ts';
 import { CHROME_CSS, navBar, tabBar, layout, type NavKey } from './views/chrome.ts';
 import { renderStampScreen, type StampScreenViewer } from './views/stampScreen.ts';
+import { templatePhotoHashes } from './templateAssets.ts';
 import { readMultipart } from './multipart.ts';
 import { AutomationScheduler } from './automations.ts';
 import {
@@ -515,8 +516,15 @@ async function pushApnsUpdate(serial: string): Promise<void> {
   const devices = await prisma.device.findMany({ where: { passSerial: serial } });
   await Promise.all(
     devices.map(async (device) => {
+      const pushStartedAt = Date.now();
       const result = await client.sendPush(device.pushToken, passTypeId);
-      if (result.ok) return;
+      if (result.ok) {
+        // Logged on success, not only on failure. A system that is silent
+        // when it works and loud when it breaks cannot answer "is it slow
+        // today?" — which is the actual question being asked.
+        console.log(`[apns] pass ${serial} pushed in ${Date.now() - pushStartedAt}ms`);
+        return;
+      }
       if (result.reason === 'gone') {
         await prisma.device
           .delete({ where: { deviceId_passSerial: { deviceId: device.deviceId, passSerial: serial } } })
@@ -695,8 +703,12 @@ async function cachedBuildPass(
   pass: Pass & { card: Card }
 ): Promise<Buffer> {
   const key = pkpassCacheKey(pass.serial, pass.stamps, pass.updatedAt, pass.card.updatedAt);
+  const startedAt = Date.now();
   const hit = await PKPASS_STORE.get(key);
-  if (hit) return hit;
+  if (hit) {
+    console.log(`[pass] ${pass.serial} served from cache in ${Date.now() - startedAt}ms`);
+    return hit;
+  }
 
   const pending = pkpassInFlight.get(key);
   if (pending) return pending;
@@ -707,6 +719,12 @@ async function cachedBuildPass(
     const content = buildPassContentFor(pass.card, pass, { publicBaseUrl: PUBLIC_BASE_URL });
     const pkpass = buildPass(credentials, content, images);
     await PKPASS_STORE.set(key, pkpass);
+    // The half of stamp-to-visible that is NOT the push. Once the push wakes
+    // the phone it comes straight back for the pass and waits on this —
+    // strip rendering plus CMS signing — so it is the piece most able to make
+    // an otherwise-instant stamp feel slow. Nothing measured it until now,
+    // which is why "sometimes it's slow" had no answer.
+    console.log(`[pass] ${pass.serial} rebuilt and signed in ${Date.now() - startedAt}ms`);
     return pkpass;
   })();
   pkpassInFlight.set(key, task);
@@ -1452,10 +1470,12 @@ interface NewCardFormValues {
   lang?: string;
   /** Set when the form was opened from the gallery (BUILD.md §8.4), so the stamp icon travels with the colours instead of being lost between picking a template and creating the card. */
   template?: CardTemplate;
+  /** The template's ingested cover photo, carried as a hidden field so the created card keeps the imagery the merchant chose it for. */
+  coverHash?: string | undefined;
 }
 
 function renderNewCardForm(
-  { name = '', rewardText = '', goal = 8, bg = '#203757', active = '#F96400', inactive = '#8794A5', lang: cardLang = 'ar', template }: NewCardFormValues = {},
+  { name = '', rewardText = '', goal = 8, bg = '#203757', active = '#F96400', inactive = '#8794A5', lang: cardLang = 'ar', template, coverHash }: NewCardFormValues = {},
   error?: string,
   lang: Lang = 'en'
 ): string {
@@ -1474,6 +1494,10 @@ function renderNewCardForm(
     previewQs.set('stampSource', 'builtin');
     previewQs.set('builtinIcon', template.builtinIcon);
   }
+  if (coverHash) {
+    previewQs.set('cover', coverHash);
+    previewQs.set('bgOpacity', String(TEMPLATE_COVER_OPACITY));
+  }
 
   const body = `
     <h1>${escapeHtml(t(lang, 'newCardTitle'))}</h1>
@@ -1485,7 +1509,12 @@ function renderNewCardForm(
         ${
           template
             ? `<input type="hidden" name="stampSource" value="builtin">
-        <input type="hidden" name="builtinIcon" value="${escapeHtml(template.builtinIcon)}">`
+        <input type="hidden" name="builtinIcon" value="${escapeHtml(template.builtinIcon)}">${
+          coverHash
+            ? `\n        <input type="hidden" name="coverHash" value="${escapeHtml(coverHash)}">
+        <input type="hidden" name="bgOpacity" value="${TEMPLATE_COVER_OPACITY}">`
+            : ''
+        }`
             : ''
         }
         <div class="field">
@@ -1534,7 +1563,7 @@ ${renderLangToggle(cardLang, lang)}
         style="background:${escapeHtml(bg)};color:#FFFFFF;">
         <div class="sim-top">
           <span class="sim-brand" id="simBrand">${escapeHtml(name || t(simLang, 'simYourBusiness'))}</span>
-          <span class="sim-chip">${escapeHtml(t(simLang, 'simRewardLabel'))}</span>
+          <span class="sim-chip" id="simRewardLabel">${escapeHtml(t(simLang, 'simRewardLabel'))}</span>
         </div>
         <p class="sim-reward" id="simReward">${escapeHtml(rewardText || t(simLang, 'newCardRewardPlaceholder'))}</p>
         <img class="sim-strip" id="preview" src="/preview.png?${previewQs.toString()}" alt="" width="375" height="144">
@@ -1608,16 +1637,35 @@ ${LANG_TOGGLE_SCRIPT}
         var simReward = document.getElementById('simReward');
         var simCount = document.getElementById('simCount');
         var nameInput = document.getElementById('name');
-        var stampsOfTpl = ${JSON.stringify(t(simLang, 'simStampsOf', { filled: '__F__', goal: '__G__' }))};
-        var brandFallback = ${JSON.stringify(t(simLang, 'simYourBusiness'))};
-        var rewardFallback = ${JSON.stringify(t(simLang, 'newCardRewardPlaceholder'))};
-        var simDigits = ${JSON.stringify(simLang)} === 'ar';
+        /* BOTH languages are shipped to the page, not just the one it was
+           rendered in. The preview is a picture of the card the CUSTOMER
+           will hold, so choosing English has to translate the whole mock —
+           its "Reward" chip, its stamp count, and its placeholder text — not
+           only flip its direction. Baking one language at render time meant
+           picking English left an Arabic card on screen, which is the exact
+           opposite of what this preview is for. */
+        var SIM_COPY = {
+          ar: {
+            stampsOf: ${JSON.stringify(t('ar', 'simStampsOf', { filled: '__F__', goal: '__G__' }))},
+            brand: ${JSON.stringify(t('ar', 'simYourBusiness'))},
+            reward: ${JSON.stringify(t('ar', 'newCardRewardPlaceholder'))},
+            rewardLabel: ${JSON.stringify(t('ar', 'simRewardLabel'))}
+          },
+          en: {
+            stampsOf: ${JSON.stringify(t('en', 'simStampsOf', { filled: '__F__', goal: '__G__' }))},
+            brand: ${JSON.stringify(t('en', 'simYourBusiness'))},
+            reward: ${JSON.stringify(t('en', 'newCardRewardPlaceholder'))},
+            rewardLabel: ${JSON.stringify(t('en', 'simRewardLabel'))}
+          }
+        };
+        var simLangNow = ${JSON.stringify(simLang)};
+        var simRewardLabelEl = document.getElementById('simRewardLabel');
 
         /* Arabic cards show Arabic-Indic digits, exactly as the real pass
            does — a preview that prints 8 where the pass will print ٨ is not
            a preview of that pass. */
         function simNum(v) {
-          if (!simDigits) return String(v);
+          if (simLangNow !== 'ar') return String(v);
           return String(v).replace(/[0-9]/g, function (d) {
             return String.fromCharCode(0x0660 + Number(d));
           });
@@ -1626,10 +1674,12 @@ ${LANG_TOGGLE_SCRIPT}
         function refreshSim() {
           var goal = parseInt(goalInput.value, 10);
           var filled = Math.max(1, Math.floor(goal / 3));
+          var copy = SIM_COPY[simLangNow] || SIM_COPY.ar;
           simCard.style.background = bgInput.value;
-          simBrand.textContent = nameInput.value.trim() || brandFallback;
-          simReward.textContent = rewardInput.value.trim() || rewardFallback;
-          simCount.textContent = stampsOfTpl
+          simBrand.textContent = nameInput.value.trim() || copy.brand;
+          simReward.textContent = rewardInput.value.trim() || copy.reward;
+          if (simRewardLabelEl) simRewardLabelEl.textContent = copy.rewardLabel;
+          simCount.textContent = copy.stampsOf
             .replace('__F__', simNum(filled))
             .replace('__G__', simNum(goal));
         }
@@ -1644,9 +1694,9 @@ ${LANG_TOGGLE_SCRIPT}
         document.querySelectorAll('input[name="lang"]').forEach(function (radio) {
           radio.addEventListener('change', function () {
             var ar = radio.value !== 'en';
+            simLangNow = ar ? 'ar' : 'en';
             simCard.setAttribute('dir', ar ? 'rtl' : 'ltr');
-            simCard.setAttribute('lang', ar ? 'ar' : 'en');
-            simDigits = ar;
+            simCard.setAttribute('lang', simLangNow);
             refreshSim();
           });
         });
@@ -1673,6 +1723,8 @@ async function handleNewCardForm(req: http.IncomingMessage, res: http.ServerResp
     sendHtml(res, 200, renderNewCardForm({}, undefined, lang));
     return;
   }
+  const photos = await templatePhotoHashes();
+  const coverHash = tpl.photo ? photos.get(tpl.photo) : undefined;
   sendHtml(
     res,
     200,
@@ -1685,6 +1737,7 @@ async function handleNewCardForm(req: http.IncomingMessage, res: http.ServerResp
         inactive: tpl.stampInactive,
         lang: 'ar',
         template: tpl,
+        coverHash,
       },
       undefined,
       lang
@@ -1703,7 +1756,7 @@ async function handleNewCardForm(req: http.IncomingMessage, res: http.ServerResp
  * A hand-drawn mock-up here would be a second implementation of the strip,
  * free to drift from the real one.
  */
-function handleTemplateGallery(req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
+async function handleTemplateGallery(req: http.IncomingMessage, res: http.ServerResponse, url: URL): Promise<void> {
   const lang = resolveLang(req);
   const query = (url.searchParams.get('q') ?? '').slice(0, 60);
   const code = (url.searchParams.get('code') ?? '').slice(0, 20);
@@ -1729,6 +1782,9 @@ function handleTemplateGallery(req: http.IncomingMessage, res: http.ServerRespon
 
   const matches = searchTemplates(query);
   const groups = groupByCategory(matches);
+  // First view of the gallery pays for ingesting the photography; every view
+  // after that gets the cached map. See templateAssets.ts.
+  const photos = await templatePhotoHashes();
 
   const tile = (tpl: CardTemplate): string => {
     const qs = new URLSearchParams({
@@ -1740,6 +1796,14 @@ function handleTemplateGallery(req: http.IncomingMessage, res: http.ServerRespon
       stampSource: 'builtin',
       builtinIcon: tpl.builtinIcon,
     });
+    // The tile shows the real strip with the real photograph behind it, at
+    // the same opacity a created card gets — so what is browsed is what is
+    // made, not an idealised version of it.
+    const coverHash = tpl.photo ? photos.get(tpl.photo) : undefined;
+    if (coverHash) {
+      qs.set('cover', coverHash);
+      qs.set('bgOpacity', String(TEMPLATE_COVER_OPACITY));
+    }
     const label = lang === 'ar' ? tpl.labelAr : tpl.labelEn;
     const reward = lang === 'ar' ? tpl.rewardAr : tpl.rewardEn;
     return `<a class="tpl-tile" href="/cards/new?template=${encodeURIComponent(tpl.id)}">
@@ -1834,6 +1898,16 @@ async function handleCreateCard(req: http.IncomingMessage, res: http.ServerRespo
   // through the renderer's own isBuiltinIconId() rather than trusted: a
   // hidden input is just a POST parameter, and an unrecognised id would
   // otherwise be stored and handed to the strip renderer on every draw.
+  // The template's cover photo, arriving as a hidden field. Validated the
+  // same way the icon is: a hidden input is just a POST parameter, and
+  // isValidHash keeps anything that is not a 64-character hex digest out of
+  // the column entirely.
+  const rawCover = String(fields.coverHash ?? '').trim();
+  const templateCover = isValidHash(rawCover) ? rawCover : undefined;
+  const rawOpacity = Number.parseFloat(String(fields.bgOpacity ?? ''));
+  const templateOpacity =
+    Number.isFinite(rawOpacity) && rawOpacity >= 0 && rawOpacity <= 1 ? rawOpacity : undefined;
+
   const rawIcon = String(fields.builtinIcon ?? '').trim();
   const templateIcon: BuiltinIconId | undefined =
     String(fields.stampSource ?? '').trim() === 'builtin' && isBuiltinIconId(rawIcon)
@@ -1904,6 +1978,9 @@ async function handleCreateCard(req: http.IncomingMessage, res: http.ServerRespo
           // reaching the strip renderer as an unknown glyph id.
           ...(templateIcon
             ? { stampSource: 'builtin', builtinIcon: templateIcon }
+            : {}),
+          ...(templateCover
+            ? { coverHash: templateCover, bgOpacity: templateOpacity ?? TEMPLATE_COVER_OPACITY }
             : {}),
         },
       });
@@ -2001,7 +2078,7 @@ async function handleCardDetail(req: http.IncomingMessage, res: http.ServerRespo
     </div>
     <div class="panel">
       <div class="preview-panel" style="margin-bottom:20px;">
-        <img src="/preview.png?${stripQs.toString()}" alt="${escapeHtml(card.name)} stamp strip" width="375" height="144" style="max-width:375px;">
+        <img src="/preview.png?${stripQs.toString()}" alt="${escapeHtml(card.name)} stamp strip" width="375" height="144">
       </div>
       <dl class="kv">
         <dt>${escapeHtml(t(lang, 'cardDetailRewardLabel'))}</dt><dd>${escapeHtml(card.rewardText)}</dd>
@@ -2034,6 +2111,17 @@ async function handleCardDetail(req: http.IncomingMessage, res: http.ServerRespo
  * usage rules, and this poster is printed and displayed publicly by the
  * merchant. A lookalike badge would be passing our drawing off as theirs.
  */
+/**
+ * How strongly a template's photograph shows through behind the stamps.
+ *
+ * 0.28 is deliberately low. The photograph is there to make the card feel
+ * like it belongs to the business, but the stamps are the only thing on the
+ * card a customer actually needs to read, and a photo at full strength makes
+ * a half-filled row genuinely hard to count. The designer lets a merchant
+ * raise it; this is the value they start from.
+ */
+const TEMPLATE_COVER_OPACITY = 0.28;
+
 const WALLET_GLYPH =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="5.5" width="19" height="13" rx="2.5"/><path d="M2.5 10h19"/></svg>';
 
@@ -5681,7 +5769,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && pathname === '/cards/new/templates') {
       const merchant = await requireMerchant(req, res);
       if (!merchant) return;
-      handleTemplateGallery(req, res, url);
+      await handleTemplateGallery(req, res, url);
       return;
     }
     if (req.method === 'GET' && pathname === '/cards/new') {
@@ -6018,6 +6106,16 @@ server.listen(PORT, '0.0.0.0', () => {
     // a background job against the shared local test Postgres — and this one
     // would enqueue real broadcasts for every card in it.
     automationScheduler.start();
+
+    // Warm the template photography in the background. Ingesting two dozen
+    // JPEGs takes ~6s, and the first merchant to open the gallery should not
+    // be the one who pays for it. Deliberately not awaited: a slow or failed
+    // warm must never hold up serving traffic, and templatePhotoHashes()
+    // single-flights, so a gallery view during the warm joins it rather than
+    // starting a second one.
+    void templatePhotoHashes().catch((err) => {
+      console.error('[templates] could not warm cover photos:', err);
+    });
   }
 });
 

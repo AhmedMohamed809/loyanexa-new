@@ -95,6 +95,65 @@ export const CHROME_CSS = `
   main > *:nth-child(5) { animation-delay: 160ms; }
   main > *:nth-child(n+6) { animation-delay: 200ms; }
 
+  /* Grid children enter in sequence rather than as a block. Cards and
+     template tiles are the two places where a whole grid appears at once,
+     and a wall of tiles materialising in one frame reads as a page redraw;
+     the same tiles arriving in reading order reads as a page being laid out.
+     Capped at eight — past that the tail is a wait, not an entrance. */
+  .cards-grid > *, .kpis > * { animation: lnx-rise var(--dur-3) var(--ease) both; }
+  .cards-grid > *:nth-child(1), .kpis > *:nth-child(1) { animation-delay: 30ms; }
+  .cards-grid > *:nth-child(2), .kpis > *:nth-child(2) { animation-delay: 60ms; }
+  .cards-grid > *:nth-child(3), .kpis > *:nth-child(3) { animation-delay: 90ms; }
+  .cards-grid > *:nth-child(4), .kpis > *:nth-child(4) { animation-delay: 120ms; }
+  .cards-grid > *:nth-child(5) { animation-delay: 150ms; }
+  .cards-grid > *:nth-child(6) { animation-delay: 180ms; }
+  .cards-grid > *:nth-child(7) { animation-delay: 210ms; }
+  .cards-grid > *:nth-child(n+8) { animation-delay: 240ms; }
+
+  /* The simulation is the thing being explained, so it arrives from the side
+     it lives on. A logical translate would be ideal; since there is no such thing,
+     the RTL variant is written explicitly rather than left to drift. */
+  @keyframes lnx-slide-in { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: none; } }
+  @keyframes lnx-slide-in-rtl { from { opacity: 0; transform: translateX(-14px); } to { opacity: 1; transform: none; } }
+  .sim-rail { animation: lnx-slide-in var(--dur-3) var(--ease) both; animation-delay: 120ms; }
+  html[dir="rtl"] .sim-rail { animation-name: lnx-slide-in-rtl; }
+
+  /* The card mock reacts to its own colour changing. Because the merchant is
+     dragging a colour picker, this has to be quick — a slow crossfade turns
+     a live preview into a laggy one. */
+  .sim-card { transition: background-color var(--dur-2) var(--ease), color var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease); }
+  .sim-card:hover { box-shadow: var(--shadow-3); }
+  .sim-strip { transition: opacity var(--dur-1) var(--ease); }
+
+  /* Tab bar: the active tab's icon settles rather than snapping. */
+  .tabbar .tab { transition: color var(--dur-1) var(--ease), background-color var(--dur-1) var(--ease); }
+  .tabbar .tabicon { transition: transform var(--dur-2) var(--ease); }
+  .tabbar .tab.active .tabicon { transform: translateY(-1px) scale(1.06); }
+  /* The More sheet opens rather than appearing. */
+  .tab-more[open] .more-sheet { animation: lnx-rise var(--dur-2) var(--ease) both; }
+
+  /* Top nav: the pill grows into place under the pointer. */
+  header.top nav.nav a { transition: color var(--dur-1) var(--ease), background-color var(--dur-1) var(--ease); }
+
+  /* Anything that just changed state should say so once, quietly. */
+  @keyframes lnx-pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(242,140,56,.45); }
+    100% { box-shadow: 0 0 0 12px rgba(242,140,56,0); }
+  }
+  .ok-banner { animation: lnx-rise var(--dur-3) var(--ease) both, lnx-pulse 900ms var(--ease) 1; }
+
+  /* Table rows and list items settle in on load, in reading order. */
+  table.data tbody tr { animation: lnx-fade var(--dur-2) var(--ease) both; }
+  table.data tbody tr:nth-child(1) { animation-delay: 20ms; }
+  table.data tbody tr:nth-child(2) { animation-delay: 40ms; }
+  table.data tbody tr:nth-child(3) { animation-delay: 60ms; }
+  table.data tbody tr:nth-child(4) { animation-delay: 80ms; }
+  table.data tbody tr:nth-child(n+5) { animation-delay: 100ms; }
+
+  /* Links in prose. Underline grows from the start edge, which is the right
+     edge in Arabic — hence a logical property rather than left/right. */
+  a:not(.btn):not(.card-tile):not(.tpl-tile) { transition: color var(--dur-1) var(--ease); }
+
   /* Keyboard focus, visible and consistent.
      :focus-visible rather than :focus, so a ring appears for keyboard users
      and not around every button a mouse happens to click. */
@@ -496,7 +555,14 @@ ${CHROME_CSS}
   .colors { display: flex; gap: 24px; flex-wrap: wrap; }
   .colors .field { margin-bottom: 0; }
   .preview-panel { text-align: center; background: var(--sunk); border: 1px dashed var(--line); border-radius: var(--radius-lg); padding: 20px; }
-  .preview-panel img { max-width: 100%; }
+  /* height:auto is not optional here. The <img> carries width/height
+     attributes (375x144) so the browser can reserve the space before the
+     image loads and avoid a layout jump — but once max-width shrinks the
+     width on a narrow screen, a fixed height attribute keeps the old height
+     and the strip is stretched. On a 430px phone the inline max-width:375px
+     this replaces also beat the stylesheet on specificity, so the strip
+     overflowed its own panel on both sides. */
+  .preview-panel img { max-width: 100%; height: auto; }
   .error { background: rgba(239,68,68,.12); border: 1px solid rgba(239,68,68,.35); color: #FCA5A5; border-radius: 12px; padding: 12px 16px; margin-bottom: 18px; font-size: 14px; }
   /* A caution that is not an error: the card-delete consequences, an
      unrecognised template code. Amber rather than red — the user has not
