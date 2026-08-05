@@ -1050,6 +1050,11 @@ function lnxGetCookie(name){
 /* ============================================================
    LoyaNexa — state, i18n, icons
    ============================================================ */
+// Set by the server when this request carried a valid session — see
+// serveStaticFile() in apps/demo/server.ts. It cannot be read from the
+// session cookie directly: that cookie is HttpOnly on purpose.
+const SIGNED_IN = window.__LNX_SIGNED_IN__ === true;
+
 const S = {
   lang: lnxGetCookie('lnx-lang') || 'en',
   route: location.hash.slice(1) || '/',
@@ -1064,6 +1069,7 @@ en:{
   dir:'ltr', flag:'EN',
   nav_features:'Features', nav_ai:'AI', nav_pricing:'Pricing', nav_faq:'FAQ',
   signin:'Sign in', trial:'Start free trial', demo:'Book a demo',
+  dashboard_cta:'Go to my dashboard',
   tagline:'Simple. Smart. Fast.',
   hero_eyebrow:'Loyalty, rebuilt',
   hero_h1:'Customer loyalty made smarter',
@@ -1270,6 +1276,7 @@ ar:{
   dir:'rtl', flag:'ع',
   nav_features:'المزايا', nav_ai:'الذكاء الاصطناعي', nav_pricing:'الأسعار', nav_faq:'الأسئلة',
   signin:'تسجيل الدخول', trial:'ابدأ التجربة المجانية', demo:'احجز عرضاً',
+  dashboard_cta:'الذهاب إلى لوحة التحكّم',
   tagline:'بسيط. ذكي. سريع.',
   hero_eyebrow:'الولاء من جديد',
   hero_h1:'ولاء العملاء بطريقة أذكى',
@@ -1665,8 +1672,8 @@ function topbar(){
     </nav>
     <div class="topbar-end">
       <button class="icon-btn lang-btn" data-act="lang" aria-label="Switch language">${T[S.lang==='en'?'ar':'en'].flag}</button>
-      <a href="#/login" class="btn btn-quiet hide-xs">${t('signin')}</a>
-      <a href="#/app/dashboard" class="btn btn-primary btn-sm">${t('trial')}</a>
+      <a href="/signin" class="btn btn-quiet hide-xs">${t('signin')}</a>
+      <a href="/signup" class="btn btn-primary btn-sm">${t('trial')}</a>
       <button class="icon-btn burger" data-act="menu" aria-label="Menu" style="display:none">${ic('menu')}</button>
     </div>
   </div></header>`;
@@ -1778,7 +1785,7 @@ function homeView(){
           <h1 class="display">${t('hero_h1a')} <b>${t('hero_h1b')}</b></h1>
           <p class="lede" style="margin-top:18px">${t('hero_sub')}</p>
           <div class="hero-cta">
-            <a href="#/app/dashboard" class="btn btn-primary btn-lg">${t('cta_start_long')}${ic('arrow',17)}</a>
+            <a href="/signup" class="btn btn-primary btn-lg">${t('cta_start_long')}${ic('arrow',17)}</a>
             <a href="#how" class="btn btn-ghost btn-lg">${t('cta_learn')}</a>
           </div>
           <div class="wallets">
@@ -1855,7 +1862,7 @@ function homeView(){
             <h3>${t('s1_t')}</h3>
             <p>${t('s1_b')}</p>
             <div style="margin-top:26px">
-              <a href="#/app/settings" class="btn btn-ghost">${t('try_now')}${ic('arrow',15)}</a>
+              <a href="/signup" class="btn btn-ghost">${t('try_now')}${ic('arrow',15)}</a>
             </div>
           </div>
           <div class="step-media">
@@ -1913,9 +1920,9 @@ function homeView(){
             <h3>${t('s3_t')}</h3>
             <p>${t('s3_b')}</p>
             <div class="stores">
-              <a href="#/app/dashboard" class="store">${ic('phone',22,1.6)}
+              <a href="/signup" class="store">${ic('phone',22,1.6)}
                 <span><i>${isAr()?'حمّلها على':'Download for'}</i><b>iOS</b></span></a>
-              <a href="#/app/dashboard" class="store">${ic('play',22,1.6)}
+              <a href="/signup" class="store">${ic('play',22,1.6)}
                 <span><i>${isAr()?'حمّلها على':'Get it on'}</i><b>Android</b></span></a>
             </div>
           </div>
@@ -1947,7 +1954,7 @@ function homeView(){
           <span class="eyebrow"><i></i>${t('ai_eyebrow')}</span>
           <h2 class="h2" style="margin:14px 0 12px">${t('ai_h2')}</h2>
           <p class="lede">${t('ai_p')}</p>
-          <div style="margin-top:26px"><a href="#/app/dashboard" class="btn btn-ghost">${t('ai_cta')}${ic('arrow',16)}</a></div>
+          <div style="margin-top:26px"><a href="/signup" class="btn btn-ghost">${t('ai_cta')}${ic('arrow',16)}</a></div>
         </div>
         <div class="ai-box rise">
           <div class="ai-head"><span class="dot-live"></span><b>${t('ai_title')}</b>
@@ -1985,7 +1992,7 @@ function homeView(){
           <p class="small">${annual?t('pr_billed'):t('pr_note')}</p>
           <div class="plan-any"><span>${t('pr_cancel')}</span></div>
           <ul>${t('p1f').map(planRow).join('')}</ul>
-          <a href="#/login" class="btn btn-ghost btn-block">${t('start_now')}</a>
+          <a href="/signin" class="btn btn-ghost btn-block">${t('start_now')}</a>
         </article>
 
         <article class="plan plan-top rise" style="transition-delay:70ms">
@@ -1998,7 +2005,7 @@ function homeView(){
           <p class="small">${annual?t('pr_billed'):t('pr_note')}</p>
           <div class="plan-any"><span>${t('pr_cancel')}</span></div>
           <ul>${t('p2f').map(planRow).join('')}</ul>
-          <a href="#/app/dashboard" class="btn btn-primary btn-block">${t('start_now')}</a>
+          <a href="/signup" class="btn btn-primary btn-block">${t('start_now')}</a>
         </article>
 
         <article class="plan plan-ent rise" style="transition-delay:140ms">
@@ -2061,7 +2068,7 @@ function homeView(){
         <h2 class="h2" style="max-width:20ch;margin-inline:auto">${t('cta_h')}</h2>
         <p>${t('cta_p')}</p>
         <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
-          <a href="#/app/dashboard" class="btn btn-ghost btn-lg">${t('cta_start_long')}</a>
+          <a href="/signup" class="btn btn-ghost btn-lg">${t('cta_start_long')}</a>
           <a href="#/card" class="btn btn-ghost btn-lg">${t('view_card')}</a>
         </div>
       </div>
@@ -2091,427 +2098,19 @@ function homeView(){
 /* ============================================================
    Admin app
    ============================================================ */
-const NAVS=[
-  ['grp_run',[['dashboard','grid','app_dash',''],['customers','users','app_cust','1,284'],
-              ['transactions','swap','app_tx',''],['rewards','gift','app_rew','5']]],
-  ['grp_grow',[['campaigns','mega','app_camp','3'],['analytics','chart','app_an','']]],
-  ['grp_acct',[['settings','cog','app_set',''],['subscription','crown','app_sub',''],['profile','user','app_prof','']]],
-];
 
-function sidebar(page){
-  return `<aside class="side ${S.sideOpen?'open':''}" id="side">
-    <div class="side-brand">${lockup(24,'#/app/dashboard')}</div>
-    <nav>
-      ${NAVS.map(g=>`<div class="side-lbl">${t(g[0])}</div>${g[1].map(([r,i,k,c])=>
-        `<a href="#/app/${r}" class="${page===r?'on':''}">${ic(i,17)}${t(k)}${c?`<span class="cnt num">${n(c)}</span>`:''}</a>`).join('')}`).join('')}
-    </nav>
-    <div class="side-foot">
-      <div class="upsell">
-        <b>${t('p2')}</b><p>${isAr()?'٥ أيام متبقية من التجربة':'5 days left of your trial'}</p>
-        <a href="#/app/subscription" class="btn btn-primary btn-sm btn-block">${t('sub_manage')}</a>
-      </div>
-      <a href="#/" class="btn btn-quiet btn-block" style="margin-top:10px;justify-content:flex-start">${ic('arrow',16)}${t('back_site')}</a>
-    </div>
-  </aside>`;
-}
+/* The prototype "app" that used to live here — appShell, dashboardPage,
+   customersPage, rewardsPage, txPanel, campaignsPage, analyticsPage,
+   settingsPage, subscriptionPage, profilePage, loginView and their kpi/
+   growthChart/donut/aiPanel helpers — was removed on 5 August 2026.
 
-function appShell(page,title,body){
-  return `<div class="app">
-    ${sidebar(page)}
-    ${S.sideOpen?'<div class="scrim" data-act="closeside"></div>':''}
-    <div class="main">
-      <div class="apptop">
-        <button class="icon-btn burger" data-act="side" aria-label="Menu">${ic('menu')}</button>
-        <h1>${title}</h1>
-        <div class="end">
-          <label class="search">${ic('search',15)}<input placeholder="${t('search')}" aria-label="${t('search')}"><kbd>⌘K</kbd></label>
-          <button class="icon-btn lang-btn" data-act="lang">${T[S.lang==='en'?'ar':'en'].flag}</button>
-          <button class="icon-btn" data-act="toast">${ic('bell')}</button>
-          <a href="#/app/profile" class="avatar">LH</a>
-        </div>
-      </div>
-      <div class="page">${body}</div>
-    </div>
-  </div>`;
-}
+   It rendered screens that looked like the product but were not it, so a
+   visitor could click "start free trial", browse a convincing dashboard,
+   and never actually have an account. The routes now hand over to the real
+   product (see render() below), which left ~400 lines unreachable.
 
-function kpi(lbl,val,trend,dir,icon,data,colour){
-  const tint = colour.startsWith('var(--c-') ? colour.replace(')','-t)') : 'var(--sunk)';
-  return `<div class="kpi" style="--tone:${colour};--tint:${tint}">
-    <div class="lbl"><span class="kpi-ic">${ic(icon,14)}</span>${lbl}</div>
-    <div class="val" data-count="${dn(val).replace(/[^\d.]/g,'')}"
-      data-prefix="${String(val).startsWith('£')?'£':''}"
-      data-suffix="${String(val).endsWith(CUR_AR)?' '+CUR_AR:''}">${val}</div>
-    <div class="trend ${dir}">${ic(dir==='up'?'up':'down',13,2.4)}${trend} <span style="color:var(--ink-3);font-weight:500">${t('vs')}</span></div>
-    ${sparkline(data,colour)}
-  </div>`;
-}
-
-function growthChart(){
-  const w=680,h=210;
-  const r=areaPath(REV,w,h,10), v=areaPath(VIS,w,h,10);
-  const labels=isAr()?['١','٥','١٠','١٥','٢٠']:['1','5','10','15','20'];
-  return `<svg viewBox="0 0 ${w} ${h+26}" width="100%" fill="none" role="img" aria-label="${t('growth')}">
-    <defs>
-      <linearGradient id="gRev" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stop-color="var(--accent)" stop-opacity=".18"/>
-        <stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/></linearGradient>
-    </defs>
-    ${[0,1,2,3].map(i=>`<line x1="0" y1="${14+i*62}" x2="${w}" y2="${14+i*62}" stroke="var(--line)" stroke-width="1"/>`).join('')}
-    <path d="${r.fill}" fill="url(#gRev)"/>
-    <path d="${r.line}" stroke="var(--accent)" stroke-width="2.4" stroke-linecap="round" class="draw"/>
-    <path d="${v.line}" stroke="#8FA6C4" stroke-width="2" stroke-dasharray="4 5" stroke-linecap="round" opacity=".9"/>
-    ${labels.map((l,i)=>`<text x="${10+i*(w-20)/4}" y="${h+18}" fill="var(--ink-3)" font-size="11"
-      text-anchor="middle" style="font-family:var(--mono)">${l}</text>`).join('')}
-  </svg>`;
-}
-
-function donut(){
-  const total=SEG.reduce((a,s)=>a+s.v,0); let off=0; const C=2*Math.PI*54;
-  return `<svg viewBox="0 0 140 140" width="140" height="140" style="margin-inline:auto">
-    <g transform="rotate(-90 70 70)">
-    ${SEG.map(s=>{const len=s.v/total*C; const el=`<circle cx="70" cy="70" r="54" fill="none" stroke="${s.c}"
-      stroke-width="17" stroke-dasharray="${len-3} ${C-len+3}" stroke-dashoffset="${-off}" stroke-linecap="round"/>`;
-      off+=len; return el;}).join('')}</g>
-    <text x="70" y="66" text-anchor="middle" font-size="24" font-weight="700" fill="var(--ink)"
-      letter-spacing="-1" style="font-family:var(--mono)">${n('1,284')}</text>
-    <text x="70" y="86" text-anchor="middle" font-size="10" fill="var(--ink-3)">${t('app_cust')}</text>
-  </svg>`;
-}
-
-function aiPanel(){
-  return `<div class="aibar">
-    <div class="row">
-      <span class="mark" style="width:34px;height:34px;border-radius:10px">${logoMark2(19)}</span>
-      <label class="ai-input">${ic('search',15)}
-        <input id="aiAsk" placeholder="${t('ask_ph')}" aria-label="${t('ask_ph')}"></label>
-      <button class="btn btn-primary btn-sm" data-act="ai">${t('ask')}${ic('send',14)}</button>
-    </div>
-    <div id="aiOut"></div>
-    <div class="insight"><span class="ic i-warn">${ic('clock',15)}</span><p>${t('ins1')}</p></div>
-    <div class="insight"><span class="ic i-good">${ic('gift',15)}</span><p>${t('ins2')}</p></div>
-    <div class="insight"><span class="ic i-idea">${ic('spark',15,0)}</span><p>${t('ins3')}</p></div>
-  </div>`;
-}
-
-function dashboardPage(){
-  return `
-  ${aiPanel()}
-  <div class="kpis">
-    ${kpi(t('today_sales'),cur('1,284'),'+'+n('12.4')+'%','up','chart',REV,'var(--c-denim)')}
-    ${kpi(t('today_cust'),n(87),'+'+n('8.1')+'%','up','users',VIS,'var(--c-teal)')}
-    ${kpi(t('pts_issued'),n('4,310'),'+'+n('3.6')+'%','up','star',REV,'var(--c-olive)')}
-    ${kpi(t('rew_red'),n(34),'-'+n('2.2')+'%','down','gift',VIS,'var(--c-brass)')}
-  </div>
-  <div class="grid-2">
-    <div class="panel">
-      <div class="panel-h"><h3>${t('growth')}</h3>
-        <div class="end"><div class="seg">
-          <button class="on">${isAr()?'٢٠ يوماً':'20d'}</button><button>${isAr()?'٣ أشهر':'3m'}</button><button>${isAr()?'سنة':'1y'}</button>
-        </div></div></div>
-      <div class="panel-b">${growthChart()}
-        <div style="display:flex;gap:18px;margin-top:12px;font-size:.78rem;color:var(--ink-3)">
-          <span style="display:flex;align-items:center;gap:7px"><i style="width:18px;height:2.5px;border-radius:9px;background:var(--accent);display:block"></i>${isAr()?'الإيرادات':'Revenue'}</span>
-          <span style="display:flex;align-items:center;gap:7px"><i style="width:18px;height:2.5px;border-radius:9px;background:#8FA6C4;display:block"></i>${isAr()?'الزيارات':'Visits'}</span>
-        </div></div>
-    </div>
-    <div class="panel">
-      <div class="panel-h"><h3>${t('segments')}</h3></div>
-      <div class="panel-b">${donut()}
-        <div style="margin-top:16px;display:flex;flex-direction:column;gap:10px">
-          ${SEG.map(s=>`<div style="display:flex;align-items:center;gap:10px;font-size:.86rem">
-            <i style="width:9px;height:9px;border-radius:99px;background:${s.c};display:block"></i>${t(s.k)}
-            <b class="num" style="margin-inline-start:auto">${n(s.v)}%</b></div>`).join('')}
-        </div></div>
-    </div>
-  </div>
-  <div class="grid-2">
-    <div class="panel">
-      <div class="panel-h"><h3>${t('top_cust')}</h3><div class="end">
-        <a href="#/app/customers" class="btn btn-quiet btn-sm">${t('app_cust')}${ic('arrow',14)}</a></div></div>
-      <div class="tbl-wrap"><table>
-        <thead><tr><th>${t('th_cust')}</th><th>${t('th_tier')}</th><th>${t('th_pts')}</th><th>${t('th_visits')}</th><th>${t('th_last')}</th></tr></thead>
-        <tbody>${CUSTOMERS.slice(0,5).map(c=>`<tr>
-          <td><span class="who"><span class="avatar">${c.init}</span><b>${nameOf(c)}</b></span></td>
-          <td>${tierPill(c.tier)}</td><td class="num"><b>${n(c.pts.toLocaleString('en'))}</b></td>
-          <td class="num">${n(c.v)}</td><td>${ago(c.last)}</td></tr>`).join('')}</tbody>
-      </table></div>
-    </div>
-    <div class="panel">
-      <div class="panel-h"><h3>${t('ret_cust')}</h3></div>
-      <div class="panel-b">
-        <div style="display:flex;align-items:baseline;gap:10px">
-          <b class="num" style="font-size:2.4rem;letter-spacing:-.05em">${n(68)}%</b>
-          <span class="pill pill-green">${ic('up',12,2.6)} ${n(6)}${isAr()?' نقاط':' pts'}</span>
-        </div>
-        <p class="small" style="margin:6px 0 18px">${isAr()?'من عملاء الشهر الماضي عادوا مرة واحدة على الأقل':'of last month\u2019s customers came back at least once'}</p>
-        <div class="meter"><i style="width:68%"></i></div>
-        <hr class="rule-punched" style="margin:20px 0">
-        <div style="display:flex;flex-direction:column;gap:14px">
-          ${[[isAr()?'زيارتان أو أكثر':'2+ visits',54],[isAr()?'خمس زيارات أو أكثر':'5+ visits',31],[isAr()?'عشر زيارات أو أكثر':'10+ visits',12]].map(([l,v])=>`
-            <div><div style="display:flex;justify-content:space-between;font-size:.84rem;margin-bottom:6px">
-              <span>${l}</span><b class="num">${n(v)}%</b></div>
-              <div class="meter"><i style="width:${v}%"></i></div></div>`).join('')}
-        </div>
-      </div>
-    </div>
-  </div>
-  ${txPanel(true)}`;
-}
-
-function txPanel(compact){
-  const rows=(compact?TX.slice(0,5):TX.concat(TX)).map((x,i)=>{
-    const typeLbl={stamp:isAr()?'ختم':'Stamp',redeem:isAr()?'استبدال':'Redeem',points:isAr()?'نقاط':'Points',referral:isAr()?'إحالة':'Referral'}[x.type];
-    return `<tr>
-      <td><span class="who"><span class="avatar">${(isAr()?x.who:x.who).split(' ').map(w=>w[0]).join('')}</span><b>${isAr()?x.ar:x.who}</b></span></td>
-      <td>${isAr()?x.brAr:x.br}</td>
-      <td><span class="pill ${x.type==='redeem'?'pill-amber':x.type==='referral'?'pill-indigo':''}"
-        ${(x.type==='stamp'||x.type==='points')?'style="background:var(--sunk);color:var(--ink-3)"':''}>${typeLbl}</span></td>
-      <td class="num">${x.amt?cur(x.amt.toFixed(2)):'—'}</td>
-      <td>${x.st==='flag'?`<span class="pill pill-red">${isAr()?'مراجعة':'Flagged'}</span>`:`<span class="pill pill-green">${isAr()?'مؤكدة':'Cleared'}</span>`}</td>
-      <td class="small">${isAr()?`قبل ${n(x.min)} د`:`${x.min}m ago`}</td></tr>`;}).join('');
-  return `<div class="panel">
-    <div class="panel-h"><h3>${t('recent')}</h3><div class="end">
-      <button class="btn btn-ghost btn-sm" data-act="export">${t('export')}</button></div></div>
-    <div class="tbl-wrap"><table>
-      <thead><tr><th>${t('th_cust')}</th><th>${t('th_branch')}</th><th>${t('th_type')}</th><th>${t('th_amount')}</th><th>${t('th_status')}</th><th>${t('th_when')}</th></tr></thead>
-      <tbody>${rows}</tbody></table></div>
-  </div>`;
-}
-
-function customersPage(){
-  return `<div class="panel">
-    <div class="panel-h"><h3>${t('app_cust')} <span class="small num">(${n('1,284')})</span></h3>
-      <div class="end"><button class="btn btn-ghost btn-sm" data-act="export">${t('export')}</button>
-      <button class="btn btn-primary btn-sm" data-act="toast">${t('add_cust')}</button></div></div>
-    <div class="tbl-wrap"><table>
-      <thead><tr><th>${t('th_cust')}</th><th>${t('th_tier')}</th><th>${t('th_pts')}</th><th>${t('th_visits')}</th>
-        <th>${t('th_spend')}</th><th>${isAr()?'التقدم':'Progress'}</th><th>${t('th_last')}</th></tr></thead>
-      <tbody>${CUSTOMERS.map(c=>`<tr>
-        <td><span class="who"><span class="avatar">${c.init}</span><div><b>${nameOf(c)}</b>
-          <div class="small" style="font-size:.75rem">${c.n.split(' ')[0].toLowerCase()}@mail.com</div></div></span></td>
-        <td>${tierPill(c.tier)}</td>
-        <td class="num"><b>${n(c.pts.toLocaleString('en'))}</b></td>
-        <td class="num">${n(c.v)}</td>
-        <td class="num">${cur(c.spend)}</td>
-        <td style="color:var(--indigo)">${stampRow(Math.min(8,c.v%9||8),8)}</td>
-        <td>${c.last>20?`<span class="pill pill-amber">${ago(c.last)}</span>`:ago(c.last)}</td></tr>`).join('')}</tbody>
-    </table></div></div>`;
-}
-
-function rewardsPage(){
-  return `<div class="grid-2"><div class="panel">
-    <div class="panel-h"><h3>${t('rew_h')}</h3><div class="end">
-      <button class="btn btn-primary btn-sm" data-act="toast">${t('new_rew')}</button></div></div>
-    ${REWARDS.map((r,i)=>`<div class="list-row">
-      <span class="ach-ic ${r.on?'got':''}" >${ic('gift',17)}</span>
-      <div><b>${isAr()?r.ar:r.n}</b>
-        <div class="small">${r.cost?`${n(r.cost)} ${isAr()?'ختماً':'stamps'}`:(isAr()?'تلقائية':'Automatic')} · ${n(r.used)} ${isAr()?'استبدالاً':'redeemed'}</div></div>
-      <div class="end"><b class="num">${n(r.rate)}%</b><div class="small">${isAr()?'نسبة الاستبدال':'redemption'}</div></div>
-    </div>`).join('')}
-  </div>
-  <div class="panel">
-    <div class="panel-h"><h3>${isAr()?'اقتراح الذكاء الاصطناعي':'AI suggestion'}</h3></div>
-    <div class="panel-b">
-      <div class="msg msg-a" style="max-width:100%">${t('ins2')}</div>
-      <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn btn-primary btn-sm" data-act="toast">${isAr()?'طبّق الاقتراح':'Apply suggestion'}</button>
-        <button class="btn btn-ghost btn-sm" data-act="toast">${isAr()?'تجاهل':'Dismiss'}</button>
-      </div>
-      <hr class="rule-punched" style="margin:22px 0">
-      <div class="small" style="margin-bottom:10px">${isAr()?'تكلفة المكافآت هذا الشهر':'Cost of rewards this month'}</div>
-      <div style="display:flex;align-items:baseline;gap:8px">
-        <b class="num" style="font-size:2rem;letter-spacing:-.05em">${cur(842)}</b>
-        <span class="pill pill-green">${n(6.4)}% ${isAr()?'من الإيراد':'of revenue'}</span></div>
-    </div></div></div>`;
-}
-
-function campaignsPage(){
-  const st={live:['pill-green','camp_live'],draft:['','camp_draft'],done:['pill-indigo','camp_done']};
-  return `<div class="panel">
-    <div class="panel-h"><h3>${t('camp_h')}</h3><div class="end">
-      <button class="btn btn-primary btn-sm" data-act="genCamp">${ic('spark',14,0)}${t('new_camp')}</button></div></div>
-    <div class="tbl-wrap"><table>
-      <thead><tr><th>${isAr()?'الحملة':'Campaign'}</th><th>${t('th_status')}</th><th>${isAr()?'القناة':'Channel'}</th>
-        <th>${isAr()?'أُرسلت':'Sent'}</th><th>${isAr()?'الفتح':'Opened'}</th><th>${isAr()?'التحويل':'Converted'}</th></tr></thead>
-      <tbody>${CAMPAIGNS.map(c=>`<tr>
-        <td><b>${isAr()?c.ar:c.n}</b></td>
-        <td><span class="pill ${st[c.st][0]}" ${c.st==='draft'?'style="background:var(--sunk);color:var(--ink-3)"':''}>${t(st[c.st][1])}</span></td>
-        <td>${{push:isAr()?'إشعار':'Push',email:isAr()?'بريد':'Email',whatsapp:'WhatsApp'}[c.ch]}</td>
-        <td class="num">${n(c.sent)}</td>
-        <td class="num">${c.open?n(c.open)+'%':'—'}</td>
-        <td>${c.conv?`<span style="display:flex;align-items:center;gap:8px"><b class="num">${n(c.conv)}%</b>
-          <span class="meter" style="width:64px"><i style="width:${c.conv}%"></i></span></span>`:'—'}</td></tr>`).join('')}</tbody>
-    </table></div></div>
-    <div class="aibar"><div class="row">
-      <span class="mark" style="width:34px;height:34px;border-radius:10px">${logoMark2(19)}</span>
-      <div><b style="font-size:.9rem">${isAr()?'مولّد الحملات':'Campaign generator'}</b>
-        <div class="small">${isAr()?'يكتب الحملة ويختار الجمهور ويقترح التوقيت.':'Writes the campaign, picks the audience, suggests the send time.'}</div></div>
-      <button class="btn btn-primary btn-sm" data-act="genCamp" style="margin-inline-start:auto">${isAr()?'ولّد حملة':'Generate'}</button>
-    </div><div id="campOut"></div></div>`;
-}
-
-function analyticsPage(){
-  const hours=[8,14,22,31,44,58,72,64,49,38,52,66,41,27,18];
-  return `<div class="kpis">
-    ${kpi(isAr()?'إيراد الشهر':'Revenue this month',cur('28,940'),'+'+n('18.2')+'%','up','chart',REV,'var(--c-denim)')}
-    ${kpi(isAr()?'متوسط الفاتورة':'Avg. basket',cur('6.40'),'+'+n('4.0')+'%','up','swap',VIS,'var(--c-plum)')}
-    ${kpi(isAr()?'تكرار الزيارة':'Visit frequency',n('9.2')+(isAr()?' يوم':'d'),'-'+n('1.1')+(isAr()?' يوم':'d'),'up','clock',REV,'var(--c-teal)')}
-    ${kpi(isAr()?'خطر الفقدان':'At-risk customers',n(47),'-'+n(18)+'%','down','shield',VIS,'var(--c-clay)')}</div>
-  <div class="grid-2">
-    <div class="panel"><div class="panel-h"><h3>${t('growth')}</h3></div>
-      <div class="panel-b">${growthChart()}</div></div>
-    <div class="panel"><div class="panel-h"><h3>${isAr()?'الزيارات حسب الساعة':'Visits by hour'}</h3></div>
-      <div class="panel-b">
-        <div style="display:flex;align-items:flex-end;gap:5px;height:170px">
-          ${hours.map((v,i)=>`<div style="flex:1;height:${v}%;border-radius:6px 6px 3px 3px;
-            background:${v>60?'var(--accent)':'rgba(255,255,255,.07)'};min-height:6px" title="${v}"></div>`).join('')}
-        </div>
-        <div style="display:flex;justify-content:space-between;margin-top:8px" class="small num">
-          <span>${n(7)}${isAr()?'ص':'am'}</span><span>${n(12)}${isAr()?'م':'pm'}</span><span>${n(5)}${isAr()?'م':'pm'}</span><span>${n(10)}${isAr()?'م':'pm'}</span></div>
-        <p class="small" style="margin-top:14px">${t('ins3')}</p>
-      </div></div>
-  </div>
-  <div class="grid-3">
-    ${[[isAr()?'الفرع الأعلى':'Top branch',isAr()?'الشارع الرئيسي':'High Street','48%'],
-       [isAr()?'أفضل يوم':'Best day',isAr()?'السبت':'Saturday','21%'],
-       [isAr()?'الإحالات هذا الشهر':'Referrals this month',n(62),'+14%']].map(([a,b,c])=>
-      `<div class="panel"><div class="panel-b"><div class="small">${a}</div>
-        <b style="font-size:1.5rem;letter-spacing:-.03em;display:block;margin:6px 0">${b}</b>
-        <span class="pill pill-green">${c}</span></div></div>`).join('')}
-  </div>`;
-}
-
-function settingsPage(){
-  const sw=(k,lbl,desc)=>`<div class="toggle"><div><b style="font-size:.9rem">${lbl}</b>
-    <div class="small">${desc}</div></div>
-    <div class="end"><button class="sw ${S.toggles[k]?'on':''}" data-toggle="${k}" role="switch"
-      aria-checked="${S.toggles[k]}" aria-label="${lbl}"></button></div></div>`;
-  const cols=['#21395B','#D14D00','#2F5D50','#7A3B3B','#3A3F4A','#2B5570'];
-  return `<div class="grid-2">
-    <div style="display:flex;flex-direction:column;gap:14px">
-      <div class="panel"><div class="panel-h"><h3>${t('set_biz')}</h3></div><div class="panel-b">
-        <div class="field"><label>${t('biz_name')}</label><input value="${t('biz_name_v')}"></div>
-        <div class="field"><label>${t('biz_type')}</label><select>
-          <option>${isAr()?'مقهى':'Café'}</option><option>${isAr()?'مطعم':'Restaurant'}</option>
-          <option>${isAr()?'صالون':'Salon'}</option><option>${isAr()?'متجر':'Retail'}</option></select></div>
-        <div class="field"><label>${t('biz_phone')}</label><input value="+44 1823 000 000" dir="ltr"></div>
-        <button class="btn btn-primary btn-sm" data-act="save">${t('save')}</button>
-      </div></div>
-      <div class="panel"><div class="panel-h"><h3>${t('set_notif')}</h3></div><div class="panel-b" style="padding-block:4px">
-        ${sw('birthday',t('n_birthday'),t('n_birthday_d'))}
-        ${sw('reminder',t('n_reminder'),t('n_reminder_d'))}
-        ${sw('welcome',t('n_welcome'),t('n_welcome_d'))}
-        ${sw('fraud',t('n_fraud'),t('n_fraud_d'))}
-        ${sw('weekly',t('n_weekly'),t('n_weekly_d'))}
-      </div></div>
-    </div>
-    <div style="display:flex;flex-direction:column;gap:14px">
-      <div class="panel"><div class="panel-h"><h3>${t('set_brand')}</h3></div><div class="panel-b">
-        <div class="field"><label>${t('brand_colour')}</label>
-          <div class="swatches">${cols.map(c=>`<button class="swatch ${S.brand===c?'on':''}" data-brand="${c}"
-            style="background:${c}" aria-label="${c}"></button>`).join('')}</div>
-          <span class="hint">${isAr()?'يُطبَّق فوراً على بطاقة العميل.':'Applies to the customer card straight away.'}</span></div>
-        <div style="margin-top:18px">${phone(loyaltyCard())}</div>
-      </div></div>
-      <div class="panel"><div class="panel-h"><h3>${t('set_lang')}</h3></div><div class="panel-b">
-        <div class="field"><label>${isAr()?'لغة اللوحة':'Dashboard language'}</label>
-          <select data-act="langsel">
-            <option value="en" ${S.lang==='en'?'selected':''}>English</option>
-            <option value="ar" ${S.lang==='ar'?'selected':''}>العربية</option></select></div>
-        <div class="field"><label>${isAr()?'العملة':'Currency'}</label><select><option>GBP £</option><option>AED د.إ</option><option>SAR ﷼</option></select></div>
-      </div></div>
-    </div></div>`;
-}
-
-function subscriptionPage(){
-  return `<div class="grid-2">
-    <div class="panel"><div class="panel-h"><h3>${t('sub_h')}</h3></div><div class="panel-b">
-      <div style="display:flex;align-items:center;gap:12px">
-        <span class="mark" style="width:44px;height:44px;border-radius:13px">${logoMark2(24)}</span>
-        <div><b style="font-size:1.1rem;letter-spacing:-.02em">${t('p2')}</b>
-          <div class="small">${cur(23)}${t('p_month')} · ${t('sub_next')} ${isAr()?'٢٨ أغسطس':'28 Aug'}</div></div>
-        <span class="pill pill-green" style="margin-inline-start:auto">${isAr()?'نشط':'Active'}</span></div>
-      <hr class="rule-punched" style="margin:22px 0">
-      <div class="small" style="margin-bottom:14px">${t('sub_usage')}</div>
-      ${[[t('app_cust'),'1,284',t('unlimited'),42],[isAr()?'تصاميم البطاقات':'Card designs','2','2',100],
-         [isAr()?'الرسائل':'Messages','8,420','20,000',42]].map(([l,a,b,p])=>`
-        <div style="margin-bottom:16px"><div style="display:flex;justify-content:space-between;font-size:.85rem;margin-bottom:6px">
-          <span>${l}</span><span class="num">${n(a)} <span style="color:var(--ink-3)">${t('of')} ${n(b)}</span></span></div>
-        <div class="meter"><i style="width:${p}%"></i></div></div>`).join('')}
-      <button class="btn btn-ghost btn-block" data-act="toast" style="margin-top:8px">${t('sub_manage')}</button>
-    </div></div>
-    <div class="panel"><div class="panel-h"><h3>${isAr()?'الفواتير':'Invoices'}</h3></div>
-      ${[[isAr()?'٢٨ يوليو ٢٠٢٦':'28 Jul 2026',23],[isAr()?'٢٨ يونيو ٢٠٢٦':'28 Jun 2026',23],
-         [isAr()?'٢٨ مايو ٢٠٢٦':'28 May 2026',19],[isAr()?'٢٨ أبريل ٢٠٢٦':'28 Apr 2026',19]].map(([d,a])=>`
-        <div class="list-row"><span class="ach-ic">${ic('card',16)}</span>
-          <div><b>${d}</b><div class="small">${t('p2')} · ${isAr()?'مدفوعة':'Paid'}</div></div>
-          <div class="end"><b class="num">${cur(a)}</b></div></div>`).join('')}
-    </div></div>`;
-}
-
-function profilePage(){
-  return `<div class="grid-2">
-    <div class="panel"><div class="panel-h"><h3>${t('app_prof')}</h3></div><div class="panel-b">
-      <div style="display:flex;align-items:center;gap:14px;margin-bottom:22px">
-        <span class="avatar" style="width:56px;height:56px;font-size:1.1rem">LH</span>
-        <div><b style="font-size:1.05rem">${isAr()?'ليلى حداد':'Layla Haddad'}</b>
-          <div class="small">${isAr()?'المالكة · ٣ فروع':'Owner · 3 branches'}</div></div></div>
-      <div class="field"><label>${isAr()?'الاسم':'Full name'}</label><input value="${isAr()?'ليلى حداد':'Layla Haddad'}"></div>
-      <div class="field"><label>${t('email')}</label><input value="layla@rowancoffee.co" dir="ltr"></div>
-      <button class="btn btn-primary btn-sm" data-act="save">${t('save')}</button>
-      <hr class="rule-punched" style="margin:22px 0">
-      <a href="#/login" class="btn btn-ghost btn-sm">${t('logout')}</a>
-    </div></div>
-    <div class="panel"><div class="panel-h"><h3>${isAr()?'الفريق':'Team'}</h3><div class="end">
-      <button class="btn btn-ghost btn-sm" data-act="toast">${isAr()?'دعوة':'Invite'}</button></div></div>
-      ${[[isAr()?'ليلى حداد':'Layla Haddad','LH',isAr()?'المالكة':'Owner'],
-         [isAr()?'عمر صالح':'Omar Saleh','OS',isAr()?'مدير':'Manager'],
-         [isAr()?'كايت لين':'Kate Lynn','KL',isAr()?'موظفة':'Staff'],
-         [isAr()?'ريان عبد':'Rayan Abd','RA',isAr()?'موظف':'Staff']].map(([nm,in_,role])=>`
-        <div class="list-row"><span class="avatar">${in_}</span><div><b>${nm}</b>
-          <div class="small">${role}</div></div>
-          <div class="end"><span class="pill pill-green">${isAr()?'نشط':'Active'}</span></div></div>`).join('')}
-    </div></div>`;
-}
-
-/* ============================================================
-   Sign in + customer wallet
-   ============================================================ */
-function loginView(){
-  return `<div class="auth">
-    <div class="auth-form">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:auto">
-        ${lockup(28)}
-        <div style="margin-inline-start:auto;display:flex;gap:4px">
-          <button class="icon-btn lang-btn" data-act="lang">${T[S.lang==='en'?'ar':'en'].flag}</button></div>
-      </div>
-      <div style="padding:44px 0">
-        <h2 class="h3" style="font-size:1.7rem;margin-bottom:8px">${t('signin_h')}</h2>
-        <p class="small" style="margin-bottom:28px">${t('signin_p')}</p>
-        <button class="btn btn-ghost btn-block" data-act="toast">
-          <svg width="17" height="17" viewBox="0 0 48 48"><path fill="#4285F4" d="M45 24c0-1.6-.1-2.7-.4-4H24v7.5h12c-.2 2-1.5 5-4.4 7l6.7 5.2C42.2 36 45 30.6 45 24z"/><path fill="#34A853" d="M24 46c5.9 0 10.9-2 14.5-5.3l-6.9-5.4C29.7 36.6 27.1 37.5 24 37.5c-5.8 0-10.7-3.9-12.5-9.1l-7.1 5.5C8 41.4 15.4 46 24 46z"/><path fill="#FBBC05" d="M11.5 28.4A13.6 13.6 0 0 1 10.8 24c0-1.5.3-3 .7-4.4l-7.1-5.5A22 22 0 0 0 2 24c0 3.5.8 6.9 2.4 9.9l7.1-5.5z"/><path fill="#EA4335" d="M24 10.5c4.1 0 6.9 1.8 8.5 3.3l6.2-6C34.9 4.3 29.9 2 24 2 15.4 2 8 6.6 4.4 14.1l7.1 5.5c1.8-5.2 6.7-9.1 12.5-9.1z"/></svg>
-          ${t('google')}</button>
-        <div class="or">${t('or')}</div>
-        <div class="field"><label>${t('email')}</label><input type="email" placeholder="layla@rowancoffee.co" dir="ltr"></div>
-        <div class="field"><label style="display:flex">${t('password')}
-          <a href="#/login" style="margin-inline-start:auto;color:var(--indigo);font-weight:600" data-act="toast">${t('forgot')}</a></label>
-          <input type="password" placeholder="••••••••" dir="ltr"></div>
-        <a href="#/app/dashboard" class="btn btn-primary btn-block btn-lg">${t('signin')}</a>
-        <button class="btn btn-quiet btn-block" data-act="toast" style="margin-top:10px">${ic('mail',16)}${t('magic')}</button>
-      </div>
-      <p class="small" style="margin-top:auto">${t('no_acct')}
-        <a href="#/app/dashboard" style="color:var(--indigo);font-weight:600">${t('create_acct')}</a></p>
-    </div>
-    <div class="auth-aside">
-      <div style="position:relative;max-width:400px">
-        ${phone(loyaltyCard())}
-        <blockquote style="margin-top:38px;font-size:1.15rem;line-height:1.5;letter-spacing:-.02em;font-weight:500">
-          “${t('quote')}”</blockquote>
-        <p style="margin-top:14px;font-size:.86rem;color:rgba(255,255,255,.7)">${t('quote_by')}</p>
-      </div>
-    </div></div>`;
-}
+   walletView is kept: #/card is a genuine marketing demo of the wallet
+   card, not a pretend copy of a screen that exists elsewhere. */
 
 function walletView(){
   const achs=[['ach1',true],['ach2',true],['ach3',true],['ach4',false],['ach5',false]];
@@ -2561,11 +2160,6 @@ function walletView(){
 /* ============================================================
    Router + effects
    ============================================================ */
-const PAGES={dashboard:dashboardPage,customers:customersPage,rewards:rewardsPage,
-  transactions:()=>txPanel(false),campaigns:campaignsPage,analytics:analyticsPage,
-  settings:settingsPage,subscription:subscriptionPage,profile:profilePage};
-const TITLES={dashboard:'app_dash',customers:'app_cust',rewards:'app_rew',transactions:'app_tx',
-  campaigns:'app_camp',analytics:'app_an',settings:'app_set',subscription:'app_sub',profile:'app_prof'};
 
 function render(){
   const html=document.documentElement;
@@ -2573,10 +2167,14 @@ function render(){
   _phoneSeq = 0;
   const r=S.route, root=document.getElementById('root');
   let view;
-  if(r.startsWith('/app')){
-    const page=r.split('/')[2]||'dashboard';
-    view=appShell(page,t(TITLES[page]||'app_dash'),(PAGES[page]||dashboardPage)());
-  } else if(r==='/login'){ view=loginView(); }
+  // The in-page "app" was a prototype: screens that looked like the product
+  // but were not it, so a visitor who clicked through never actually signed
+  // up for anything. Those routes now hand over to the real product. /app is
+  // server-guarded, so a visitor without a session lands on /signin and a
+  // merchant with one lands on their own dashboard — decided by the server
+  // rather than guessed here.
+  if(r.startsWith('/app')){ location.replace('/app'); return; }
+  else if(r==='/login'){ location.replace('/signin'); return; }
   else if(r==='/card'){ view=walletView(); }
   else { view=homeView(); }
   root.innerHTML=view + (S.menuOpen?mobMenu():'') + (S.sheet==='contact'?contactSheet():'');
@@ -2633,8 +2231,8 @@ function mobMenu(){
     <a href="#pricing" data-act="menu">${t('nav_pricing')}</a>
     <a href="#faq" data-act="menu">${t('nav_faq')}</a>
     <a href="#/card" data-act="menu">${t('view_card')}</a>
-    <a href="#/login" data-act="menu">${t('signin')}</a>
-    <a href="#/app/dashboard" class="btn btn-primary btn-lg" style="margin-top:18px" data-act="menu">${t('trial')}</a>
+    <a href="/signin" data-act="menu">${t('signin')}</a>
+    <a href="/signup" class="btn btn-primary btn-lg" style="margin-top:18px" data-act="menu">${t('trial')}</a>
   </div>`;
 }
 
@@ -2642,6 +2240,20 @@ const REDUCED = () => matchMedia('(prefers-reduced-motion:reduce)').matches;
 const CAN_ANIMATE = () => 'IntersectionObserver' in window && !REDUCED();
 
 function afterRender(){
+  /* --- already signed in? ---------------------------------------------
+     Inviting a merchant who is signed in to "start a free trial" is the
+     kind of small wrongness that makes a site feel unattended. Done here
+     rather than inside each view so there is one rule, applied to every
+     sign-up and sign-in link the page renders, wherever it appears. */
+  if(SIGNED_IN){
+    document.querySelectorAll('a[href="/signup"],a[href="/signin"]').forEach(a=>{
+      a.setAttribute('href','/app');
+      /* Only relabel real buttons. Some of these links are icons or cards
+         whose text is not a call to action. */
+      if(a.classList.contains('btn')||a.classList.contains('store')) a.textContent=t('dashboard_cta');
+    });
+  }
+
   const b=document.querySelector('.topbar .burger');
   if(b && window.innerWidth<900) b.style.display='grid';
 

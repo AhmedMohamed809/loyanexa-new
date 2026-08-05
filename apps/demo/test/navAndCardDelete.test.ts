@@ -207,6 +207,47 @@ test('GET /lang/:lang falls back to English for an unknown language, and to /app
 });
 
 // ---------------------------------------------------------------------------
+// Landing page -> real product
+// ---------------------------------------------------------------------------
+
+test('the landing page sends visitors to the REAL sign-up, not to a mock-up of the app', async () => {
+  // The landing page shipped as a self-contained prototype: #/app/dashboard
+  // and #/login rendered convincing screens that were not the product, so a
+  // visitor could click "start free trial", browse a fake dashboard, and
+  // never actually have an account.
+  const res = await fetch(`${server.baseUrl}/`);
+  assert.equal(res.status, 200);
+  const html = await res.text();
+
+  assert.ok(html.includes('href="/signup"'), 'CTAs must point at the real sign-up');
+  assert.ok(html.includes('href="/signin"'), 'the header must point at the real sign-in');
+  assert.ok(
+    !/href="#\/(app|login)/.test(html),
+    'no link may still aim at the prototype routes'
+  );
+  assert.ok(
+    !html.includes('view=appShell(page,'),
+    'the router must hand /app over to the server, not render a fake screen'
+  );
+});
+
+test('an anonymous visitor is not told they are signed in', async () => {
+  const html = await (await fetch(`${server.baseUrl}/`)).text();
+  assert.ok(!html.includes('__LNX_SIGNED_IN__=true'), 'the flag must only appear for a real session');
+});
+
+test('a merchant who is already signed in is offered their dashboard, not a free trial', async () => {
+  // The session cookie is HttpOnly, so the page cannot work this out for
+  // itself — the server injects a single boolean, and nothing else.
+  const html = await (await fetch(`${server.baseUrl}/`, { headers: { Cookie: ownerA.cookie } })).text();
+  assert.ok(html.includes('__LNX_SIGNED_IN__=true'), 'the server must mark a signed-in visit');
+  assert.ok(!html.includes('window.__LNX_SIGNED_IN__=true;</script>\n<script>'), 'injected exactly once');
+  // And it must leak nothing beyond that yes/no.
+  assert.ok(!html.includes(ownerA.merchantId), 'no merchant id may reach the landing page');
+  assert.ok(!html.includes(ownerA.cookie.split('=')[1] ?? 'nope'), 'no session id may reach the landing page');
+});
+
+// ---------------------------------------------------------------------------
 // The mobile bottom tab bar
 // ---------------------------------------------------------------------------
 
