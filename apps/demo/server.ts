@@ -864,7 +864,70 @@ const CHROME_CSS = `
     --amber: #F7B267;
     --radius: 14px;
     --radius-lg: 18px;
+
+    /* Motion and depth. Durations are short and every easing is ease-out:
+       interface motion exists to explain where something came from, not to
+       perform. Past ~250ms it starts to feel like waiting, and anything that
+       overshoots or bounces reads as a toy. */
+    --dur-1: 120ms;   /* a state change on something already under the cursor */
+    --dur-2: 180ms;   /* the default */
+    --dur-3: 280ms;   /* something entering or leaving the page */
+    --ease: cubic-bezier(.22, .61, .36, 1);
+    --shadow-1: 0 1px 2px rgba(0,0,0,.28);
+    --shadow-2: 0 10px 24px rgba(0,0,0,.34);
+    --shadow-3: 0 20px 48px rgba(0,0,0,.44);
   }
+  /* -------------------------------------------------------------------
+     Motion and depth.
+
+     One place, one vocabulary. Durations are short and easings are all
+     ease-out: interface motion is meant to explain where something came
+     from, not to perform. Anything past ~250ms starts to feel like waiting,
+     and anything that overshoots or bounces reads as a toy.
+     ------------------------------------------------------------------- */
+  /* Everyone who has asked the system not to animate gets no animation. This
+     is not a nicety: for people with vestibular disorders, motion they did
+     not ask for can cause actual nausea. The block is placed first so nothing
+     below can reintroduce movement by being more specific. */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: .001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: .001ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
+  @keyframes lnx-rise {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: none; }
+  }
+  @keyframes lnx-fade {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
+  /* Page entrance. Staggered by a few tens of milliseconds so the eye is led
+     down the page in reading order instead of everything appearing at once.
+     Capped at six: past that the last element waits noticeably, and a wait is
+     the opposite of what this is for. */
+  main > * { animation: lnx-rise var(--dur-3) var(--ease) both; }
+  main > *:nth-child(1) { animation-delay: 0ms; }
+  main > *:nth-child(2) { animation-delay: 40ms; }
+  main > *:nth-child(3) { animation-delay: 80ms; }
+  main > *:nth-child(4) { animation-delay: 120ms; }
+  main > *:nth-child(5) { animation-delay: 160ms; }
+  main > *:nth-child(n+6) { animation-delay: 200ms; }
+
+  /* Keyboard focus, visible and consistent.
+     :focus-visible rather than :focus, so a ring appears for keyboard users
+     and not around every button a mouse happens to click. */
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+
   html[lang="ar"] * { letter-spacing: 0 !important; }
   /* Arabic letterforms have deeper ascenders and descenders, so the same
      line-height that suits Latin runs tight in Arabic. */
@@ -1031,7 +1094,11 @@ const CHROME_CSS = `
     cursor: pointer;
     font-family: inherit;
   }
-  .btn:hover { background: var(--accent-hover); }
+  .btn { transition: background-color var(--dur-1) var(--ease), transform var(--dur-1) var(--ease), box-shadow var(--dur-2) var(--ease); box-shadow: var(--shadow-1); }
+  .btn:hover { background: var(--accent-hover); box-shadow: var(--shadow-2); }
+  /* A press should be felt. 1px is enough — anything more looks like a
+     bounce, and a button that bounces reads as a toy. */
+  .btn:active { transform: translateY(1px); box-shadow: var(--shadow-1); }
   .btn.secondary {
     background: transparent;
     color: var(--ink);
@@ -1180,6 +1247,7 @@ ${CHROME_CSS}
     border-radius: var(--radius-lg);
     padding: 24px;
     margin-bottom: 20px;
+    box-shadow: var(--shadow-1);
   }
   h1 { font-size: 24px; margin: 0 0 6px; color: var(--ink); }
   h2 { font-size: 16px; margin: 0 0 14px; color: var(--ink); }
@@ -1199,7 +1267,12 @@ ${CHROME_CSS}
     overflow: hidden;
     text-decoration: none;
     color: inherit;
+    transition: transform var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease);
   }
+  /* Lift is reserved for things that actually go somewhere. A panel that
+     rises under the cursor but does nothing when clicked is a small lie. */
+  .card-tile:hover { transform: translateY(-2px); box-shadow: var(--shadow-2); border-color: rgba(242,140,56,.45); }
+  .card-tile:active { transform: translateY(0); }
   .card-tile img { display: block; width: 100%; height: auto; background: var(--sunk); }
   .card-tile .meta { padding: 14px 16px; border-top: 1px solid var(--line); }
   .card-tile .meta h3 { margin: 0 0 4px; font-size: 15px; color: var(--ink); }
@@ -1221,6 +1294,19 @@ ${CHROME_CSS}
     font-family: inherit;
   }
   select { appearance: auto; }
+  input[type="text"], input[type="number"], input[type="tel"], input[type="email"],
+  input[type="password"], input[type="search"], input[type="date"], select, textarea {
+    transition: border-color var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease), background-color var(--dur-1) var(--ease);
+  }
+  input[type="text"]:focus, input[type="number"]:focus, input[type="tel"]:focus,
+  input[type="email"]:focus, input[type="password"]:focus, input[type="search"]:focus,
+  input[type="date"]:focus, select:focus, textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    /* A ring rather than a thicker border, so nothing reflows on focus. */
+    box-shadow: 0 0 0 3px rgba(242,140,56,.18);
+    background: var(--raise);
+  }
   input[disabled], select[disabled], textarea[disabled] { opacity: .55; cursor: not-allowed; }
   input[type="range"] { width: 100%; }
   input[type="color"] {
@@ -1240,6 +1326,7 @@ ${CHROME_CSS}
      unrecognised template code. Amber rather than red — the user has not
      done anything wrong yet. */
   .warn { background: rgba(247,178,103,.10); border: 1px solid rgba(247,178,103,.32); color: var(--amber); border-radius: 12px; padding: 12px 16px; margin-bottom: 18px; font-size: 14px; line-height: 1.5; }
+  .error, .warn, .ok-banner { animation: lnx-rise var(--dur-3) var(--ease) both; }
   .ok-banner { background: rgba(34,197,94,.10); border: 1px solid rgba(34,197,94,.32); color: #86EFAC; border-radius: 12px; padding: 12px 16px; margin-bottom: 18px; font-size: 14px; }
 
   /* -------------------------------------------------------------------
@@ -1288,7 +1375,9 @@ ${CHROME_CSS}
     display: block; background: var(--paper); border: 1px solid var(--line);
     border-radius: var(--radius-lg); overflow: hidden; text-decoration: none; color: inherit;
   }
-  .tpl-tile:hover { border-color: var(--accent); }
+  .tpl-tile { transition: transform var(--dur-2) var(--ease), box-shadow var(--dur-2) var(--ease), border-color var(--dur-2) var(--ease); }
+  .tpl-tile:hover { border-color: var(--accent); transform: translateY(-2px); box-shadow: var(--shadow-2); }
+  .tpl-tile:active { transform: translateY(0); }
   .tpl-tile img { display: block; width: 100%; height: auto; background: var(--sunk); }
   .tpl-tile .meta { padding: 14px 16px; border-top: 1px solid var(--line); }
   .tpl-tile .meta h3 { margin: 0 0 4px; font-size: 15px; color: var(--ink); }
@@ -1306,6 +1395,8 @@ ${CHROME_CSS}
   .lock label::after { content: ' 🔒'; }
   table.data { width: 100%; border-collapse: collapse; font-size: 14px; }
   table.data th, table.data td { text-align: start; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  table.data tbody tr { transition: background-color var(--dur-1) var(--ease); }
+  table.data tbody tr:hover { background: rgba(255,255,255,.035); }
   table.data th { color: var(--ink-3); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
   table.data td { color: var(--ink); }
   table.data code.mono { font-variant-numeric: tabular-nums; letter-spacing: .04em; }
