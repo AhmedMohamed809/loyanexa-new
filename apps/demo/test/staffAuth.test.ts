@@ -29,7 +29,7 @@ function randomHex(bytes: number): string {
 
 async function makeMerchantWithStaff(): Promise<{ merchantId: string; staffId: string }> {
   const merchant = await prisma.merchant.create({
-    data: { email: `staffauth-test-${randomHex(8)}@example.test`, name: 'Staff Auth Test Merchant' },
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), email: `staffauth-test-${randomHex(8)}@example.test`, name: 'Staff Auth Test Merchant' },
   });
   const staff = await createStaff(merchant.id, 'Test Staff', '1234');
   return { merchantId: merchant.id, staffId: staff.id };

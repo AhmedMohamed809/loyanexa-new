@@ -89,7 +89,7 @@ async function makeCard(): Promise<{
   cookie: string;
 }> {
   const merchant = await prisma.merchant.create({
-    data: {
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       firebaseUid: `img-test-${randomHex(8)}`,
       email: `img-test-${randomHex(8)}@example.test`,
       name: 'Image Test Merchant',
@@ -361,7 +361,7 @@ test('a request with no logo/cover file field is rejected with 400', async () =>
 
 test('uploading to an unknown card id is rejected with 404', async () => {
   const merchant = await prisma.merchant.create({
-    data: { firebaseUid: `img-test-${randomHex(8)}`, email: `img-test-${randomHex(8)}@example.test`, name: 'Image Test Merchant' },
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), firebaseUid: `img-test-${randomHex(8)}`, email: `img-test-${randomHex(8)}@example.test`, name: 'Image Test Merchant' },
   });
   const cookie = await sessionCookieFor(merchant.id);
   try {

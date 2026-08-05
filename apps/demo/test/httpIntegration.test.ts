@@ -103,7 +103,7 @@ async function makeActiveCard(): Promise<{
   cookie: string;
 }> {
   const merchant = await prisma.merchant.create({
-    data: {
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       firebaseUid: `http-test-${randomHex(8)}`,
       email: `http-test-${randomHex(8)}@example.test`,
       name: 'HTTP Test Merchant',
@@ -249,7 +249,7 @@ test('lnx-lang=en renders lang="en" dir="ltr"; lnx-lang=ar renders lang="ar" dir
 
 test('a customer name/phone beginning with "=" is neutralised in the CSV export, not shipped as a live formula', async () => {
   const merchant = await prisma.merchant.create({
-    data: { firebaseUid: `csv-test-${randomHex(8)}`, email: `csv-test-${randomHex(8)}@example.test`, name: 'CSV Test Merchant' },
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), firebaseUid: `csv-test-${randomHex(8)}`, email: `csv-test-${randomHex(8)}@example.test`, name: 'CSV Test Merchant' },
   });
   const cookie = await sessionCookieFor(merchant.id);
   const card = await prisma.card.create({

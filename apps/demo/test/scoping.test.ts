@@ -102,7 +102,7 @@ interface MerchantFixture {
 /** A merchant with one active card, one enrolled customer (Pass, with a name/phone — the data a scoping leak would expose), and one stored image (logo). */
 async function makeMerchantFixture(label: string): Promise<MerchantFixture> {
   const merchant = await prisma.merchant.create({
-    data: { firebaseUid: `scope-${label}-${randomHex(8)}`, email: `scope-${label}-${randomHex(8)}@example.test`, name: `Scoping Test ${label}` },
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), firebaseUid: `scope-${label}-${randomHex(8)}`, email: `scope-${label}-${randomHex(8)}@example.test`, name: `Scoping Test ${label}` },
   });
   const card = await prisma.card.create({
     data: {
@@ -300,7 +300,7 @@ test('POST /cards/:id/activate — merchant A cannot activate/reactivate merchan
   const a = await makeMerchantFixture('A6');
   // An inactive card for B, so a successful (bugged) activation would be visible.
   const bMerchant = await prisma.merchant.create({
-    data: { firebaseUid: `scope-B6-${randomHex(8)}`, email: `scope-B6-${randomHex(8)}@example.test`, name: 'Scoping Test B6' },
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), firebaseUid: `scope-B6-${randomHex(8)}`, email: `scope-B6-${randomHex(8)}@example.test`, name: 'Scoping Test B6' },
   });
   const bCard = await prisma.card.create({
     data: {

@@ -130,6 +130,7 @@ import {
   type UploadKind,
 } from './cardImages.ts';
 import { log, errorFields } from './log.ts';
+import { effectivePlan, checkLimit, TRIAL_DAYS } from './plans.ts';
 import { escapeHtml } from './views/html.ts';
 import { CHROME_CSS, navBar, tabBar, layout, type NavKey } from './views/chrome.ts';
 import { renderStampScreen, type StampScreenViewer } from './views/stampScreen.ts';
@@ -1157,7 +1158,20 @@ async function handleSignUp(req: http.IncomingMessage, res: http.ServerResponse)
   const passwordHash = hashPassword(password);
   let merchant: Merchant;
   try {
-    merchant = await prisma.merchant.create({ data: { email, name: businessName, passwordHash } });
+    // §14: "Seven-day free trial, no card details". The Merchant table has
+    // carried subStatus and trialEndsAt from the beginning and nothing had
+    // ever written them, so every merchant looked like an expired trial —
+    // which, now that plan limits are enforced, would have dropped a brand-new
+    // account straight onto Starter's single-card limit.
+    merchant = await prisma.merchant.create({
+      data: {
+        email,
+        name: businessName,
+        passwordHash,
+        subStatus: 'trialing',
+        trialEndsAt: new Date(Date.now() + TRIAL_DAYS * 24 * 60 * 60 * 1000),
+      },
+    });
   } catch (err) {
     // A raced double-submit past the findUnique check above (P2002 on the
     // unique email constraint) — same user-facing message as the check
@@ -2028,6 +2042,30 @@ async function handleCreateCard(req: http.IncomingMessage, res: http.ServerRespo
   const bgColor = bg.startsWith('#') ? bg : `#${bg}`;
   const stampActive = active.startsWith('#') ? active : `#${active}`;
   const stampInactive = inactive.startsWith('#') ? inactive : `#${inactive}`;
+
+  // Plan capacity (BUILD.md §14). Checked on the server, not just hidden in
+  // the interface — the create form is a POST endpoint and a hidden button is
+  // not a limit. Enforced only on CREATION: an over-limit merchant keeps every
+  // card they already have working, because their customers are carrying
+  // those cards and did nothing wrong.
+  const plan = effectivePlan(merchant);
+  const cardsUsed = await prisma.card.count({ where: { merchantId: merchant.id } });
+  const cardLimit = checkLimit(plan, 'cards', cardsUsed);
+  if (!cardLimit.allowed) {
+    sendHtml(
+      res,
+      403,
+      renderNewCardForm(
+        { name, rewardText, goal: Number.isFinite(goalNum) ? goalNum : 8, bg: bg || '#203757', active: active || '#F96400', inactive: inactive || '#8794A5', lang: cardLang },
+        t(lang, 'planLimitCards', {
+          limit: arabicDigits(cardLimit.limit, lang),
+          used: arabicDigits(cardLimit.used, lang),
+        }),
+        lang
+      )
+    );
+    return;
+  }
 
   const maxSlot = await prisma.card.aggregate({
     where: { merchantId: merchant.id },
@@ -3902,10 +3940,67 @@ function renderStaffRow(staff: Staff, lang: Lang): string {
   </div>`;
 }
 
+/**
+ * The plan panel on Settings (BUILD.md §14).
+ *
+ * Shows what the merchant is entitled to and how much of it they are using,
+ * because a limit that is only discovered by hitting it is a bad limit. The
+ * usage bars are the useful part: "2 of 3 cards" answers the question before
+ * it is asked.
+ *
+ * There is no upgrade button yet — taking money needs a Stripe account that
+ * does not exist. Saying so plainly is better than a button that does
+ * nothing, which is the kind of detail that makes people stop trusting the
+ * rest of the page.
+ */
+async function renderPlanPanel(merchant: Merchant, lang: Lang): Promise<string> {
+  const plan = effectivePlan(merchant);
+  const [cards, staff] = await Promise.all([
+    prisma.card.count({ where: { merchantId: merchant.id } }),
+    prisma.staff.count({ where: { merchantId: merchant.id } }),
+  ]);
+
+  const trialing =
+    merchant.subStatus === 'trialing' &&
+    merchant.trialEndsAt !== null &&
+    merchant.trialEndsAt.getTime() > Date.now();
+
+  const row = (label: string, used: number, limit: number): string => {
+    const pct = limit === 0 ? 100 : Math.min(100, Math.round((used / limit) * 100));
+    return `<div class="plan-row">
+        <div class="plan-row-top">
+          <span>${escapeHtml(label)}</span>
+          <span class="plan-usage">${arabicDigits(used, lang)} / ${arabicDigits(limit, lang)}</span>
+        </div>
+        <div class="plan-bar"><span style="width:${pct}%"></span></div>
+      </div>`;
+  };
+
+  return `<div class="panel">
+      <div class="row" style="margin-bottom:14px;">
+        <h2 style="margin:0;">${escapeHtml(t(lang, 'planCurrent'))}</h2>
+        <span class="status-pill ${trialing ? 'pending' : 'live'}">${escapeHtml(
+          trialing
+            ? t(lang, 'planTrialEnds', { date: arabicDigits(merchant.trialEndsAt!.toISOString().slice(0, 10), lang) })
+            : plan.id
+        )}</span>
+      </div>
+      ${row(t(lang, 'planUsageCards'), cards, plan.cards)}
+      ${row(t(lang, 'planUsageStaff'), staff, plan.staff)}
+      <p class="muted" style="margin-bottom:0;">${escapeHtml(t(lang, 'planUpgradeSoon'))}</p>
+    </div>`;
+}
+
 function renderSettingsPage(
   staffList: Staff[],
   lang: Lang,
-  opts: { newStaffName?: string; newStaffPin?: string; error?: string } = {}
+  opts: {
+    newStaffName?: string;
+    newStaffPin?: string;
+    error?: string;
+    /** Rendered only when supplied — the six other call sites do not have a Merchant to hand. */
+    planPanel?: string;
+  } = {}
 ): string {
   const revealBanner = opts.newStaffPin
     ? `<div class="staff-pin-reveal">
@@ -3916,6 +4011,7 @@ function renderSettingsPage(
   const body = `
     <h1>${escapeHtml(t(lang, 'settingsTitle'))}</h1>
     ${opts.error ? `<div class="error">${escapeHtml(opts.error)}</div>` : ''}
+    ${opts.planPanel ?? ''}
     <div class="panel">
       <h2>${escapeHtml(t(lang, 'settingsStaffHeading'))}</h2>
       <p class="settings-note">${escapeHtml(t(lang, 'settingsStaffIntro'))}</p>
@@ -3969,7 +4065,7 @@ function renderSettingsPage(
 async function handleSettingsPage(req: http.IncomingMessage, res: http.ServerResponse, merchant: Merchant): Promise<void> {
   const lang = resolveLang(req);
   const staffList = await listStaff(merchant.id);
-  sendHtml(res, 200, renderSettingsPage(staffList, lang));
+  sendHtml(res, 200, renderSettingsPage(staffList, lang, { planPanel: await renderPlanPanel(merchant, lang) }));
 }
 
 /** POST /staff — creates a staff PIN account. Shows the plaintext PIN exactly once, inline in this response (never via redirect, so it never lands in a URL, a browser history entry, or a server access log) — it is hashed the moment it is generated/typed and cannot be recovered afterward. */
@@ -3998,6 +4094,29 @@ async function handleCreateStaff(req: http.IncomingMessage, res: http.ServerResp
   const pinCheck = validatePin(pin);
   if (!pinCheck.ok) {
     sendHtml(res, 400, renderSettingsPage(staffList, lang, { newStaffName: name, error: t(lang, 'settingsStaffPinInvalid') }));
+    return;
+  }
+
+  // Plan capacity (§14). Starter includes no staff PINs at all, so the two
+  // cases get different wording — "you have 0 of 0" would be a baffling thing
+  // to read.
+  const staffPlan = effectivePlan(merchant);
+  const staffLimit = checkLimit(staffPlan, 'staff', staffList.length);
+  if (!staffLimit.allowed) {
+    sendHtml(
+      res,
+      403,
+      renderSettingsPage(staffList, lang, {
+        newStaffName: name,
+        error:
+          staffLimit.limit === 0
+            ? t(lang, 'planLimitStaffNone')
+            : t(lang, 'planLimitStaff', {
+                limit: arabicDigits(staffLimit.limit, lang),
+                used: arabicDigits(staffLimit.used, lang),
+              }),
+      })
+    );
     return;
   }
 

@@ -79,7 +79,7 @@ function closeProc(proc: ChildProcessByStdio<null, Readable, Readable>): Promise
 
 async function makeActiveCard(lang: 'en' | 'ar' = 'en'): Promise<{ merchantId: string; card: Awaited<ReturnType<typeof prisma.card.create>> }> {
   const merchant = await prisma.merchant.create({
-    data: { email: `welcome-test-${randomHex(8)}@example.test`, name: 'Welcome Automation Test Merchant' },
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), email: `welcome-test-${randomHex(8)}@example.test`, name: 'Welcome Automation Test Merchant' },
   });
   const card = await prisma.card.create({
     data: {

@@ -610,6 +610,17 @@ ${CHROME_CSS}
     .sim-rail { position: static; order: -1; }
   }
 
+  /* Plan usage bars (BUILD.md §14). A limit discovered only by hitting it is
+     a bad limit; "2 / 3" answers the question before it is asked. */
+  .plan-row { margin-bottom: 14px; }
+  .plan-row-top { display: flex; justify-content: space-between; font-size: 14px; color: var(--ink-2); margin-bottom: 6px; }
+  .plan-usage { font-variant-numeric: tabular-nums; color: var(--ink-3); }
+  .plan-bar { height: 6px; border-radius: 100px; background: var(--sunk); overflow: hidden; }
+  .plan-bar > span {
+    display: block; height: 100%; background: var(--accent); border-radius: 100px;
+    transition: width var(--dur-3) var(--ease);
+  }
+
   /* Setup checklist (BUILD.md §8.3). A band, not a panel: it sits above the
      page's own content and has to read as guidance rather than as another
      thing to manage. Collapsible via <details>, so remembering the open state

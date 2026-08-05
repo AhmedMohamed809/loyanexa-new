@@ -36,7 +36,7 @@ interface Fixture {
 
 async function makeCard(): Promise<Fixture> {
   const merchant = await prisma.merchant.create({
-    data: {
+    data: { subStatus: 'trialing', trialEndsAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       firebaseUid: `cardpush-test-${randomHex(8)}`,
       email: `cardpush-test-${randomHex(8)}@example.test`,
       name: 'Card Push Test Merchant',
