@@ -990,15 +990,15 @@ export const PAGE_CSS = `
   .automated-card .status-pill.pending { background: rgba(148,163,184,.14); color: var(--ink-3); }
 `;
 
-export function layout(
-  title: string,
-  bodyHtml: string,
-  active?: NavKey,
-  lang: Lang = 'en',
-  theme: Theme = 'light'
-): string {
+export function layout(title: string, bodyHtml: string, active?: NavKey, lang: Lang = 'en'): string {
+  // No data-theme here on purpose. It was briefly a parameter, and the
+  // parameter lied: none of the 34 call sites had a theme to pass, so every
+  // page claimed "light" whatever the cookie said, and THEME_BOOTSTRAP then
+  // corrected it a moment later. One mechanism that works is better than two
+  // where the first is decorative — the script in <head> runs before the
+  // first paint, so it is not a compromise.
   return `<!doctype html>
-<html lang="${lang}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}" data-theme="${theme}">
+<html lang="${lang}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
 <head>
 ${THEME_BOOTSTRAP}
 <meta charset="utf-8">
