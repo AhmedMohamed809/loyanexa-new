@@ -25,7 +25,8 @@
   /* accent — soft, warm, used sparingly ------------------------ */
   --accent:#F28C38;
   --accent-hover:#E67E22;
-  --accent-light:#F7B267;
+  /* Accented TEXT. #F7B267 is 1.82:1 on white — unreadable. 5.02:1. */
+  --accent-light:#B45309;
   --accent-t:rgba(242,140,56,.10);
   --accent-line:rgba(242,140,56,.28);
   /* 7.30:1 against the accent. White would be 2.45:1 and fail AA.
@@ -37,34 +38,47 @@
   --sunk:#162338;
   --paper:#1C2A42;
   --raise:#22314C;
-  --navy:#0F172A; --navy-2:#162338; --navy-3:#1C2A42;
+  /* Light palette, 6 August 2026. The names still say 'navy' because a few
+     hundred rules reference them by name; swapping the VALUES keeps this a
+     palette change rather than a rewrite, and matches the dashboard, which
+     moved to light on the same day. Values are the dashboard's own tokens,
+     so the marketing site and the product cannot drift apart. */
+  --navy:#F7F8FA; --navy-2:#F1F3F6; --navy-3:#FFFFFF;
 
   /* text --------------------------------------------------------- */
-  --ink:#FFFFFF;
-  --ink-2:#CBD5E1;
-  --ink-3:#94A3B8;
+  --ink:#131C2B;
+  --ink-2:#41506A;
+  --ink-3:#5E6C82;
 
   /* lines and glass ---------------------------------------------- */
-  --line:rgba(255,255,255,.08);
-  --line-2:rgba(255,255,255,.14);
-  --glass:rgba(15,23,42,.78);
-  --glass-2:rgba(28,42,66,.55);
-  --glass-line:rgba(255,255,255,.09);
+  --line:rgba(19,28,43,.10);
+  --line-2:rgba(19,28,43,.16);
+  --glass:rgba(255,255,255,.82);
+  --glass-2:rgba(255,255,255,.62);
+  --glass-line:rgba(19,28,43,.09);
 
   /* gradients — navy only, no orange fields ----------------------- */
-  --grad-hero:linear-gradient(180deg,#0F172A 0%,#162338 100%);
-  --grad-navy:linear-gradient(160deg,#22314C 0%,#1C2A42 45%,#162338 100%);
-  --grad-card:linear-gradient(160deg,rgba(255,255,255,.035),transparent 58%);
+  --grad-hero:linear-gradient(180deg,#FFFFFF 0%,#F1F3F6 100%);
+  --grad-navy:linear-gradient(160deg,#FFFFFF 0%,#F7F8FA 45%,#EEF1F5 100%);
+  /* Deliberately dark surfaces: the wallet-card mock, and the closing CTA
+     band. Both are dark BY DESIGN rather than by accident of the old
+     palette — a dark band on a light page is an accent, and the card mock
+     is a picture of a real wallet card. Flipping the page must not flatten
+     them, and both carry white text that would otherwise vanish. */
+  --grad-dark:linear-gradient(160deg,#22314C 0%,#1C2A42 45%,#162338 100%);
+  --grad-card:linear-gradient(160deg,rgba(19,28,43,.025),transparent 58%);
 
   /* shadows — soft only, no glow ---------------------------------- */
-  --sh-1:0 1px 2px rgba(0,0,0,.28);
-  --sh-2:0 2px 8px rgba(0,0,0,.24), 0 10px 24px -14px rgba(0,0,0,.5);
-  --sh-3:0 4px 14px rgba(0,0,0,.28), 0 22px 48px -22px rgba(0,0,0,.6);
+  /* Tinted with the ink colour rather than pure black: a black shadow on a
+     white page reads as a smudge. */
+  --sh-1:0 1px 2px rgba(19,28,43,.06);
+  --sh-2:0 2px 8px rgba(19,28,43,.07), 0 10px 24px -14px rgba(19,28,43,.16);
+  --sh-3:0 4px 14px rgba(19,28,43,.09), 0 22px 48px -22px rgba(19,28,43,.20);
   --sh-btn:0 2px 8px rgba(242,140,56,.22);
   --sh-btn-h:0 6px 18px -4px rgba(242,140,56,.30);
 
   /* status -------------------------------------------------------- */
-  --green:#22C55E; --red:#EF4444; --amber:#F7B267;
+  --green:#15803D; --red:#B91C1C; --amber:#B45309;
 
   /* shape and motion ---------------------------------------------- */
   --r-sm:10px; --r-md:14px; --r-lg:16px; --r-xl:18px; --r-2xl:22px;
@@ -76,7 +90,7 @@
   /* aliases so existing rules keep resolving ---------------------- */
   --orange:var(--accent); --orange-hi:var(--accent-light); --orange-lo:var(--accent-hover);
   --orange-t:var(--accent-t); --orange-glow:rgba(242,140,56,.20);
-  --on-orange:var(--on-accent); --logo-orange:#F28C38; --card-navy:#162338;
+  --on-orange:var(--on-accent); --logo-orange:#F28C38; --card-navy:#162338; /* the card mock stays dark: it depicts a wallet pass, not page chrome */
   --brand-bg:var(--accent); --brand-fg:var(--on-accent); --brand-hover:var(--accent-hover);
   --grad-brand:linear-gradient(135deg,#F7B267 0%,#F28C38 60%,#E67E22 100%);
   --sh-brand:var(--sh-btn); --sh-glow:var(--sh-2);
@@ -85,12 +99,12 @@
 
   /* the former six-hue family collapses to navy tints + one accent,
      so the interface reads navy-dominant instead of multicoloured    */
-  --c-teal:#CBD5E1;   --c-teal-t:rgba(203,213,225,.09);
-  --c-olive:#94A3B8;  --c-olive-t:rgba(148,163,184,.09);
-  --c-brass:#F7B267;  --c-brass-t:rgba(247,178,103,.10);
+  --c-teal:#41506A;   --c-teal-t:rgba(65,80,106,.08);
+  --c-olive:#5E6C82;  --c-olive-t:rgba(94,108,130,.08);
+  --c-brass:#B45309;  --c-brass-t:rgba(180,83,9,.10);
   --c-clay:#F28C38;   --c-clay-t:rgba(242,140,56,.10);
-  --c-plum:#A8B6CC;   --c-plum-t:rgba(168,182,204,.09);
-  --c-denim:#8FA6C4;  --c-denim-t:rgba(143,166,196,.09);
+  --c-plum:#4A5A73;   --c-plum-t:rgba(74,90,115,.08);
+  --c-denim:#42566F;  --c-denim-t:rgba(66,86,111,.08);
   --c-orange:#F28C38; --c-orange-t:rgba(242,140,56,.10);
 }
 /* IBM Plex Sans Arabic is bilingual, so no per-language family swap is required.
@@ -235,8 +249,8 @@ html.anim .rise-scale.in{transform:none;
 .hero{position:relative;padding:88px 0 56px;overflow:hidden;border-bottom:1px solid var(--line);
   background:var(--grad-hero)}
 .hero::before{content:"";position:absolute;inset:0;z-index:0;pointer-events:none;
-  background-image:linear-gradient(rgba(255,255,255,.045) 1px,transparent 1px),
-    linear-gradient(90deg,rgba(255,255,255,.045) 1px,transparent 1px);background-size:72px 72px;
+  background-image:linear-gradient(rgba(19,28,43,.045) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(19,28,43,.045) 1px,transparent 1px);background-size:72px 72px;
   -webkit-mask-image:radial-gradient(80% 62% at 50% 0%,#000,transparent 76%);
   mask-image:radial-gradient(80% 62% at 50% 0%,#000,transparent 76%)}
 
@@ -264,13 +278,13 @@ html.anim .rise-scale.in{transform:none;
 html[lang="ar"] .lc-head b{letter-spacing:0;text-transform:none;font-size:1.12rem}
 
 /* 2 — feature band with the stamp row over it */
-.lc-band{position:relative;padding:34px 16px 16px;background:var(--band,var(--grad-navy));
+.lc-band{position:relative;padding:34px 16px 16px;background:var(--band,var(--grad-dark));
   border-block:1px solid var(--line)}
 .lc-band::before{content:"";position:absolute;inset:0;opacity:.9;
   background:radial-gradient(120% 90% at 50% 0%,rgba(255,255,255,.09),transparent 60%),
              radial-gradient(90% 70% at 50% 108%,rgba(242,140,56,.16),transparent 66%)}
 .lc-band::after{content:"";position:absolute;inset:0;opacity:.09;
-  background-image:radial-gradient(rgba(255,255,255,.9) 1px,transparent 1px);background-size:13px 13px}
+  background-image:radial-gradient(rgba(19,28,43,.10) 1px,transparent 1px);background-size:13px 13px}
 .slots{position:relative;z-index:1;display:grid;grid-template-columns:repeat(5,1fr);
   gap:6px;align-items:center;justify-items:center}
 .slots::before{content:"";position:absolute;top:50%;inset-inline:11%;height:1.5px;
@@ -369,14 +383,14 @@ html[lang="ar"] .triad b{letter-spacing:0;line-height:1.3}
 @media (max-width:940px){.feat-grid{grid-template-columns:repeat(2,1fr)}}
 @media (max-width:600px){.feat-grid{grid-template-columns:1fr}}
 .feat{padding:28px;border-radius:var(--r-xl);border:1px solid var(--line);position:relative;overflow:hidden;
-  background:linear-gradient(160deg,rgba(255,255,255,.045),transparent 60%),var(--paper);
+  background:linear-gradient(160deg,rgba(19,28,43,.045),transparent 60%),var(--paper);
   transition:border-color 150ms ease}
 .feat::after{content:"";position:absolute;inset-inline:0;top:0;height:2px;
   background:var(--accent);opacity:0;transition:opacity var(--t) var(--ease)}
 .feat:hover{border-color:var(--accent-line)}
 .feat:hover::after{opacity:1}
 .feat .ic{width:42px;height:42px;border-radius:12px;display:grid;place-items:center;margin-bottom:18px;
-  background:rgba(255,255,255,.05);border:1px solid var(--line);color:var(--ink-2);
+  background:rgba(19,28,43,.05);border:1px solid var(--line);color:var(--ink-2);
   transition:color var(--t) var(--ease),border-color var(--t) var(--ease)}
 .feat:hover .ic{color:var(--accent);border-color:var(--accent-line)}
 
@@ -397,7 +411,7 @@ html[lang="ar"] .triad b{letter-spacing:0;line-height:1.3}
   border:1px solid var(--line);border-radius:var(--r-xl);overflow:hidden}
 .why > div{background:var(--paper);padding:24px 22px}
 .why .ic{width:40px;height:40px;border-radius:10px;display:grid;place-items:center;margin-bottom:16px;
-  background:rgba(255,255,255,.05);border:1px solid var(--line);color:var(--ink-2)}
+  background:rgba(19,28,43,.05);border:1px solid var(--line);color:var(--ink-2)}
 .why h3{font-size:1rem;font-weight:700;letter-spacing:-.02em;margin-bottom:6px}
 .why p{font-size:.9rem;color:var(--ink-3);line-height:1.55}
 @media (max-width:760px){.why{grid-template-columns:1fr}}
@@ -448,9 +462,9 @@ html[lang="ar"] .triad b{letter-spacing:0;line-height:1.3}
 .plan-ent .ent-mid{flex:1;display:flex;align-items:center;justify-content:center;
   padding:22px 0;margin:18px 0 22px;border-block:1px solid var(--line)}
 .plan-ent .ent-mid .small{max-width:34ch;line-height:1.7}
-.plan-ent .plan-ic{background:rgba(255,255,255,.05);border-color:var(--line-2);color:var(--ink-2)}
+.plan-ent .plan-ic{background:rgba(19,28,43,.05);border-color:var(--line-2);color:var(--ink-2)}
 .plan{padding:32px 28px;border-radius:var(--r-2xl);border:1px solid var(--line);text-align:center;
-  background:linear-gradient(160deg,rgba(255,255,255,.04),transparent 55%),var(--paper);
+  background:linear-gradient(160deg,rgba(19,28,43,.04),transparent 55%),var(--paper);
   display:flex;flex-direction:column;
   transition:transform var(--t) var(--ease),box-shadow var(--t) var(--ease),border-color var(--t) var(--ease)}
 .plan:hover{border-color:var(--line-2)}
@@ -484,7 +498,7 @@ html[lang="ar"] .price span{padding-bottom:0}
 .plan ul{display:flex;flex-direction:column;gap:10px;margin:0 0 24px;font-size:.875rem;color:var(--ink-2);text-align:start}
 .plan li{display:flex;align-items:center;gap:10px}
 .plan li.off{color:var(--ink-3)}
-.cross{width:16px;height:16px;border-radius:99px;background:rgba(255,255,255,.05);color:var(--ink-3);
+.cross{width:16px;height:16px;border-radius:99px;background:rgba(19,28,43,.05);color:var(--ink-3);
   display:grid;place-items:center;flex:none}
 .cross svg{width:9px;height:9px}
 .plan .btn{margin-top:auto}
@@ -512,11 +526,11 @@ html:not(.anim) .qa .wrap{grid-template-rows:1fr}
 
 /* cta + footer ------------------------------------------------ */
 .cta{position:relative;overflow:hidden;border-radius:var(--r-2xl);padding:76px 40px;text-align:center;
-  background:var(--grad-navy);border:1px solid var(--line);color:#fff}
+  background:var(--grad-dark);border:1px solid var(--line);color:#fff}
 .cta::after{content:"";position:absolute;inset-inline:0;top:0;height:2px;background:var(--accent);opacity:.75}
 .cta::before{content:"";position:absolute;inset:0;opacity:.055;
-  background-image:linear-gradient(rgba(255,255,255,.9) 1px,transparent 1px),
-    linear-gradient(90deg,rgba(255,255,255,.9) 1px,transparent 1px);background-size:34px 34px}
+  background-image:linear-gradient(rgba(19,28,43,.10) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(19,28,43,.10) 1px,transparent 1px);background-size:34px 34px}
 .cta > *{position:relative}
 .cta p{color:rgba(255,255,255,.8);margin:14px auto 26px;max-width:48ch}
 .cta .btn-ghost{background:var(--accent);color:var(--on-accent);border-color:transparent}
@@ -603,10 +617,10 @@ html[lang="ar"] .step h3{letter-spacing:0;line-height:1.38}
 .hwhead{display:flex;align-items:center;justify-content:space-between;padding:16px 18px;
   background:var(--sunk);border-bottom:1px solid var(--line)}
 .hwhead b{font-size:.95rem;letter-spacing:-.02em}
-.hwband{position:relative;padding:26px 18px;background:var(--grad-navy);
+.hwband{position:relative;padding:26px 18px;background:var(--grad-dark);
   border-bottom:1px solid var(--line)}
 .hwband::before{content:"";position:absolute;inset:0;opacity:.06;
-  background-image:radial-gradient(rgba(255,255,255,.9) 1px,transparent 1px);background-size:14px 14px}
+  background-image:radial-gradient(rgba(19,28,43,.10) 1px,transparent 1px);background-size:14px 14px}
 .hwstamps{position:relative;display:flex;gap:6px;justify-content:center}
 .hwstamp{width:38px;height:38px;border-radius:99px;display:grid;place-items:center;flex:none;
   border:1.5px dashed var(--line-2);color:var(--ink-3);
@@ -688,7 +702,7 @@ html.anim .ip-shell.alt .iphone{animation-name:drift-b;animation-duration:16s}
 
 /* a lit rim on the bezel, so the edge reads as a physical edge */
 .ip-edge{position:absolute;inset:0;z-index:5;pointer-events:none;border-radius:inherit;
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.14), inset 0 0 0 1px rgba(255,255,255,.05);}
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.14), inset 0 0 0 1px rgba(19,28,43,.05);}
 
 /* depth: the screen and the island sit slightly proud of the bezel */
 .ip-screen{transform:translateZ(1px)}
@@ -853,7 +867,7 @@ html[dir="rtl"] .pr-toggle .ind{transform-origin:right center}
   color:var(--ink-3)}
 @media (max-width:1080px){.search{display:none}}
 .avatar{width:32px;height:32px;border-radius:99px;display:grid;place-items:center;font-size:.76rem;font-weight:700;
-  background:rgba(255,255,255,.06);color:var(--ink-2);border:1px solid var(--line);flex:none;font-family:var(--mono)}
+  background:rgba(19,28,43,.06);color:var(--ink-2);border:1px solid var(--line);flex:none;font-family:var(--mono)}
 .page{padding:24px 22px 60px;display:flex;flex-direction:column;gap:16px}
 @media (max-width:1024px){
   .app{grid-template-columns:1fr}
@@ -877,7 +891,7 @@ html[dir="rtl"] .pr-toggle .ind{transform-origin:right center}
 .kpi:hover{border-color:var(--line-2)}
 .kpi .lbl{font-size:.78rem;color:var(--ink-3);display:flex;align-items:center;gap:8px}
 .kpi-ic{width:24px;height:24px;border-radius:7px;display:grid;place-items:center;flex:none;
-  color:var(--ink-3);background:rgba(255,255,255,.05);border:1px solid var(--line)}
+  color:var(--ink-3);background:rgba(19,28,43,.05);border:1px solid var(--line)}
 .kpi:hover .kpi-ic{color:var(--accent)}
 .kpi .val{font-size:1.9rem;font-weight:700;letter-spacing:-.045em;margin:9px 0 6px;font-family:var(--mono);
   font-variant-numeric:tabular-nums;color:var(--ink)}
@@ -931,7 +945,7 @@ td b{color:var(--ink);font-weight:600}
 .insight b{color:var(--ink)}
 .i-warn{background:var(--accent-t);color:var(--accent)}
 .i-good{background:rgba(34,197,94,.12);color:var(--green)}
-.i-idea{background:rgba(255,255,255,.05);color:var(--ink-2)}
+.i-idea{background:rgba(19,28,43,.05);color:var(--ink-2)}
 
 .field{display:flex;flex-direction:column;gap:7px;margin-bottom:16px}
 .field label{font-size:.82rem;font-weight:600;color:var(--ink-2)}
@@ -970,8 +984,8 @@ html[dir="rtl"] .sw.on::after{transform:translateX(-17px)}
 .auth-aside{position:relative;overflow:hidden;background:var(--card-navy);
   display:grid;place-items:center;padding:40px;color:#fff}
 .auth-aside::before{content:"";position:absolute;inset:0;opacity:.10;
-  background-image:linear-gradient(rgba(255,255,255,.9) 1px,transparent 1px),
-    linear-gradient(90deg,rgba(255,255,255,.9) 1px,transparent 1px);background-size:34px 34px}
+  background-image:linear-gradient(rgba(19,28,43,.10) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(19,28,43,.10) 1px,transparent 1px);background-size:34px 34px}
 .or{display:flex;align-items:center;gap:14px;margin:20px 0;color:var(--ink-3);font-size:.78rem}
 .or::before,.or::after{content:"";flex:1;height:1px;background:var(--line)}
 
@@ -983,7 +997,7 @@ html[dir="rtl"] .sw.on::after{transform:translateX(-17px)}
 .ach{display:flex;flex-direction:column;gap:10px}
 .ach-row{display:flex;align-items:center;gap:12px}
 .ach-ic{width:40px;height:40px;border-radius:11px;display:grid;place-items:center;flex:none;
-  background:rgba(255,255,255,.04);border:1px solid var(--line);color:var(--ink-3)}
+  background:rgba(19,28,43,.04);border:1px solid var(--line);color:var(--ink-3)}
 .ach-ic.got{background:var(--accent-t);border-color:var(--accent-line);color:var(--accent)}
 
 /* misc -------------------------------------------------------- */
@@ -1592,7 +1606,7 @@ const nameOf = c => isAr() ? c.ar : c.n;
 const TIER_STYLE={
   vip :'background:var(--accent-t);color:var(--accent);border:1px solid var(--accent-line)',
   gold:'background:rgba(247,178,103,.10);color:var(--accent-light)',
-  reg :'background:rgba(255,255,255,.05);color:var(--ink-2)',
+  reg :'background:rgba(19,28,43,.05);color:var(--ink-2)',
   new :'background:rgba(34,197,94,.12);color:var(--green)'};
 const tierPill = k => `<span class="pill" style="${TIER_STYLE[k]}">${t('tier_'+k)}</span>`;
 const ago = d => d===0 ? t('today') : (isAr() ? `منذ ${n(d)} ${t('days_ago')}` : `${d}${t('days_ago')}`);
@@ -1729,7 +1743,7 @@ function loyaltyCard(cd){
     slots += `<div class="slot ${i<done?'filled':''}" data-slot="${i}">${ic(m.icon,20,1.7)}</div>`;
   const fill = done<=1 ? 0 : (done-1)/(LC_TOTAL-1);
 
-  return `<div class="loyalty" id="loyalty" style="--band:${cd?m.band:'var(--grad-navy)'}">
+  return `<div class="loyalty" id="loyalty" style="--band:${cd?m.band:'var(--grad-dark)'}">
     <div class="lc-head"><b>${biz}</b></div>
 
     <div class="lc-band">
