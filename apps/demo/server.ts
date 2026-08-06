@@ -132,7 +132,7 @@ import {
 import { log, errorFields } from './log.ts';
 import { effectivePlan, checkLimit, TRIAL_DAYS } from './plans.ts';
 import { escapeHtml } from './views/html.ts';
-import { CHROME_CSS, PAGE_CSS, navBar, tabBar, layout, type NavKey } from './views/chrome.ts';
+import { CHROME_CSS, PAGE_CSS, navBar, tabBar, layout, type NavKey, THEME_BOOTSTRAP } from './views/chrome.ts';
 import { renderStampScreen, type StampScreenViewer } from './views/stampScreen.ts';
 import { renderPrivacy, renderTerms } from './views/legal.ts';
 import { templatePhotoHashes } from './templateAssets.ts';
@@ -365,6 +365,7 @@ function sendEnrolNotFound(res: http.ServerResponse, code: string): void {
   const html = `<!doctype html>
 <html lang="en">
 <head>
+${THEME_BOOTSTRAP}
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Card not found · LoyaNexa</title>
@@ -938,6 +939,7 @@ function authPageShell(title: string, bodyHtml: string, lang: Lang): string {
   return `<!doctype html>
 <html lang="${lang}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
 <head>
+${THEME_BOOTSTRAP}
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(title)} · LoyaNexa</title>
@@ -2443,6 +2445,7 @@ async function handleCardPrint(_req: http.IncomingMessage, res: http.ServerRespo
   const html = `<!doctype html>
 <html lang="${lang}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
 <head>
+${THEME_BOOTSTRAP}
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(card.name)} · ${escapeHtml(t(lang, 'printButton'))} · LoyaNexa</title>
@@ -5095,6 +5098,7 @@ function renderEnrolPage(card: Card): string {
   return `<!doctype html>
 <html lang="${lang}" dir="${dir}">
 <head>
+${THEME_BOOTSTRAP}
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(card.name)} · ${escapeHtml(t(lang, 'enrolPageTitleSuffix'))}</title>
@@ -6226,6 +6230,34 @@ const server = http.createServer(async (req, res) => {
     if (method === 'GET' && (pathname === '/privacy' || pathname === '/terms')) {
       const lang = resolveLang(req);
       sendHtml(res, 200, pathname === '/privacy' ? renderPrivacy(lang) : renderTerms(lang));
+      return;
+    }
+
+    // Theme switch. Same shape and the same reasoning as the language route
+    // below: it writes one cookie, exposes nothing, and needs to work on the
+    // sign-in page as much as inside the dashboard.
+    if (method === 'GET' && pathname.startsWith('/theme/')) {
+      const wanted = pathname.slice('/theme/'.length) === 'dark' ? 'dark' : 'light';
+      let target = '/app';
+      const referer = req.headers.referer;
+      if (typeof referer === 'string') {
+        try {
+          const u = new URL(referer, `http://${req.headers.host ?? 'localhost'}`);
+          const candidate = `${u.pathname}${u.search}`;
+          if (u.host === req.headers.host && candidate.startsWith('/') && !candidate.startsWith('//')) {
+            target = candidate;
+          }
+        } catch {
+          // A malformed Referer is not worth failing the request over.
+        }
+      }
+      res.writeHead(303, {
+        Location: target,
+        // Readable by the head script that applies it before first paint,
+        // so deliberately not HttpOnly. It holds a display preference.
+        'Set-Cookie': `lnx-theme=${wanted}; Path=/; Max-Age=31536000; SameSite=Lax`,
+      });
+      res.end();
       return;
     }
 

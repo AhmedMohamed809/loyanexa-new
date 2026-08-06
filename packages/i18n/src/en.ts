@@ -305,6 +305,10 @@ export const en = {
   copyDone: 'Copied',
   copyFailed: 'Press and hold to copy',
   copyAria: 'Copy to clipboard',
+  themeLight: 'Light',
+  themeDark: 'Dark',
+  themeSwitchToDark: 'Dark mode',
+  themeSwitchToLight: 'Light mode',
   navPrimary: 'Main navigation',
   /** The fifth tab, holding what does not fit in a five-tab bar (Reports, Settings, language, sign out). */
   navMore: 'More',
