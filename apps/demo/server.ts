@@ -1441,6 +1441,79 @@ function handleLangSwitch(req: http.IncomingMessage, res: http.ServerResponse, r
  * caller wants a different stamp count (a representative "some progress"
  * thumbnail vs. the merchant's own starterStamps).
  */
+/**
+ * A value with a copy button beside it.
+ *
+ * The clipboard API needs a secure context and a user gesture, and it still
+ * fails inside some in-app browsers, so the fallback matters as much as the
+ * happy path: on failure the text is selected, which is what makes a
+ * long-press "Copy" work on a phone. Silently doing nothing would be the
+ * worst outcome, because the merchant would think they had copied it.
+ */
+function copyableValue(value: string, lang: Lang): string {
+  const id = `copy-${crypto.randomBytes(6).toString('hex')}`;
+  return `<span class="copyable">
+      <code class="pill" id="${id}">${escapeHtml(value)}</code>
+      <button type="button" class="copy-btn" data-copy-target="${id}"
+        aria-label="${escapeHtml(t(lang, 'copyAria'))}" title="${escapeHtml(t(lang, 'copyAria'))}">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="9" y="9" width="11" height="11" rx="2"/>
+          <path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/>
+        </svg>
+      </button>
+    </span>`;
+}
+
+/** The one script that powers every copy button on a page. */
+function copyScript(lang: Lang): string {
+  return `<script>
+    (function () {
+      var done = ${JSON.stringify(t(lang, 'copyDone'))};
+      var failed = ${JSON.stringify(t(lang, 'copyFailed'))};
+      document.querySelectorAll('[data-copy-target]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          var el = document.getElementById(btn.getAttribute('data-copy-target'));
+          if (!el) return;
+          var text = el.textContent || '';
+          var flash = function (msg, ok) {
+            btn.classList.add(ok ? 'copied' : 'copy-error');
+            var note = btn.parentNode.querySelector('.copy-note');
+            if (!note) {
+              note = document.createElement('span');
+              note.className = 'copy-note';
+              btn.parentNode.appendChild(note);
+            }
+            note.textContent = msg;
+            setTimeout(function () {
+              btn.classList.remove('copied', 'copy-error');
+              if (note && note.parentNode) note.parentNode.removeChild(note);
+            }, 1800);
+          };
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(function () { flash(done, true); })
+              .catch(function () { selectFallback(el); flash(failed, false); });
+          } else {
+            selectFallback(el);
+            flash(failed, false);
+          }
+        });
+      });
+      /* Selecting the text is what makes a long-press "Copy" work when the
+         clipboard API is unavailable — doing nothing would leave the merchant
+         believing they had copied the link. */
+      function selectFallback(el) {
+        try {
+          var range = document.createRange();
+          range.selectNodeContents(el);
+          var sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+        } catch (e) { /* selection is a nicety, never a failure */ }
+      }
+    })();
+  </script>`;
+}
+
 function stripPreviewParams(card: Card, filled: number, scale?: 1 | 2 | 3): URLSearchParams {
   const qs = new URLSearchParams({
     goal: String(card.stampsGoal),
@@ -2288,7 +2361,7 @@ async function handleCardDetail(req: http.IncomingMessage, res: http.ServerRespo
       }</p>
     </div>
   `;
-  sendHtml(res, 200, layout(card.name, body, 'cards', lang));
+  sendHtml(res, 200, layout(card.name, body + copyScript(lang), 'cards', lang));
 }
 
 // ---------------------------------------------------------------------------
@@ -2721,6 +2794,13 @@ function renderLocationRow(index: number, row: RawLocationRow, lang: Lang): stri
             <div class="geo-row">
               <button type="button" class="btn secondary small" data-use-current-location>${escapeHtml(t(lang, 'designerLocationsUseCurrentButton'))}</button>
               <span class="geo-status" data-geo-status></span>
+              <div class="field paste-coords">
+                <label>${escapeHtml(t(lang, 'designerLocationsPasteLabel'))}</label>
+                <div class="hex-row">
+                  <input type="text" data-paste-coords placeholder="${escapeHtml(t(lang, 'designerLocationsPastePlaceholder'))}" dir="ltr" autocapitalize="none" autocorrect="off" spellcheck="false" style="flex:1;">
+                  <button type="button" class="btn secondary small" data-paste-apply>${escapeHtml(t(lang, 'designerLocationsPasteButton'))}</button>
+                </div>
+              </div>
             </div>
             <div class="location-grid">
               <div class="field">
@@ -3190,6 +3270,56 @@ ${LANG_TOGGLE_SCRIPT}
         var geoRequesting = ${JSON.stringify(t(lang, 'designerLocationsGeoRequesting'))};
         var geoDenied = ${JSON.stringify(t(lang, 'designerLocationsGeoDenied'))};
         var geoSuccess = ${JSON.stringify(t(lang, 'designerLocationsGeoSuccess'))};
+        var geoBlocked = ${JSON.stringify(t(lang, 'designerLocationsGeoBlocked'))};
+        var geoInApp = ${JSON.stringify(t(lang, 'designerLocationsGeoInApp'))};
+        var geoUnavailable = ${JSON.stringify(t(lang, 'designerLocationsGeoUnavailable'))};
+        var geoTimeout = ${JSON.stringify(t(lang, 'designerLocationsGeoTimeout'))};
+        var pasteInvalid = ${JSON.stringify(t(lang, 'designerLocationsPasteInvalid'))};
+        var pasteOk = ${JSON.stringify(t(lang, 'designerLocationsPasteOk'))};
+
+        /* An in-app browser — the webview inside Instagram, Facebook,
+           Telegram and so on. Several of them deny geolocation outright and
+           report it as a permission denial, which is indistinguishable from
+           the merchant having tapped "Don't allow". Telling someone to check
+           their browser settings when the browser will never ask is the kind
+           of advice that wastes ten minutes, so detect it and say the useful
+           thing instead: open it in a real browser. */
+        function inAppBrowser() {
+          var ua = navigator.userAgent || '';
+          return /FBAN|FBAV|Instagram|Line\\/|Twitter|WhatsApp|Snapchat|TikTok|MicroMessenger|Telegram/i.test(ua);
+        }
+
+        /* Pulls a coordinate pair out of whatever was pasted.
+           Handles a Google Maps link (@lat,lng or ?q=lat,lng or !3dlat!4dlng)
+           and a bare "lat, lng". Done entirely here, in the page: geocoding an
+           address would mean sending a merchant's shop address to a third
+           party, which BUILD.md §9.4 deliberately avoids — this reads
+           coordinates that are already in the text and asks nobody. */
+        function parseCoords(text) {
+          if (!text) return null;
+          /* Backslashes are doubled because this whole script is inside a
+             template literal on the server: a single \\d there collapses to a
+             plain 'd' before the browser ever sees it, which silently turns
+             every pattern below into one that matches nothing. The parser
+             shipped broken exactly once for this reason, and the test that
+             lifts this function out of the rendered page is what caught it. */
+          var patterns = [
+            /@(-?\\d{1,3}\\.\\d+),(-?\\d{1,3}\\.\\d+)/,
+            /[?&]q=(-?\\d{1,3}\\.\\d+),\\s*(-?\\d{1,3}\\.\\d+)/,
+            /!3d(-?\\d{1,3}\\.\\d+)!4d(-?\\d{1,3}\\.\\d+)/,
+            /(-?\\d{1,3}\\.\\d+)\\s*,\\s*(-?\\d{1,3}\\.\\d+)/
+          ];
+          for (var i = 0; i < patterns.length; i++) {
+            var m = text.match(patterns[i]);
+            if (!m) continue;
+            var lat = parseFloat(m[1]);
+            var lng = parseFloat(m[2]);
+            if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+              return { lat: lat, lng: lng };
+            }
+          }
+          return null;
+        }
         var rowTitleTemplate = ${JSON.stringify(t(lang, 'designerLocationsRowTitle', { n: '__N__' }))};
 
         // Arabic-Indic digits (docs/COPY.md §3) for every number this
@@ -3246,6 +3376,13 @@ ${LANG_TOGGLE_SCRIPT}
             '<div class="geo-row">' +
               '<button type="button" class="btn secondary small" data-use-current-location>${escapeHtml(t(lang, 'designerLocationsUseCurrentButton'))}</button>' +
               '<span class="geo-status" data-geo-status></span>' +
+              '<div class="field paste-coords">' +
+                '<label>${escapeHtml(t(lang, 'designerLocationsPasteLabel'))}</label>' +
+                '<div class="hex-row">' +
+                  '<input type="text" data-paste-coords placeholder="${escapeHtml(t(lang, 'designerLocationsPastePlaceholder'))}" dir="ltr" autocapitalize="none" autocorrect="off" spellcheck="false" style="flex:1;">' +
+                  '<button type="button" class="btn secondary small" data-paste-apply>${escapeHtml(t(lang, 'designerLocationsPasteButton'))}</button>' +
+                '</div>' +
+              '</div>' +
             '</div>' +
             '<div class="location-grid">' +
               '<div class="field">' +
@@ -3276,6 +3413,30 @@ ${LANG_TOGGLE_SCRIPT}
           var status = row.querySelector('[data-geo-status]');
           var latInput = row.querySelector('[data-lat]');
           var lngInput = row.querySelector('[data-lng]');
+          var pasteInput = row.querySelector('[data-paste-coords]');
+          var pasteBtn = row.querySelector('[data-paste-apply]');
+          if (pasteBtn && pasteInput) {
+            var applyPaste = function () {
+              var coords = parseCoords(pasteInput.value);
+              if (!coords) {
+                status.textContent = pasteInvalid;
+                status.classList.add('error');
+                return;
+              }
+              latInput.value = coords.lat.toFixed(6);
+              lngInput.value = coords.lng.toFixed(6);
+              status.classList.remove('error');
+              status.textContent = pasteOk;
+              pasteInput.value = '';
+            };
+            pasteBtn.addEventListener('click', applyPaste);
+            /* Enter should work: this sits inside the card form, so without
+               this the key would submit the whole designer instead. */
+            pasteInput.addEventListener('keydown', function (e) {
+              if (e.key === 'Enter') { e.preventDefault(); applyPaste(); }
+            });
+          }
+
           useCurrentBtn.addEventListener('click', function () {
             status.classList.remove('error');
             if (!navigator.geolocation) {
@@ -3290,11 +3451,31 @@ ${LANG_TOGGLE_SCRIPT}
                 lngInput.value = pos.coords.longitude.toFixed(6);
                 status.textContent = geoSuccess;
               },
-              function () {
-                status.textContent = geoDenied;
+              function (err) {
+                /* One message per cause. "Couldn't get your location" is true
+                   of all three and actionable for none of them: a permission
+                   denial needs a settings change, no fix needs a window, and
+                   a timeout just needs another go. */
+                var code = err && err.code;
+                if (code === 1) {
+                  status.textContent = inAppBrowser() ? geoInApp : geoBlocked;
+                } else if (code === 3) {
+                  status.textContent = geoTimeout;
+                } else {
+                  status.textContent = geoUnavailable;
+                }
                 status.classList.add('error');
               },
-              { enableHighAccuracy: false, timeout: 10000 }
+              {
+                enableHighAccuracy: false,
+                /* 10s is not long for a cold fix indoors, which is where a
+                   shop owner sets this up. */
+                timeout: 20000,
+                /* Accept a fix the device already has, up to five minutes
+                   old. A shop does not move, so a slightly stale position is
+                   exactly as good and arrives instantly. */
+                maximumAge: 300000
+              }
             );
           });
         }

@@ -626,6 +626,28 @@ export const PAGE_CSS = `
     .sim-rail { position: static; order: -1; }
   }
 
+  /* Copy-to-clipboard control. The value and its button read as one object,
+     because a button floating beside a code block looks like it belongs to
+     the row rather than to the value. */
+  .copyable { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .copy-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 30px; height: 30px; flex: none;
+    background: var(--sunk); border: 1px solid var(--line); border-radius: 8px;
+    color: var(--ink-3); cursor: pointer; padding: 0;
+    transition: color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease), transform var(--dur-1) var(--ease);
+  }
+  .copy-btn svg { width: 15px; height: 15px; }
+  .copy-btn:hover { color: var(--ink); border-color: var(--accent); }
+  .copy-btn:active { transform: translateY(1px); }
+  .copy-btn.copied { color: var(--green); border-color: var(--green); }
+  .copy-btn.copy-error { color: var(--amber); border-color: var(--amber); }
+  .copy-note { font-size: 12px; color: var(--ink-3); animation: lnx-fade var(--dur-1) var(--ease) both; }
+
+  /* The paste-a-map-link fallback on the locations editor. */
+  .paste-coords { margin-top: 12px; margin-bottom: 0; }
+  .paste-coords label { font-size: 12px; color: var(--ink-3); }
+
   /* Plan usage bars (BUILD.md §14). A limit discovered only by hitting it is
      a bad limit; "2 / 3" answers the question before it is asked. */
   .plan-row { margin-bottom: 14px; }

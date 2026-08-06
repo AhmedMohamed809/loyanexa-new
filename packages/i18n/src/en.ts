@@ -291,6 +291,20 @@ export const en = {
   legalPrivacy: 'Privacy',
   legalTerms: 'Terms',
   authTagline: 'Loyalty cards that live in your customers’ wallets.',
+  // Geolocation, one message per cause — "couldn't get your location" is true
+  // of all three and useful for none of them.
+  designerLocationsGeoBlocked: 'Your browser blocked the location request. Allow location for this site, or paste a map link below.',
+  designerLocationsGeoInApp: 'Location does not work inside this in-app browser. Open the site in Safari or Chrome, or paste a map link below.',
+  designerLocationsGeoUnavailable: 'Your device could not get a fix. Try again near a window, or paste a map link below.',
+  designerLocationsGeoTimeout: 'That took too long. Try again, or paste a map link below.',
+  designerLocationsPasteLabel: 'Or paste a Google Maps link or coordinates',
+  designerLocationsPastePlaceholder: 'https://maps.google.com/… or 24.7136, 46.6753',
+  designerLocationsPasteButton: 'Use this',
+  designerLocationsPasteInvalid: 'No coordinates found in that. Paste a Google Maps link, or two numbers separated by a comma.',
+  designerLocationsPasteOk: 'Coordinates filled in below.',
+  copyDone: 'Copied',
+  copyFailed: 'Press and hold to copy',
+  copyAria: 'Copy to clipboard',
   navPrimary: 'Main navigation',
   /** The fifth tab, holding what does not fit in a five-tab bar (Reports, Settings, language, sign out). */
   navMore: 'More',
