@@ -292,6 +292,10 @@ export const ar: Record<keyof typeof en, string> = {
   copyDone: 'تم النسخ',
   copyFailed: 'اضغط مطوّلًا للنسخ',
   copyAria: 'نسخ إلى الحافظة',
+  themeLight: 'فاتح',
+  themeDark: 'داكن',
+  themeSwitchToDark: 'الوضع الداكن',
+  themeSwitchToLight: 'الوضع الفاتح',
   navPrimary: 'التنقل الرئيسي',
   navMore: 'المزيد',
   /** See en.ts — this always reads in the language being switched to, so it stays Latin here. */

@@ -199,7 +199,7 @@ test('the poster follows the CARD language, not the merchant dashboard cookie', 
   assert.equal(res.status, 200);
   const html = await res.text();
 
-  assert.match(html, /<html lang="ar" dir="rtl">/, 'the document language must come from the card');
+  assert.match(html, /<html lang="ar" dir="rtl"/, 'the document language must come from the card');
   assert.ok(html.includes('كيكة مجانية'), 'merchant-authored reward text is never translated');
 });
 

@@ -22,7 +22,7 @@
 
 import { type Lang } from '../../../packages/i18n/src/index.ts';
 import { escapeHtml } from './html.ts';
-import { CHROME_CSS, PAGE_CSS } from './chrome.ts';
+import { CHROME_CSS, PAGE_CSS, THEME_BOOTSTRAP } from './chrome.ts';
 
 /** The date the current text took effect. Update it whenever the wording changes materially — people are entitled to know which version they agreed to. */
 export const LEGAL_EFFECTIVE_DATE = '5 August 2026';
@@ -50,6 +50,7 @@ function renderDoc(lang: Lang, title: string, effective: string, sections: Secti
   return `<!doctype html>
 <html lang="${lang}" dir="${dir}">
 <head>
+${THEME_BOOTSTRAP}
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(title)} · LoyaNexa</title>

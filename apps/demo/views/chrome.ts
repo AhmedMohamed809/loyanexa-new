@@ -22,22 +22,44 @@ import { t, type Lang } from '../../../packages/i18n/src/index.ts';
 import { escapeHtml } from './html.ts';
 
 export const CHROME_CSS = `
+  /* -------------------------------------------------------------------
+     Two themes, one set of names.
+
+     Light is the default. Every rule below refers to a token and never to a
+     literal colour, which is what makes the switch a single attribute on
+     <html> rather than a second stylesheet to keep in step.
+
+     Every foreground/background pair here was measured with the contrast
+     helper in packages/image, not eyeballed. One result decided the whole
+     palette: the brand orange as TEXT on white is 2.45:1, which fails
+     outright. That is why --accent-text exists separately from --accent —
+     the orange stays exactly as it is for fills and buttons, and text that
+     wants to look accented uses a darkened version that people can actually
+     read. Getting this wrong is most of what makes a light theme look
+     amateurish.
+     ------------------------------------------------------------------- */
   :root {
-    --canvas: #0F172A;
-    --paper: #1C2A42;
-    --sunk: #162338;
-    --raise: #22314C;
+    --canvas: #F7F8FA;
+    --paper: #FFFFFF;
+    --sunk: #F1F3F6;
+    --raise: #E8ECF2;
     --accent: #F28C38;
     --accent-hover: #E67E22;
-    --accent-light: #F7B267;
-    --on-accent: #0F172A;
-    --ink: #FFFFFF;
-    --ink-2: #CBD5E1;
-    --ink-3: #94A3B8;
-    --line: rgba(255,255,255,.10);
-    --green: #22C55E;
-    --red: #EF4444;
-    --amber: #F7B267;
+    /* Accented TEXT. Never --accent: that is 2.45:1 on white. 5.02:1. */
+    --accent-light: #B45309;
+    /* Button labels on the orange fill. 7.58:1. */
+    --on-accent: #1A1206;
+    --ink: #131C2B;
+    --ink-2: #41506A;
+    --ink-3: #5E6C82;
+    --line: rgba(19,28,43,.13);
+    --hover-wash: rgba(19,28,43,.04);
+    --green: #15803D;
+    --red: #B91C1C;
+    --amber: #B45309;
+    --shadow-1: 0 1px 2px rgba(19,28,43,.06);
+    --shadow-2: 0 8px 20px rgba(19,28,43,.10);
+    --shadow-3: 0 18px 40px rgba(19,28,43,.14);
     --radius: 14px;
     --radius-lg: 18px;
 
@@ -49,9 +71,6 @@ export const CHROME_CSS = `
     --dur-2: 180ms;   /* the default */
     --dur-3: 280ms;   /* something entering or leaving the page */
     --ease: cubic-bezier(.22, .61, .36, 1);
-    --shadow-1: 0 1px 2px rgba(0,0,0,.28);
-    --shadow-2: 0 10px 24px rgba(0,0,0,.34);
-    --shadow-3: 0 20px 48px rgba(0,0,0,.44);
   }
   /* -------------------------------------------------------------------
      Motion and depth.
@@ -161,6 +180,31 @@ export const CHROME_CSS = `
     outline: 2px solid var(--accent);
     outline-offset: 2px;
     border-radius: 6px;
+  }
+
+  /* Dark. Same names, different values — nothing below this line needs to
+     know which theme is active. */
+  html[data-theme="dark"] {
+    --canvas: #0F172A;
+    --paper: #1C2A42;
+    --sunk: #162338;
+    --raise: #22314C;
+    --accent-light: #F7B267;
+    --on-accent: #0F172A;
+    --ink: #FFFFFF;
+    --ink-2: #CBD5E1;
+    --ink-3: #94A3B8;
+    --line: rgba(255,255,255,.10);
+    --hover-wash: rgba(255,255,255,.045);
+    --green: #22C55E;
+    /* #EF4444 was 3.82:1 on --paper and had failed AA since the original
+       design — caught by the contrast test added with the light theme, not
+       by looking at it. #F87171 is 5.20:1 and reads as the same red. */
+    --red: #F87171;
+    --amber: #F7B267;
+    --shadow-1: 0 1px 2px rgba(0,0,0,.28);
+    --shadow-2: 0 10px 24px rgba(0,0,0,.34);
+    --shadow-3: 0 20px 48px rgba(0,0,0,.44);
   }
 
   html[lang="ar"] * { letter-spacing: 0 !important; }
@@ -287,7 +331,7 @@ export const CHROME_CSS = `
       border: 1px solid var(--line);
       border-radius: var(--radius);
       padding: 6px;
-      box-shadow: 0 18px 40px rgba(0,0,0,.45);
+      box-shadow: var(--shadow-3);
       display: flex;
       flex-direction: column;
       gap: 2px;
@@ -343,6 +387,51 @@ export const CHROME_CSS = `
   .btn[disabled] { opacity: .5; cursor: default; }
 `;
 
+/**
+ * Which palette to render in.
+ *
+ * Light is the default because that is what was asked for, and because a
+ * dashboard someone stares at in a bright shop is easier to read on white.
+ * Dark is kept rather than deleted: it was the original design, some people
+ * genuinely prefer it, and keeping both costs one attribute now that every
+ * rule refers to a token.
+ */
+export type Theme = 'light' | 'dark';
+
+/** Reads the `lnx-theme` cookie. Same shape as the language cookie, and for the same reason: the server has to know before it renders a single byte, or the page flashes the wrong palette. */
+export function resolveTheme(cookieHeader: string | undefined): Theme {
+  if (!cookieHeader) return 'light';
+  for (const part of cookieHeader.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() !== 'lnx-theme') continue;
+    return part.slice(eq + 1).trim() === 'dark' ? 'dark' : 'light';
+  }
+  return 'light';
+}
+
+/**
+ * Applies the saved theme to <html> before anything paints.
+ *
+ * Placed in <head>, so it runs while the body is still being parsed and the
+ * first paint already has the right palette. The alternative — threading a
+ * theme argument through every one of layout()'s call sites — is a lot of
+ * churn for the same result, and would still leave the three shells that do
+ * not use layout() to be remembered separately.
+ *
+ * data-theme is written server-side too (see layout()), so this is belt and
+ * braces rather than the only mechanism; a page rendered with the attribute
+ * already correct simply has it set to the same value again.
+ */
+export const THEME_BOOTSTRAP = `<script>
+  (function () {
+    try {
+      var m = document.cookie.match(/(?:^|; )lnx-theme=([^;]*)/);
+      document.documentElement.setAttribute('data-theme', m && m[1] === 'dark' ? 'dark' : 'light');
+    } catch (e) { /* a missing cookie is simply the default */ }
+  })();
+</script>`;
+
 export type NavKey = 'cards' | 'customers' | 'reports' | 'stamp' | 'notifications' | 'settings';
 
 /** The top nav bar BUILD.md §6 wants reachable from every merchant page: Cards · Customers · Reports · Stamp screen · Settings (this build's revision of the historical bottom tab bar list; Settings — BUILD.md §8.13 — added alongside staff PINs and location reminders). Shared between layout() below and renderStampScreen() *only when viewed as the merchant* — a staff session gets its own, deliberately shorter header (see renderStampScreen's own doc comment) that omits every link a staff session cannot reach. */
@@ -365,6 +454,12 @@ export function navBar(active: NavKey | undefined, lang: Lang = 'en'): string {
           `<a href="${i.href}"${i.key === active ? ' class="active" aria-current="page"' : ''}>${escapeHtml(i.label)}</a>`
       )
       .join('\n    ')}
+    <a class="lang-toggle theme-toggle" href="/theme/dark" data-theme-link="dark" title="${escapeHtml(t(lang, 'themeSwitchToDark'))}" aria-label="${escapeHtml(t(lang, 'themeSwitchToDark'))}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 14.2A8.5 8.5 0 1 1 9.8 3.5a7 7 0 0 0 10.7 10.7Z"/></svg>
+    </a>
+    <a class="lang-toggle theme-toggle" href="/theme/light" data-theme-link="light" title="${escapeHtml(t(lang, 'themeSwitchToLight'))}" aria-label="${escapeHtml(t(lang, 'themeSwitchToLight'))}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+    </a>
     <a class="lang-toggle" href="/lang/${otherLang}" lang="${otherLang}">${escapeHtml(t(lang, 'navSwitchLang'))}</a>
   </nav>
   <form method="POST" action="/signout" style="margin:0;">
@@ -442,6 +537,8 @@ export function tabBar(active: NavKey | undefined, lang: Lang = 'en'): string {
         <a href="/reports">${escapeHtml(t(lang, 'navReports'))}</a>
         <a href="/settings">${escapeHtml(t(lang, 'navSettings'))}</a>
         <a href="/lang/${otherLang}">${escapeHtml(t(lang, 'navSwitchLang'))}</a>
+        <a href="/theme/dark" data-theme-link="dark">${escapeHtml(t(lang, 'themeSwitchToDark'))}</a>
+        <a href="/theme/light" data-theme-link="light">${escapeHtml(t(lang, 'themeSwitchToLight'))}</a>
         <form method="POST" action="/signout"><button type="submit">${escapeHtml(t(lang, 'navSignOut'))}</button></form>
       </div>
     </details>
@@ -603,11 +700,11 @@ export const PAGE_CSS = `
   .sim-card {
     border-radius: 18px;
     padding: 18px 18px 16px;
-    border: 1px solid rgba(255,255,255,.14);
+    border: 1px solid var(--line);
     /* A wallet pass sits on the phone's own surface, so it carries a real
        shadow. Without one the mock reads as a flat swatch of colour rather
        than as a card. */
-    box-shadow: 0 18px 40px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.10);
+    box-shadow: var(--shadow-3), inset 0 1px 0 rgba(255,255,255,.10);
     transition: background-color .25s ease, color .25s ease;
   }
   .sim-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
@@ -625,6 +722,17 @@ export const PAGE_CSS = `
     .with-sim { grid-template-columns: 1fr; }
     .sim-rail { position: static; order: -1; }
   }
+
+  /* Only ever show the theme you are NOT in. Two toggles rendered and one
+     hidden by CSS keeps this server-rendered and free of JavaScript, and the
+     head script has already set data-theme before any of this paints. */
+  .theme-toggle { display: none; padding: 7px 11px; }
+  .theme-toggle svg { width: 15px; height: 15px; display: block; }
+  html[data-theme="light"] .theme-toggle[data-theme-link="dark"] { display: inline-flex; }
+  html[data-theme="dark"] .theme-toggle[data-theme-link="light"] { display: inline-flex; }
+  .more-sheet [data-theme-link] { display: none; }
+  html[data-theme="light"] .more-sheet [data-theme-link="dark"] { display: block; }
+  html[data-theme="dark"] .more-sheet [data-theme-link="light"] { display: block; }
 
   /* Copy-to-clipboard control. The value and its button read as one object,
      because a button floating beside a code block looks like it belongs to
@@ -725,7 +833,7 @@ export const PAGE_CSS = `
   table.data { width: 100%; border-collapse: collapse; font-size: 14px; }
   table.data th, table.data td { text-align: start; padding: 10px 12px; border-bottom: 1px solid var(--line); }
   table.data tbody tr { transition: background-color var(--dur-1) var(--ease); }
-  table.data tbody tr:hover { background: rgba(255,255,255,.035); }
+  table.data tbody tr:hover { background: var(--hover-wash); }
   table.data th { color: var(--ink-3); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
   table.data td { color: var(--ink); }
   table.data code.mono { font-variant-numeric: tabular-nums; letter-spacing: .04em; }
@@ -882,10 +990,17 @@ export const PAGE_CSS = `
   .automated-card .status-pill.pending { background: rgba(148,163,184,.14); color: var(--ink-3); }
 `;
 
-export function layout(title: string, bodyHtml: string, active?: NavKey, lang: Lang = 'en'): string {
+export function layout(
+  title: string,
+  bodyHtml: string,
+  active?: NavKey,
+  lang: Lang = 'en',
+  theme: Theme = 'light'
+): string {
   return `<!doctype html>
-<html lang="${lang}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
+<html lang="${lang}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}" data-theme="${theme}">
 <head>
+${THEME_BOOTSTRAP}
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(title)} · LoyaNexa</title>

@@ -229,19 +229,19 @@ test('lnx-lang=en renders lang="en" dir="ltr"; lnx-lang=ar renders lang="ar" dir
   try {
     const en = await fetch(`${server.baseUrl}/app`, { headers: { Cookie: `lnx-lang=en; ${fx.cookie}` } });
     const enHtml = await en.text();
-    assert.match(enHtml, /<html lang="en" dir="ltr">/);
+    assert.match(enHtml, /<html lang="en" dir="ltr"/);
 
     const ar = await fetch(`${server.baseUrl}/app`, { headers: { Cookie: `lnx-lang=ar; ${fx.cookie}` } });
     const arHtml = await ar.text();
-    assert.match(arHtml, /<html lang="ar" dir="rtl">/);
+    assert.match(arHtml, /<html lang="ar" dir="rtl"/);
 
     // The old, never-written cookie name must no longer be read.
     const staleName = await fetch(`${server.baseUrl}/app`, { headers: { Cookie: `lang=en; ${fx.cookie}` } });
     const staleHtml = await staleName.text();
-    assert.match(staleHtml, /<html lang="ar" dir="rtl">/, 'a `lang=en` cookie (the old, wrong name) must not switch to English');
+    assert.match(staleHtml, /<html lang="ar" dir="rtl"/, 'a `lang=en` cookie (the old, wrong name) must not switch to English');
 
     const none = await fetch(`${server.baseUrl}/app`, { headers: { Cookie: fx.cookie } });
-    assert.match(await none.text(), /<html lang="ar" dir="rtl">/);
+    assert.match(await none.text(), /<html lang="ar" dir="rtl"/);
   } finally {
     await cleanupMerchant(fx.merchantId);
   }

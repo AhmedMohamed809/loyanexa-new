@@ -13,7 +13,7 @@
 
 import { t, type Lang } from '../../../packages/i18n/src/index.ts';
 import { escapeHtml } from './html.ts';
-import { CHROME_CSS, PAGE_CSS, navBar, tabBar } from './chrome.ts';
+import { CHROME_CSS, PAGE_CSS, navBar, tabBar, THEME_BOOTSTRAP } from './chrome.ts';
 
 // Route: GET /stamp — the merchant stamp screen (BUILD.md §8.15). Our
 // replacement for the competitor's scanner app: a browser page, opened on
@@ -54,6 +54,7 @@ export function renderStampScreen(lang: Lang = 'en', viewer: StampScreenViewer =
   return `<!doctype html>
 <html lang="${lang}" dir="${lang === 'ar' ? 'rtl' : 'ltr'}">
 <head>
+${THEME_BOOTSTRAP}
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(t(lang, 'stampScreenTitle'))} · LoyaNexa</title>
