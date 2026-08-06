@@ -734,6 +734,61 @@ export const PAGE_CSS = `
   html[data-theme="light"] .more-sheet [data-theme-link="dark"] { display: block; }
   html[data-theme="dark"] .more-sheet [data-theme-link="light"] { display: block; }
 
+  /* -------------------------------------------------------------------
+     Autofill.
+
+     When a browser fills a saved login it paints its OWN background over the
+     field — pale yellow in Chrome, white in Safari — which overrides the
+     theme and is the single most common reason a carefully styled login form
+     looks broken the moment somebody with saved credentials opens it. There
+     is no property that turns it off; the only reliable trick is a very large
+     inset box-shadow, which the browser paints over instead of the colour.
+
+     The transition delay is the second half of it: Chrome re-applies its own
+     background on focus, and a long delay simply outruns it.
+     ------------------------------------------------------------------- */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus,
+  input:-webkit-autofill:active {
+    -webkit-box-shadow: 0 0 0 1000px var(--sunk) inset !important;
+    box-shadow: 0 0 0 1000px var(--sunk) inset !important;
+    -webkit-text-fill-color: var(--ink) !important;
+    caret-color: var(--ink);
+    transition: background-color 100000s ease-in-out 0s;
+  }
+  input:-webkit-autofill:focus {
+    -webkit-box-shadow: 0 0 0 1000px var(--raise) inset, 0 0 0 3px rgba(242,140,56,.18) !important;
+    box-shadow: 0 0 0 1000px var(--raise) inset, 0 0 0 3px rgba(242,140,56,.18) !important;
+  }
+
+  /* -------------------------------------------------------------------
+     A password field with the reveal INSIDE it.
+
+     It used to be an input next to a button, laid out with .hex-row — a class
+     built for colour pickers, where a 96px text box beside a swatch is
+     exactly right and beside a password is exactly wrong. The button ate the
+     field's width and the two never looked like one control.
+     ------------------------------------------------------------------- */
+  .pw-field { position: relative; display: block; }
+  .pw-field input { width: 100%; padding-inline-end: 46px; }
+  .pw-reveal {
+    position: absolute; inset-inline-end: 6px; top: 50%; transform: translateY(-50%);
+    width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center;
+    background: none; border: 0; border-radius: 8px; padding: 0;
+    color: var(--ink-3); cursor: pointer;
+    transition: color var(--dur-1) var(--ease), background-color var(--dur-1) var(--ease);
+  }
+  .pw-reveal:hover { color: var(--ink); background: var(--hover-wash); }
+  .pw-reveal svg { width: 18px; height: 18px; display: block; }
+  .pw-reveal .pw-off { display: none; }
+  .pw-field.revealed .pw-reveal .pw-on { display: none; }
+  .pw-field.revealed .pw-reveal .pw-off { display: block; }
+
+  /* Auth forms get more generous fields than the dashboard: they are the
+     first thing anyone touches, and often on a phone. */
+  .auth-card input { padding: 13px 15px; font-size: 16px; }
+
   /* Copy-to-clipboard control. The value and its button read as one object,
      because a button floating beside a code block looks like it belongs to
      the row rather than to the value. */

@@ -1011,9 +1011,10 @@ function renderSignInForm(opts: { email?: string; next: string; error?: string }
       </div>
       <div class="field">
         <label for="password">${escapeHtml(t(lang, 'signInPasswordLabel'))}</label>
-        <div class="hex-row">
-          <input type="password" id="password" name="password" required autocomplete="current-password" dir="ltr" autocapitalize="none" autocorrect="off" spellcheck="false" style="flex:1;">
-          <button type="button" class="btn secondary small" id="toggleSignInPassword">${escapeHtml(t(lang, 'signInShowPassword'))}</button>
+        <div class="pw-field" id="signInPwField">
+          <input type="password" id="password" name="password" required autocomplete="current-password" dir="ltr" autocapitalize="none" autocorrect="off" spellcheck="false">
+          <button type="button" class="pw-reveal" id="toggleSignInPassword"
+            aria-label="${escapeHtml(t(lang, 'signInShowPassword'))}" title="${escapeHtml(t(lang, 'signInShowPassword'))}"><svg class="pw-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 6.1A9.6 9.6 0 0 1 12 6c6 0 9.5 6 9.5 6a17 17 0 0 1-3.3 3.9"/><path d="M6.3 7.8A17 17 0 0 0 2.5 12S6 18 12 18a9.3 9.3 0 0 0 3.5-.7"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg></button>
         </div>
       </div>
       <button class="btn" type="submit">${escapeHtml(t(lang, 'signInSubmitButton'))}</button>
@@ -1024,10 +1025,19 @@ function renderSignInForm(opts: { email?: string; next: string; error?: string }
         var btn = document.getElementById('toggleSignInPassword');
         var input = document.getElementById('password');
         if (!btn || !input) return;
+        var field = document.getElementById('signInPwField');
         btn.addEventListener('click', function () {
           var show = input.type === 'password';
           input.type = show ? 'text' : 'password';
-          btn.textContent = show ? ${JSON.stringify(t(lang, 'signInHidePassword'))} : ${JSON.stringify(t(lang, 'signInShowPassword'))};
+          /* The icon is swapped by a class rather than by rewriting the
+             button's contents: setting textContent would delete both SVGs. */
+          field.classList.toggle('revealed', show);
+          var label = show ? ${JSON.stringify(t(lang, 'signInHidePassword'))} : ${JSON.stringify(t(lang, 'signInShowPassword'))};
+          btn.setAttribute('aria-label', label);
+          btn.setAttribute('title', label);
+          /* Keep the caret where it was — retyping a password because the
+             reveal moved the cursor is a small, avoidable insult. */
+          input.focus();
         });
       })();
     </script>
@@ -1056,14 +1066,39 @@ function renderSignUpForm(
       </div>
       <div class="field">
         <label for="password">${escapeHtml(t(lang, 'signUpPasswordLabel'))}</label>
-        <input type="password" id="password" name="password" required autocomplete="new-password" dir="ltr" autocapitalize="none" autocorrect="off" spellcheck="false" minlength="${MIN_PASSWORD_LENGTH}">
+        <div class="pw-field" id="signUpPwField">
+          <input type="password" id="password" name="password" required autocomplete="new-password" dir="ltr" autocapitalize="none" autocorrect="off" spellcheck="false" minlength="${MIN_PASSWORD_LENGTH}">
+          <button type="button" class="pw-reveal" id="toggleSignUpPassword"
+            aria-label="${escapeHtml(t(lang, 'signInShowPassword'))}" title="${escapeHtml(t(lang, 'signInShowPassword'))}"><svg class="pw-on" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 6.1A9.6 9.6 0 0 1 12 6c6 0 9.5 6 9.5 6a17 17 0 0 1-3.3 3.9"/><path d="M6.3 7.8A17 17 0 0 0 2.5 12S6 18 12 18a9.3 9.3 0 0 0 3.5-.7"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg></button>
+        </div>
         <p class="field-hint">${escapeHtml(t(lang, 'signUpPasswordHint'))}</p>
       </div>
       <button class="btn" type="submit">${escapeHtml(t(lang, 'signUpSubmitButton'))}</button>
     </form>
     <p class="auth-alt">${escapeHtml(t(lang, 'signUpHaveAccountText'))} <a href="/signin">${escapeHtml(t(lang, 'signUpSignInLink'))}</a></p>
   `;
-  return authPageShell(t(lang, 'signUpTitle'), body, lang);
+  return authPageShell(
+    t(lang, 'signUpTitle'),
+    body +
+      `<script>
+      (function () {
+        var btn = document.getElementById('toggleSignUpPassword');
+        var input = document.getElementById('password');
+        var field = document.getElementById('signUpPwField');
+        if (!btn || !input || !field) return;
+        btn.addEventListener('click', function () {
+          var show = input.type === 'password';
+          input.type = show ? 'text' : 'password';
+          field.classList.toggle('revealed', show);
+          var label = show ? ${JSON.stringify(t(lang, 'signInHidePassword'))} : ${JSON.stringify(t(lang, 'signInShowPassword'))};
+          btn.setAttribute('aria-label', label);
+          btn.setAttribute('title', label);
+          input.focus();
+        });
+      })();
+    </script>`,
+    lang
+  );
 }
 
 function handleSignInForm(req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
