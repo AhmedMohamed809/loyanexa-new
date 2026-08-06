@@ -500,7 +500,7 @@ test('the customer enrol page renders in Arabic, RTL, with Arabic-Indic digits, 
     const enrol = await fetch(`${server.baseUrl}/${card.linkCode}`);
     assert.equal(enrol.status, 200);
     const html = await enrol.text();
-    assert.match(html, /<html lang="ar" dir="rtl"/);
+    assert.match(html, /<html lang="ar" dir="rtl">/);
     assert.ok(html.includes('أضف إلى محفظة آبل'), 'Apple Wallet button must be translated');
     assert.ok(html.includes('أضف إلى محفظة جوجل'), 'Google Wallet button must be translated');
     assert.ok(html.includes('مدعوم من لويانيكسا'), 'footer must be translated');

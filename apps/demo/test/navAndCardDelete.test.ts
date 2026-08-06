@@ -285,11 +285,11 @@ test('the privacy policy and terms are public — no account needed to read them
 
 test('the legal pages follow the reader\'s language, in both directions', async () => {
   const ar = await (await fetch(`${server.baseUrl}/privacy`, { headers: { Cookie: 'lnx-lang=ar' } })).text();
-  assert.match(ar, /<html lang="ar" dir="rtl"/);
+  assert.match(ar, /<html lang="ar" dir="rtl">/);
   assert.ok(/[؀-ۿ]/.test(ar), 'the Arabic policy must actually be in Arabic');
 
   const en = await (await fetch(`${server.baseUrl}/privacy`, { headers: { Cookie: 'lnx-lang=en' } })).text();
-  assert.match(en, /<html lang="en" dir="ltr"/);
+  assert.match(en, /<html lang="en" dir="ltr">/);
   assert.ok(en.includes('Privacy policy'));
 });
 

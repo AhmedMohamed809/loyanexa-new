@@ -325,11 +325,11 @@ test('GET /:code for an English card renders <html lang="en" dir="ltr">, regardl
     // No cookie at all, and the opposite dashboard cookie both must give the same result.
     const noCookie = await fetch(`${server.baseUrl}/${card.linkCode}`);
     const noCookieHtml = await noCookie.text();
-    assert.match(noCookieHtml, /<html lang="en" dir="ltr"/);
+    assert.match(noCookieHtml, /<html lang="en" dir="ltr">/);
 
     const wrongCookie = await fetch(`${server.baseUrl}/${card.linkCode}`, { headers: { Cookie: 'lnx-lang=ar' } });
     const wrongCookieHtml = await wrongCookie.text();
-    assert.match(wrongCookieHtml, /<html lang="en" dir="ltr"/, 'the enrol page must ignore the merchant dashboard cookie entirely');
+    assert.match(wrongCookieHtml, /<html lang="en" dir="ltr">/, 'the enrol page must ignore the merchant dashboard cookie entirely');
     assert.ok(wrongCookieHtml.includes('Free Croissant Combo'), 'the merchant-authored reward text must appear verbatim, unescaped-but-HTML-escaped');
   } finally {
     await cleanupMerchant(fx.merchantId);
@@ -342,7 +342,7 @@ test('GET /:code for an Arabic card renders <html lang="ar" dir="rtl">, regardle
     const card = await makeActiveCard(fx.merchantId, 'ar', { rewardText: 'قهوة مجانية' });
     const wrongCookie = await fetch(`${server.baseUrl}/${card.linkCode}`, { headers: { Cookie: 'lnx-lang=en' } });
     const html = await wrongCookie.text();
-    assert.match(html, /<html lang="ar" dir="rtl"/, 'the enrol page must ignore the merchant dashboard cookie entirely');
+    assert.match(html, /<html lang="ar" dir="rtl">/, 'the enrol page must ignore the merchant dashboard cookie entirely');
     assert.ok(html.includes('قهوة مجانية'), 'the merchant-authored reward text must appear verbatim');
   } finally {
     await cleanupMerchant(fx.merchantId);
@@ -367,7 +367,7 @@ test('GET /cards/:id/print follows the card\'s own language, not the merchant\'s
     const enDashboardHtml = await enDashboard.text();
     assert.match(
       enDashboardHtml,
-      /<html lang="ar" dir="rtl"/,
+      /<html lang="ar" dir="rtl">/,
       'an Arabic card\'s print sheet must render in Arabic even when the signed-in merchant\'s own dashboard is set to English'
     );
 
@@ -378,7 +378,7 @@ test('GET /cards/:id/print follows the card\'s own language, not the merchant\'s
     const arDashboardHtml = await arDashboard.text();
     assert.match(
       arDashboardHtml,
-      /<html lang="en" dir="ltr"/,
+      /<html lang="en" dir="ltr">/,
       'an English card\'s print sheet must render in English even when the signed-in merchant\'s own dashboard is set to Arabic'
     );
   } finally {
@@ -436,7 +436,7 @@ test('the pass-issuance rate-limit (429) page follows the card\'s own language',
     assert.ok(last, 'at least one request must have been made');
     assert.equal(last!.status, 429, 'the 11th request within the window must be rate-limited');
     const html = await last!.text();
-    assert.match(html, /<html lang="en" dir="ltr"/, 'the rate-limit page for an English card must render in English, not the (cookie-less) resolveLang default of Arabic');
+    assert.match(html, /<html lang="en" dir="ltr">/, 'the rate-limit page for an English card must render in English, not the (cookie-less) resolveLang default of Arabic');
   } finally {
     await cleanupMerchant(fx.merchantId);
   }
