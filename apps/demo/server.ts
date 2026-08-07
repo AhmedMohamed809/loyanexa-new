@@ -55,7 +55,7 @@ import {
   isBadEnvironmentKeyError,
 } from '../../packages/pass/src/apns.ts';
 import { GoogleWalletClient } from '../../packages/pass/src/googleWallet.ts';
-import { t, arabicDigits, type Lang } from '../../packages/i18n/src/index.ts';
+import { t, arabicDigits, type Lang, type MessageKey } from '../../packages/i18n/src/index.ts';
 import { loadEnvFile } from './env.ts';
 import {
   registerDevice,
@@ -2786,7 +2786,10 @@ async function handleActivateCard(req: http.IncomingMessage, res: http.ServerRes
 // and the enforcement the test proves are the exact same code path.
 // ---------------------------------------------------------------------------
 /** The i18n key naming each built-in icon (BUILTIN_ICON_IDS order) — the designer's picker uses these as each swatch's accessible label. */
-const ICON_LABEL_KEYS: Record<BuiltinIconId, 'iconLabelCoffee' | 'iconLabelCroissant' | 'iconLabelScissors' | 'iconLabelFlower' | 'iconLabelCar' | 'iconLabelDumbbell' | 'iconLabelStar' | 'iconLabelHeart' | 'iconLabelCheck' | 'iconLabelGift'> = {
+// The value type is derived rather than listed. Spelling out every key meant
+// adding an icon required editing this union too, and forgetting to was a
+// compile error that pointed at the map rather than at the icon.
+const ICON_LABEL_KEYS: Record<BuiltinIconId, MessageKey> = {
   coffee: 'iconLabelCoffee',
   croissant: 'iconLabelCroissant',
   scissors: 'iconLabelScissors',
@@ -2797,6 +2800,16 @@ const ICON_LABEL_KEYS: Record<BuiltinIconId, 'iconLabelCoffee' | 'iconLabelCrois
   heart: 'iconLabelHeart',
   check: 'iconLabelCheck',
   gift: 'iconLabelGift',
+  cutlery: 'iconLabelCutlery',
+  hanger: 'iconLabelHanger',
+  basket: 'iconLabelBasket',
+  fish: 'iconLabelFish',
+  cleaver: 'iconLabelCleaver',
+  shoe: 'iconLabelShoe',
+  paw: 'iconLabelPaw',
+  tooth: 'iconLabelTooth',
+  bottle: 'iconLabelBottle',
+  kettlebell: 'iconLabelKettlebell',
 };
 
 /** Neutral colour the icon picker's own swatches render in — deliberately not the card's live active-stamp colour, so the picker never needs to reload all ten swatches every time a merchant nudges a colour slider. The strip *preview* (designerPreviewQs below) always uses the real active colour. */
