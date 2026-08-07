@@ -46,8 +46,36 @@ for (const rel of FILES) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Balanced braces in the landing page's stylesheets.
+//
+// On 7 August 2026 a regex that stripped `backdrop-filter:...;` declarations
+// destroyed THREE rules — .topbar-in, .kpis and .chips a:hover — because its
+// pattern ended `[^;]+;` and the LAST declaration in a CSS block has no
+// trailing semicolon. The match ran past the closing brace, through the next
+// rule's selector, and stopped at the first semicolon it found inside it.
+//
+// The visible result was the landing page's navigation stacking onto three
+// lines, and nothing caught it: the file still parsed, the page still served,
+// every test still passed. A stylesheet with unbalanced braces is broken in a
+// way only a person looking at the page can see, so count them here.
+// ---------------------------------------------------------------------------
+const landing = path.join(ROOT, 'apps/demo/public/index.html');
+if (fs.existsSync(landing)) {
+  const html = fs.readFileSync(landing, 'utf8');
+  for (const block of html.matchAll(/<style>([\s\S]*?)<\/style>/g)) {
+    const css = block[1] ?? '';
+    const open = (css.match(/\{/g) ?? []).length;
+    const close = (css.match(/\}/g) ?? []).length;
+    if (open !== close) {
+      console.error(`apps/demo/public/index.html  a <style> block has ${open} '{' and ${close} '}' — a rule has been truncated`);
+      failed = true;
+    }
+  }
+}
+
 if (failed) {
-  console.error('\nUse plain words in CSS comments, not `backticks`.');
+  console.error('\nUse plain words in CSS comments, not backticks, and never strip a declaration with a pattern that can cross a closing brace.');
   process.exit(1);
 }
-console.log('css literals OK — no stray backticks');
+console.log('css literals OK — no stray backticks, braces balanced');

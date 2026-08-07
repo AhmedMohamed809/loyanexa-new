@@ -232,7 +232,14 @@ html.anim .rise-scale.in{transform:none;
 .topbar{position:sticky;top:0;z-index:60;background:transparent;
   border-bottom:1px solid transparent;
   transition:background 200ms ease,border-color 200ms ease}
-.topbar.stuck{background:var(--glass);border-bottom-color:var(--glass-line);align-items:center;gap:12px;height:64px}
+.topbar.stuck{background:var(--glass);border-bottom-color:var(--glass-line)}
+/* Restored 7 August 2026. This rule was destroyed by a regex in the
+   minimalism pass: it stripped `backdrop-filter:...;` declarations with a
+   pattern ending `[^;]+;`, and the LAST declaration in a block has no
+   trailing semicolon, so the match ran past the closing brace and ate the
+   start of the next rule. Without it the bar's three children are block
+   level and stack onto three lines. */
+.topbar-in{display:flex;align-items:center;gap:12px;height:64px}
 .brand{display:flex;align-items:center;gap:10px;font-weight:700;letter-spacing:-.03em;font-size:1.06rem}
 .lockup{display:inline-flex;align-items:center;flex:none}
 .lockup img{display:block;width:auto}
@@ -810,6 +817,7 @@ html[dir="rtl"] .pr-toggle .ind{transform-origin:right center}
 .chips a{height:38px;padding:0 16px;border-radius:99px;border:1px solid var(--line-2);background:var(--paper);
   display:inline-flex;align-items:center;gap:8px;font-size:.87rem;font-weight:550;color:var(--ink-2);
   transition:border-color 150ms ease,color 150ms ease}
+.chips a:hover{border-color:var(--accent-line);color:var(--accent-light)}
 .chips a{background:var(--glass-2);color:var(--accent-light)}
 .ind-list{display:flex;flex-direction:column;gap:12px;margin-top:22px}
 .ind-list li{display:flex;gap:11px;align-items:flex-start;font-size:.94rem;color:var(--ink-2)}
@@ -876,7 +884,13 @@ html[dir="rtl"] .pr-toggle .ind{transform-origin:right center}
     transition:transform .32s var(--ease);box-shadow:var(--sh-3)}
   html[dir="rtl"] .side{transform:translateX(104%)}
   .side.open{transform:none}
-  .scrim{position:fixed;inset:0;background:rgba(8,8,14,.44);z-index:70;grid-template-columns:repeat(4,1fr);gap:14px}
+  .scrim{position:fixed;inset:0;background:rgba(8,8,14,.44);z-index:70}
+  .page{padding:18px 16px 60px}
+  .apptop{padding:0 16px}
+}
+@media (min-width:1025px){.burger{display:none}.scrim{display:none}}
+
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
 @media (max-width:1100px){.kpis{grid-template-columns:repeat(2,1fr)}}
 @media (max-width:520px){.kpis{grid-template-columns:1fr}}
 .kpi{padding:20px;border-radius:var(--r-lg);border:1px solid var(--line);
@@ -2257,13 +2271,22 @@ function afterRender(){
      rather than inside each view so there is one rule, applied to every
      sign-up and sign-in link the page renders, wherever it appears. */
   if(SIGNED_IN){
-    document.querySelectorAll('a[href="/signup"],a[href="/signin"]').forEach(a=>{
+    /* The header carries a PAIR: "Sign in" and "Start free trial". Relabelling
+       both produced two identical "Go to my dashboard" buttons side by side,
+       and the extra width was enough to wrap the whole bar onto three lines.
+       Signed in there is only one thing to offer, so the secondary link is
+       removed and the primary one relabelled. */
+    var secondary = document.querySelector('.topbar-end a[href="/signin"]');
+    if(secondary) secondary.remove();
+
+    document.querySelectorAll('a[href="/signup"],a[href="/signin"]').forEach(function(a){
       a.setAttribute('href','/app');
-      /* Only relabel real buttons. Some of these links are icons or cards
-         whose text is not a call to action. */
+      /* Only relabel real calls to action. Several of these links are icons
+         or whole cards whose text is not a label. */
       if(a.classList.contains('btn')||a.classList.contains('store')) a.textContent=t('dashboard_cta');
     });
   }
+
 
   const b=document.querySelector('.topbar .burger');
   if(b && window.innerWidth<900) b.style.display='grid';
