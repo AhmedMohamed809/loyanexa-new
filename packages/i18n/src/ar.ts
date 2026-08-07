@@ -319,6 +319,13 @@ export const ar: Record<keyof typeof en, string> = {
   iconLabelBaby: 'طفل',
   iconLabelMusicNote: 'نوتة موسيقية',
   iconLabelTyre: 'إطار',
+  iconLabelPhone: 'هاتف',
+  iconLabelNeedle: 'إبرة وخيط',
+  templatesCatFashion: 'الأزياء والتجزئة',
+  templatesCatGrocery: 'البقالة والمواد الغذائية',
+  templatesCatEducation: 'الصحة والتعليم والأطفال',
+  templatesCatAutomotive: 'السيارات',
+  templatesCatPets: 'الحيوانات الأليفة',
   navPrimary: 'التنقل الرئيسي',
   navMore: 'المزيد',
   /** See en.ts — this always reads in the language being switched to, so it stays Latin here. */

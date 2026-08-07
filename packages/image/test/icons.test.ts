@@ -5,7 +5,7 @@ import { drawBuiltinIcon, renderIconSwatch, BUILTIN_ICON_IDS, isBuiltinIconId } 
 import { renderStrip, type StripSpec } from '../src/strip.ts';
 import { decodePNG } from '../src/png/decode.ts';
 
-test('BUILTIN_ICON_IDS lists exactly the twenty-five documented icons', () => {
+test('BUILTIN_ICON_IDS lists exactly the twenty-seven documented icons', () => {
   // Ten general marks plus fifteen trade marks. The trade marks were added on
   // 6 August 2026: the original ten cover a cafe and a gym and then run out,
   // and a butcher stamping a star reads as a card assembled from whatever was
@@ -15,25 +15,26 @@ test('BUILTIN_ICON_IDS lists exactly the twenty-five documented icons', () => {
     [
       'baby', 'basket', 'bottle', 'car', 'check', 'cleaver', 'coffee', 'croissant',
       'cutlery', 'dumbbell', 'fish', 'flower', 'gi', 'gift', 'glove', 'hanger', 'heart',
-      'kettlebell', 'musicNote', 'paw', 'scissors', 'shoe', 'star', 'tooth', 'tyre',
+      'kettlebell', 'musicNote', 'needle', 'paw', 'phone', 'scissors', 'shoe', 'star',
+      'tooth', 'tyre',
     ]
   );
 });
 
-test('every template names an icon that exists, and no trade is left on a generic one', async () => {
-  // The mapping is the point of the trade marks: a restaurant template that
+test('every template names a real icon, and almost none fall back on a generic one', async () => {
+  // The mapping is the point of the trade marks: a butcher template that
   // still stamps a star has gained nothing from them existing.
   const { CARD_TEMPLATES } = await import('../../../apps/demo/cardTemplates.ts');
-  const generic = new Set(['star', 'heart', 'check', 'gift']);
-  const tradeHasSpecific: Record<string, boolean> = {};
+  // 'gift' is generic in general and exactly right for a gift shop, so it is
+  // the one permitted use.
+  const generic = new Set(['star', 'heart', 'check']);
 
   for (const tpl of CARD_TEMPLATES) {
     assert.ok(isBuiltinIconId(tpl.builtinIcon), `${tpl.id} names a missing icon: ${tpl.builtinIcon}`);
-    const trade = tpl.id.split('-')[0]!;
-    tradeHasSpecific[trade] = (tradeHasSpecific[trade] ?? false) || !generic.has(tpl.builtinIcon);
-  }
-  for (const [trade, ok] of Object.entries(tradeHasSpecific)) {
-    assert.ok(ok, `${trade} has no template using a trade-specific icon`);
+    assert.ok(
+      !generic.has(tpl.builtinIcon),
+      `${tpl.id} still stamps a generic mark (${tpl.builtinIcon}) — a trade mark exists for it`
+    );
   }
 });
 

@@ -334,6 +334,13 @@ export const en = {
   iconLabelBaby: 'Baby',
   iconLabelMusicNote: 'Music note',
   iconLabelTyre: 'Tyre',
+  iconLabelPhone: 'Phone',
+  iconLabelNeedle: 'Needle and thread',
+  templatesCatFashion: 'Fashion and retail',
+  templatesCatGrocery: 'Grocery and food',
+  templatesCatEducation: 'Health, education and kids',
+  templatesCatAutomotive: 'Automotive',
+  templatesCatPets: 'Pets',
   navPrimary: 'Main navigation',
   /** The fifth tab, holding what does not fit in a five-tab bar (Reports, Settings, language, sign out). */
   navMore: 'More',
