@@ -1073,6 +1073,56 @@ export const PAGE_CSS = `
   .location-row .geo-status { font-size: 12px; color: var(--ink-3); }
   .location-row .geo-status.error { color: var(--red); }
 
+  /* Business search. A merchant types a shop name and picks it off this
+     list; the coordinates the pass needs are filled in behind the scenes
+     and never shown, because nobody running a coffee shop should have to
+     read a latitude off a map URL. */
+  .place-search { position: relative; }
+  .place-results {
+    position: absolute; z-index: 30; top: calc(100% + 4px); inset-inline: 0;
+    margin: 0; padding: 4px; list-style: none;
+    background: var(--paper); border: 1px solid var(--line); border-radius: 12px;
+    box-shadow: var(--shadow-2);
+    /* Five results at most (placeSearch.ts's MAX_PLACE_SUGGESTIONS), but a
+       long address wraps, so cap the height rather than trusting the count. */
+    max-height: 280px; overflow-y: auto;
+  }
+  .place-results li { border-radius: 8px; }
+  .place-results button {
+    display: block; width: 100%; text-align: start; cursor: pointer;
+    background: none; border: 0; padding: 9px 10px; border-radius: 8px;
+    font: inherit; color: var(--ink); line-height: 1.35;
+  }
+  /* Hover and keyboard focus land on the same visual state: the arrow keys
+     move a .is-active class, and a row a merchant is about to press with
+     Enter must not look different from one under their cursor. */
+  .place-results button:hover,
+  .place-results button:focus-visible,
+  .place-results li.is-active button { background: var(--hover-wash); outline: none; }
+  .place-results .place-primary { display: block; font-weight: 600; font-size: 14px; }
+  .place-results .place-secondary { display: block; font-size: 12px; color: var(--ink-3); margin-top: 1px; }
+  .place-search-status { font-size: 12px; color: var(--ink-3); margin: 6px 0 0; }
+  .place-search-status.error { color: var(--red); }
+
+  /* The chosen state, which replaces the search box once a place is picked.
+     It is the only confirmation the merchant gets that the geofence points
+     at the right doorway, so it names the place and prints the address. */
+  .place-chosen {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 12px 14px; margin-bottom: 12px;
+    border: 1px solid rgba(34,197,94,.35); background: rgba(34,197,94,.10);
+    border-radius: 12px;
+  }
+  .place-chosen .tick { color: var(--green); font-weight: 700; line-height: 1.35; }
+  .place-chosen .place-chosen-text { flex: 1; min-width: 0; }
+  .place-chosen .place-chosen-name { display: block; font-weight: 600; color: var(--ink); line-height: 1.35; }
+  .place-chosen .place-chosen-address {
+    display: block; font-size: 12px; color: var(--ink-2); margin-top: 2px; line-height: 1.4;
+    /* Google's formatted addresses run long; wrap rather than stretch the panel. */
+    overflow-wrap: anywhere;
+  }
+  .location-row .or-divider { font-size: 12px; color: var(--ink-3); }
+
   /* Settings — staff PINs (BUILD.md §8.13). */
   .staff-pin-reveal { background: rgba(34,197,94,.10); border: 1px solid rgba(34,197,94,.35); border-radius: 12px; padding: 14px 16px; margin-bottom: 18px; }
   .staff-pin-reveal .pin { font-size: 24px; font-weight: 700; letter-spacing: 0.12em; color: var(--ink); font-variant-numeric: tabular-nums; }

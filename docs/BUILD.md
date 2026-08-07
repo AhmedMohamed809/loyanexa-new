@@ -528,6 +528,28 @@ location"*, counter `0 / 1`, empty state · **Products & services**.
 > records which staff member recorded a stamp; null means the owner did.
 > `apps/demo/test/staffScoping.test.ts` proves the refusal, one test per route.
 
+> **Changed, 2026-08-07 — merchants search for their business instead of typing
+> coordinates.** The latitude and longitude fields are gone from the locations editor.
+> A merchant types their business name, picks it off a dropdown, and the coordinates
+> are filled into hidden inputs behind the confirmation line; "Use my current location"
+> stays, and now reverse-geocodes so it confirms itself with an address rather than a
+> number. `CardLocation` gained an optional `address` — display only, and impossible to
+> leak into `pass.json` because `buildPassJson` names the three keys Apple accepts.
+>
+> This is the one place in the codebase that sends merchant text to a third party, and
+> it is a deliberate reversal of the previous "parse pasted coordinates in the page,
+> ask nobody" rule. The scope is narrow: it happens only while a merchant is *editing*
+> a card, never at enrol, tap, or pass runtime, so §9.4's actual promise — geofences
+> live inside the pass, cost nothing, and keep working with this backend down — is
+> untouched.
+>
+> `apps/demo/placeSearch.ts` holds the Google calls; `POST /api/places/{search,details,
+> reverse}` proxy them so the key stays server-side (IP-restrictable, unlike a referrer)
+> and `placeSearchLimiterByMerchant` can meter what is the only per-call *cost* on this
+> server. `GOOGLE_MAPS_API_KEY` is optional: unset — a fresh checkout, a self-host, or a
+> Google outage — the search box hides and the older paste-a-map-link box takes its
+> place, so no merchant is ever stranded mid-edit.
+
 ### 8.14 Reports
 Range chips 30/60/90 · **Export report**.
 Four KPI tiles: Customers · Stamps today · Rewards this week · Revenue today.

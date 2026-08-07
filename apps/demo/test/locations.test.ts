@@ -12,6 +12,7 @@ import {
   validateCardLocations,
   defaultRelevantText,
   MAX_CARD_LOCATIONS,
+  MAX_LOCATION_ADDRESS_LENGTH,
   type RawLocationRow,
 } from '../locations.ts';
 
@@ -80,8 +81,8 @@ test('parseCardLocations drops a blank relevantText but keeps a real one, trimme
 // translated, per-row error message).
 // ---------------------------------------------------------------------------
 
-function row(name: string, lat: string, lng: string, relevantText = ''): RawLocationRow {
-  return { name, latitude: lat, longitude: lng, relevantText };
+function row(name: string, lat: string, lng: string, relevantText = '', address = ''): RawLocationRow {
+  return { name, latitude: lat, longitude: lng, relevantText, address };
 }
 
 test('validateCardLocations accepts an empty list', () => {
@@ -154,6 +155,64 @@ test('validateCardLocations keeps a real relevantText, trimmed', () => {
   assert.equal(result.ok, true);
   if (!result.ok) return;
   assert.equal(result.locations[0]?.relevantText, 'Come visit!');
+});
+
+// ---------------------------------------------------------------------------
+// address — the display line the designer shows in place of the latitude and
+// longitude fields it no longer has. Stored, never emitted into the pass.
+// ---------------------------------------------------------------------------
+
+test('parseCardLocations reads a stored address, and treats a blank one as absent', () => {
+  const raw = [
+    { name: 'Downtown', latitude: 24.7136, longitude: 46.6753, address: 'King Fahd Rd, Riyadh' },
+    { name: 'Legacy', latitude: 21.5433, longitude: 39.1728 },
+    { name: 'Blank', latitude: 26.4207, longitude: 50.0888, address: '   ' },
+  ];
+  const out = parseCardLocations(raw);
+  assert.equal(out[0]?.address, 'King Fahd Rd, Riyadh');
+  // Every location saved before search existed has none. That is a rendering
+  // fallback, not a broken row, so it must survive parsing.
+  assert.equal(out[1]?.address, undefined);
+  assert.equal(out.length, 3, 'a location with no address is still a location');
+  assert.equal(out[2]?.address, undefined);
+});
+
+test('parseCardLocations caps a stored address, in case one was written by hand', () => {
+  const out = parseCardLocations([
+    { name: 'X', latitude: 1, longitude: 1, address: 'y'.repeat(MAX_LOCATION_ADDRESS_LENGTH + 40) },
+  ]);
+  assert.equal(out[0]?.address?.length, MAX_LOCATION_ADDRESS_LENGTH);
+});
+
+test('validateCardLocations keeps a submitted address, trimmed and capped, and omits an empty one', () => {
+  const kept = validateCardLocations([row('A', '24.7', '46.6', '', '  King Fahd Rd, Riyadh  ')]);
+  assert.equal(kept.ok, true);
+  if (!kept.ok) return;
+  assert.equal(kept.locations[0]?.address, 'King Fahd Rd, Riyadh');
+
+  const blank = validateCardLocations([row('A', '24.7', '46.6', '', '   ')]);
+  assert.equal(blank.ok, true);
+  if (!blank.ok) return;
+  assert.equal(blank.locations[0]?.address, undefined);
+
+  // The address arrives in a hidden input, so it is still browser input and
+  // still capped — a forged POST must not grow Card.locations without bound.
+  const long = validateCardLocations([row('A', '24.7', '46.6', '', 'z'.repeat(500))]);
+  assert.equal(long.ok, true);
+  if (!long.ok) return;
+  assert.equal(long.locations[0]?.address?.length, MAX_LOCATION_ADDRESS_LENGTH);
+});
+
+test('a row with no coordinates at all is rejected — that is what an unchosen place now looks like', () => {
+  // The merchant has no latitude field to leave blank any more; this is the
+  // shape a row takes when they never picked a place, or pressed "Change"
+  // and then saved. server.ts renders both coordinate reasons as one
+  // "choose a place from search" message.
+  const result = validateCardLocations([row('Named but unplaced', '', '')]);
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.reason, 'invalid_latitude');
+  assert.equal(result.index, 0);
 });
 
 // ---------------------------------------------------------------------------

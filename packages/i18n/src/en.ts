@@ -162,18 +162,29 @@ export const en = {
   designerLocationsNameLabel: 'Location name',
   designerLocationsNamePlaceholder: 'e.g. Downtown branch',
   designerLocationsUseCurrentButton: 'Use my current location',
-  designerLocationsLatLabel: 'Latitude',
-  designerLocationsLngLabel: 'Longitude',
+  designerLocationsSearchLabel: 'Find your business',
+  designerLocationsSearchPlaceholder: 'Search by business name or address',
+  designerLocationsSearchBusy: 'Searching…',
+  designerLocationsSearchNoResults: 'Nothing found. Try adding the city, or use your current location.',
+  designerLocationsSearchFailed: 'Search is unavailable right now.',
+  designerLocationsOr: 'or',
+  designerLocationsChangeButton: 'Change',
   designerLocationsRelevantTextLabel: 'Message on the lock screen (optional)',
   designerLocationsRelevantTextPlaceholder: "e.g. You're near us — come say hi!",
   designerLocationsMaxReached: "You've reached Apple's limit of {max} locations per card.",
-  designerLocationsGeoUnsupported: 'This browser cannot share your location. Enter it manually below.',
+  designerLocationsGeoUnsupported: 'This browser cannot share your location. Search for your business instead.',
   designerLocationsGeoRequesting: 'Requesting your location…',
-  designerLocationsGeoDenied: "Couldn't get your location. Enter it manually below.",
-  designerLocationsGeoSuccess: 'Location filled in below.',
+  designerLocationsGeoLookingUp: 'Finding your address…',
+  designerLocationsGeoDenied: "Couldn't get your location. Search for your business instead.",
+  /* Shown as the address line when the GPS fix arrived but reverse geocoding
+     could not name it. Never a coordinate pair: the point of this screen is
+     that a merchant never has to read one. */
+  designerLocationsGeoSuccess: 'Set from your device',
   designerLocationsNameRequired: 'Location {n} needs a name.',
-  designerLocationsLatInvalid: 'Location {n}: latitude must be a number between -90 and 90.',
-  designerLocationsLngInvalid: 'Location {n}: longitude must be a number between -180 and 180.',
+  /* One message for a missing latitude *or* longitude. The merchant has no
+     coordinate fields to correct any more, so naming which half is wrong
+     would describe a control that is not on their screen. */
+  designerLocationsPlaceRequired: 'Location {n}: choose a place from search, or use your current location.',
 
   // Sign in / sign up / sign out — self-contained session auth (BUILD.md
   // §8.1/§8.2; see BUILD.md §2's 2026-08-04 note on why this ships instead
@@ -296,15 +307,18 @@ export const en = {
   authTagline: 'Loyalty cards that live in your customers’ wallets.',
   // Geolocation, one message per cause — "couldn't get your location" is true
   // of all three and useful for none of them.
-  designerLocationsGeoBlocked: 'Your browser blocked the location request. Allow location for this site, or paste a map link below.',
-  designerLocationsGeoInApp: 'Location does not work inside this in-app browser. Open the site in Safari or Chrome, or paste a map link below.',
-  designerLocationsGeoUnavailable: 'Your device could not get a fix. Try again near a window, or paste a map link below.',
-  designerLocationsGeoTimeout: 'That took too long. Try again, or paste a map link below.',
+  designerLocationsGeoBlocked: 'Your browser blocked the location request. Allow location for this site, or search for your business above.',
+  designerLocationsGeoInApp: 'Location does not work inside this in-app browser. Open the site in Safari or Chrome, or search for your business above.',
+  designerLocationsGeoUnavailable: 'Your device could not get a fix. Try again near a window, or search for your business above.',
+  designerLocationsGeoTimeout: 'That took too long. Try again, or search for your business above.',
+  /* The paste-a-map-link fallback. Hidden whenever search is working; it
+     appears only when GOOGLE_MAPS_API_KEY is unset or Google is unreachable,
+     so a merchant is never stranded mid-edit by someone else's outage. */
   designerLocationsPasteLabel: 'Or paste a Google Maps link or coordinates',
   designerLocationsPastePlaceholder: 'https://maps.google.com/… or 24.7136, 46.6753',
   designerLocationsPasteButton: 'Use this',
   designerLocationsPasteInvalid: 'No coordinates found in that. Paste a Google Maps link, or two numbers separated by a comma.',
-  designerLocationsPasteOk: 'Coordinates filled in below.',
+  designerLocationsPasteOk: 'Location set from that link',
   copyDone: 'Copied',
   copyFailed: 'Press and hold to copy',
   copyAria: 'Copy to clipboard',
