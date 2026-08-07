@@ -314,6 +314,11 @@ export const ar: Record<keyof typeof en, string> = {
   iconLabelTooth: 'سنّ',
   iconLabelBottle: 'عبوة',
   iconLabelKettlebell: 'كرة حديدية',
+  iconLabelGlove: 'قفاز ملاكمة',
+  iconLabelGi: 'بدلة فنون قتالية',
+  iconLabelBaby: 'طفل',
+  iconLabelMusicNote: 'نوتة موسيقية',
+  iconLabelTyre: 'إطار',
   navPrimary: 'التنقل الرئيسي',
   navMore: 'المزيد',
   /** See en.ts — this always reads in the language being switched to, so it stays Latin here. */

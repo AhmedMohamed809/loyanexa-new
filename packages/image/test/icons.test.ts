@@ -5,17 +5,17 @@ import { drawBuiltinIcon, renderIconSwatch, BUILTIN_ICON_IDS, isBuiltinIconId } 
 import { renderStrip, type StripSpec } from '../src/strip.ts';
 import { decodePNG } from '../src/png/decode.ts';
 
-test('BUILTIN_ICON_IDS lists exactly the twenty documented icons', () => {
-  // Ten general marks plus ten trade marks. The trade marks were added on
+test('BUILTIN_ICON_IDS lists exactly the twenty-five documented icons', () => {
+  // Ten general marks plus fifteen trade marks. The trade marks were added on
   // 6 August 2026: the original ten cover a cafe and a gym and then run out,
-  // and a butcher stamping a star reads as a card assembled from whatever
-  // was to hand.
+  // and a butcher stamping a star reads as a card assembled from whatever was
+  // to hand.
   assert.deepEqual(
     [...BUILTIN_ICON_IDS].sort(),
     [
-      'basket', 'bottle', 'car', 'check', 'cleaver', 'coffee', 'croissant', 'cutlery',
-      'dumbbell', 'fish', 'flower', 'gift', 'hanger', 'heart', 'kettlebell', 'paw',
-      'scissors', 'shoe', 'star', 'tooth',
+      'baby', 'basket', 'bottle', 'car', 'check', 'cleaver', 'coffee', 'croissant',
+      'cutlery', 'dumbbell', 'fish', 'flower', 'gi', 'gift', 'glove', 'hanger', 'heart',
+      'kettlebell', 'musicNote', 'paw', 'scissors', 'shoe', 'star', 'tooth', 'tyre',
     ]
   );
 });

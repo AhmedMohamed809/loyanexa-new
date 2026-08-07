@@ -329,6 +329,11 @@ export const en = {
   iconLabelTooth: 'Tooth',
   iconLabelBottle: 'Bottle',
   iconLabelKettlebell: 'Kettlebell',
+  iconLabelGlove: 'Boxing glove',
+  iconLabelGi: 'Martial arts suit',
+  iconLabelBaby: 'Baby',
+  iconLabelMusicNote: 'Music note',
+  iconLabelTyre: 'Tyre',
   navPrimary: 'Main navigation',
   /** The fifth tab, holding what does not fit in a five-tab bar (Reports, Settings, language, sign out). */
   navMore: 'More',
