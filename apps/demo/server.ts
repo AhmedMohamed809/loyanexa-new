@@ -68,7 +68,7 @@ import { pushCardDevices } from './cardPush.ts';
 import { pkpassCacheKey } from './pkpassCache.ts';
 import { createAppleCredentialsResolver } from './appleCredentials.ts';
 import { csvRow } from './csv.ts';
-import { createPassForEnrolment, deleteOrphanedPass, parseBirthday, hasCustomerCapacity } from './enrol.ts';
+import { createPassForEnrolment, deleteOrphanedPass, parseBirthday } from './enrol.ts';
 import { RateLimiter, resolveClientIp } from './rateLimit.ts';
 import {
   enqueueBroadcast,
@@ -5962,43 +5962,6 @@ function sendRateLimited(res: http.ServerResponse, lang: Lang): void {
   sendHtml(res, 429, layout('Too many requests', `<div class="panel"><h1>429</h1><p>${escapeHtml(t(lang, 'rateLimited'))}</p></div>`, undefined, lang));
 }
 
-/**
- * True when the merchant's plan still has room for this enrolment; sends the
- * customer-facing refusal and returns false when it does not.
- *
- * Shared by both wallet routes so Apple and Google cannot enforce different
- * caps — the same customer tapping the other button must not get a different
- * answer. 503 rather than 402/403: nothing is wrong with the customer's
- * request, and the condition is temporary from their point of view.
- */
-async function enrolmentHasCapacity(
-  res: http.ServerResponse,
-  card: Card,
-  custPhone: string
-): Promise<boolean> {
-  const merchant = await prisma.merchant.findUnique({ where: { id: card.merchantId } });
-  // A missing merchant row cannot be the customer's problem. Failing open
-  // here issues one extra pass in a situation that should not arise; failing
-  // closed would refuse a paying merchant's customers over a lookup miss.
-  if (!merchant) return true;
-  const plan = effectivePlan(merchant);
-  if (await hasCustomerCapacity(card, custPhone, plan.customers)) return true;
-
-  const lang: Lang = card.lang === 'en' ? 'en' : 'ar';
-  sendHtml(
-    res,
-    503,
-    layout(
-      t(lang, 'enrolCardFullTitle'),
-      `<div class="panel"><h1>${escapeHtml(t(lang, 'enrolCardFullTitle'))}</h1>` +
-        `<p>${escapeHtml(t(lang, 'enrolCardFullBody'))}</p></div>`,
-      undefined,
-      lang
-    )
-  );
-  return false;
-}
-
 // ---------------------------------------------------------------------------
 // Route: POST /:code/pass — issue a real, signed .pkpass for this card and
 // hand it back with the exact MIME type iOS uses to decide whether to offer
@@ -6031,7 +5994,6 @@ async function handleIssuePass(req: http.IncomingMessage, res: http.ServerRespon
   }
 
   const { custName, custPhone, idempotencyKey, birthday } = await readEnrolFields(req);
-  if (!(await enrolmentHasCapacity(res, card, custPhone))) return;
   const credentials = resolveAppleCredentials();
 
   const stripSet = await renderAllDensities(PASS_STRIP_STORE, await stripSpecForCard(card, card.starterStamps));
@@ -6157,7 +6119,6 @@ async function handleIssueGooglePass(
   }
 
   const { custName, custPhone, idempotencyKey, birthday } = await readEnrolFields(req);
-  if (!(await enrolmentHasCapacity(res, card, custPhone))) return;
   const { pass, created } = await createPassForEnrolment(card, custName, custPhone, idempotencyKey, birthday);
 
   // Same reasoning as POST /:code/pass just above: a freshly-inserted row

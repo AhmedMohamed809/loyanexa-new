@@ -260,10 +260,20 @@ async function fetchJson(url: string, init: RequestInit): Promise<unknown | null
 /**
  * Suggests places for a merchant's partial input.
  *
- * `regionCode` biases results toward the merchant's own country rather than
- * restricting them to it: a Saudi merchant typing "Al Rajhi" should see
- * Riyadh branches first without a merchant in Dubai being unable to find
- * their own shop.
+ * `regionCode`, when set, becomes `includedRegionCodes` — which *restricts*
+ * results to that country rather than merely preferring it. That is a
+ * stronger setting than it first looks, and it is deliberate: measured
+ * against the live API, Google's own `regionCode` field barely moves the
+ * ranking. Searching "Kudu" — a Saudi fast-food chain with branches on most
+ * high streets — returned Kudus, Indonesia as the top three hits with
+ * `regionCode: "SA"` set, and the actual Riyadh and Jeddah branches only
+ * once the region was an inclusion filter.
+ *
+ * A merchant who cannot find their own shop has no use for the fact that
+ * the search was technically worldwide, so this trades reach for results
+ * that exist. It stays opt-in: with `PLACES_REGION_CODE` unset the search is
+ * global, which is the right default for a self-host that does not know
+ * where its merchants are.
  */
 export async function searchPlaces(
   query: string,
@@ -281,7 +291,7 @@ export async function searchPlaces(
     body: JSON.stringify({
       input: query,
       languageCode: languageCode(opts.lang),
-      ...(opts.regionCode ? { regionCode: opts.regionCode } : {}),
+      ...(opts.regionCode ? { includedRegionCodes: [opts.regionCode] } : {}),
       ...(opts.sessionToken ? { sessionToken: opts.sessionToken } : {}),
     }),
   });
