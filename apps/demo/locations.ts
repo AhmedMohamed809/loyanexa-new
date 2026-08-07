@@ -23,12 +23,27 @@ export const DEFAULT_MAX_DISTANCE_METERS = 100;
 export const MAX_LOCATION_NAME_LENGTH = 80;
 export const MAX_RELEVANT_TEXT_LENGTH = 160;
 
+/** Longest stored `address`. Mirrors placeSearch.ts's MAX_PLACE_ADDRESS_LENGTH — the same cap, enforced again on the write path, since a hand-forged POST never went through placeSearch.ts at all. */
+export const MAX_LOCATION_ADDRESS_LENGTH = 200;
+
 /** One saved location reminder, as stored inside Card.locations (a JSON array) and as emitted into pass.json's own `locations[]` (BUILD.md §9.1). `relevantText` is the merchant's own override; when absent, the pass builder fills in a localised default (see `defaultRelevantText` below) — the column itself never stores the computed default, only an explicit override, so a later change to the default phrasing or the card's own name/language is picked up automatically by every card that never set one. */
 export interface CardLocation {
   name: string;
   latitude: number;
   longitude: number;
   relevantText?: string;
+  /**
+   * The human-readable address the merchant picked in the designer — "King
+   * Fahd Rd, Al Olaya, Riyadh". Display only, and deliberately not part of
+   * the pass: packages/pass/src/buildPass.ts names the three keys Apple
+   * accepts and this is not one of them, so it can never leak into
+   * pass.json. It is stored because the designer no longer shows latitude
+   * and longitude — without it, reopening a card would confirm the geofence
+   * with a pair of numbers the merchant cannot check, or cost a geocoding
+   * call on every page load. Optional: every location saved before search
+   * existed has none, and none is a rendering fallback, not an error.
+   */
+  address?: string;
 }
 
 /**
@@ -52,17 +67,25 @@ export function parseCardLocations(raw: unknown): CardLocation[] {
     if (!name || !Number.isFinite(latitude) || !Number.isFinite(longitude)) continue;
     if (latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) continue;
     const relevantTextRaw = typeof obj.relevantText === 'string' ? obj.relevantText.trim() : '';
-    out.push({ name, latitude, longitude, ...(relevantTextRaw ? { relevantText: relevantTextRaw } : {}) });
+    const addressRaw = typeof obj.address === 'string' ? obj.address.trim() : '';
+    out.push({
+      name,
+      latitude,
+      longitude,
+      ...(relevantTextRaw ? { relevantText: relevantTextRaw } : {}),
+      ...(addressRaw ? { address: addressRaw.slice(0, MAX_LOCATION_ADDRESS_LENGTH) } : {}),
+    });
   }
   return out.slice(0, MAX_CARD_LOCATIONS);
 }
 
-/** One row of raw, as-submitted form input — every field still a string (or absent), before validation. */
+/** One row of raw, as-submitted form input — every field still a string (or absent), before validation. `latitude`/`longitude`/`address` reach the server from hidden inputs the merchant never types into (the search dropdown and the geolocation button fill them), which changes who writes them but not how far they are trusted: they are still browser input and still fully validated below. */
 export interface RawLocationRow {
   name: string;
   latitude: string;
   longitude: string;
   relevantText: string;
+  address: string;
 }
 
 export type LocationValidationResult =
@@ -83,6 +106,15 @@ export type LocationValidationResult =
  * the first problem found — the caller re-renders the form with that one
  * error and the merchant's own submitted values, same pattern as
  * cardEdit.ts's updateCard.
+ *
+ * The coordinate checks read the same as they always did, but they now guard
+ * hidden fields rather than ones the merchant types into, so what they
+ * actually catch has changed: not a typo in a latitude, but a row where no
+ * place was ever chosen (both fields blank) or where a forged POST supplied
+ * nonsense. The `reason` names stay `invalid_latitude`/`invalid_longitude`
+ * because that is still precisely what is wrong; server.ts renders both as
+ * "choose a place from search", which is the only advice that helps when
+ * there is no coordinate field on screen to correct.
  */
 export function validateCardLocations(rows: RawLocationRow[]): LocationValidationResult {
   if (rows.length > MAX_CARD_LOCATIONS) {
@@ -103,7 +135,14 @@ export function validateCardLocations(rows: RawLocationRow[]): LocationValidatio
       return { ok: false, reason: 'invalid_longitude', index: i };
     }
     const relevantText = row.relevantText.trim().slice(0, MAX_RELEVANT_TEXT_LENGTH);
-    out.push({ name, latitude, longitude, ...(relevantText ? { relevantText } : {}) });
+    const address = row.address.trim().slice(0, MAX_LOCATION_ADDRESS_LENGTH);
+    out.push({
+      name,
+      latitude,
+      longitude,
+      ...(relevantText ? { relevantText } : {}),
+      ...(address ? { address } : {}),
+    });
   }
   return { ok: true, locations: out };
 }

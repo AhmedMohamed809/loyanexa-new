@@ -1,6 +1,12 @@
-// apps/demo/test/locationsUi.test.ts — the locations editor's client-side
-// helpers, tested by extracting them from the page the server actually
-// renders and running them.
+// apps/demo/test/locationsUi.test.ts — the locations editor as it actually
+// ships: the client-side helpers, extracted from the rendered page and run,
+// and the /api/places/* routes that back the business search box.
+//
+// The route tests deliberately run with no GOOGLE_MAPS_API_KEY, which is the
+// configuration a fresh checkout has. They cover the guards — who may call,
+// what a malformed body does, how a missing key is reported — none of which
+// need a Google account. apps/demo/test/placeSearch.test.ts covers the
+// parsing of real upstream payloads.
 //
 // These live inside a template literal as browser JavaScript, so they cannot
 // be imported. Pulling the function out of the rendered HTML and evaluating
@@ -71,6 +77,17 @@ before(async () => {
       shortCode: `C${randomHex(4)}`.toUpperCase(), name: 'Loc UI Card', stampsGoal: 8,
       bgColor: '#203757', fgColor: '#FFFFFF', stampActive: '#F96400',
       stampInactive: '#8794A5', rewardText: 'Free coffee',
+      // One saved location, so the page renders a real row rather than only
+      // the client-side template — the hidden coordinate inputs below exist
+      // only on rendered rows.
+      locations: [
+        {
+          name: 'Downtown',
+          latitude: 24.7136,
+          longitude: 46.6753,
+          address: 'King Fahd Rd, Al Olaya, Riyadh',
+        },
+      ],
     },
   });
   cardId = card.id;
@@ -133,16 +150,129 @@ test('the parser rejects rather than guesses', async () => {
   assert.equal(parseCoords('20.0, 181.0'), null);
 });
 
-test('an address is never sent anywhere — the parser is the whole mechanism', async () => {
-  // BUILD.md §9.4 avoids geocoding precisely so no third party learns a
-  // merchant's shop address. If a geocoding call ever appears, this fails.
+test('the browser never talks to Google directly, and the API key never reaches the page', async () => {
+  // Business search replaced the "no geocoding at all" rule with a narrower
+  // one: search text leaves the browser, but only ever to *us*. Everything
+  // upstream happens server-side (apps/demo/placeSearch.ts), which is what
+  // lets the key be IP-restricted rather than referrer-restricted — a
+  // restriction anyone can forge.
   const html = await (await fetch(`${baseUrl}/cards/${cardId}/edit`, { headers: { Cookie: cookie } })).text();
-  // Matches a CALL, not the word: the code comments legitimately explain why
-  // geocoding is avoided, and fonts.googleapis.com is unrelated.
+
+  // Matches a CALL, not the word: the code comments legitimately name these
+  // services, and fonts.googleapis.com is unrelated.
   assert.ok(
-    !/https?:\/\/[^"']*(nominatim|geocode|mapbox|maps\.googleapis)/i.test(html),
-    'no geocoding service may be called'
+    !/(fetch|XMLHttpRequest|src\s*=)[^\n]{0,120}https?:\/\/[^"'\s]*(places\.googleapis|maps\.googleapis|nominatim|mapbox)/i.test(html),
+    'the page must reach Google only through our own /api/places/* proxy'
   );
+  assert.match(html, /'\/api\/places\/search'/, 'search goes through the proxy');
+  assert.match(html, /'\/api\/places\/details'/, 'details goes through the proxy');
+
+  // The key is server-only. If it ever renders into the page, an IP
+  // restriction protects nothing and the free tier belongs to whoever reads
+  // the HTML.
+  const key = (process.env.GOOGLE_MAPS_API_KEY ?? '').trim();
+  if (key) assert.ok(!html.includes(key), 'GOOGLE_MAPS_API_KEY must never be rendered');
+  assert.ok(!/X-Goog-Api-Key/i.test(html), 'the upstream key header belongs on the server');
+});
+
+test('the designer submits coordinates without ever showing them', async () => {
+  // The whole point of the change: a merchant picks a business by name and
+  // never sees a latitude. The coordinates still ship inside the pass, so
+  // they must still be submitted — as hidden inputs the search fills in.
+  const html = await (await fetch(`${baseUrl}/cards/${cardId}/edit`, { headers: { Cookie: cookie } })).text();
+
+  assert.match(html, /<input type="hidden" name="locations\[0\]\[lat\]"/, 'latitude is submitted, not typed');
+  assert.match(html, /<input type="hidden" name="locations\[0\]\[lng\]"/, 'longitude is submitted, not typed');
+  assert.match(html, /<input type="hidden" name="locations\[0\]\[address\]"/, 'the chosen address round-trips');
+
+  // No visible coordinate control of any kind may survive.
+  assert.ok(!/inputmode="decimal"[^>]*data-(lat|lng)/.test(html), 'no typed coordinate field may remain');
+  assert.ok(!/>\s*Latitude\s*</.test(html), 'the Latitude label is gone');
+  assert.ok(!/>\s*Longitude\s*</.test(html), 'the Longitude label is gone');
+});
+
+test('search and "use my current location" are both offered, and neither is the only way through', async () => {
+  const html = await (await fetch(`${baseUrl}/cards/${cardId}/edit`, { headers: { Cookie: cookie } })).text();
+
+  assert.match(html, /data-place-search/, 'the business search box is rendered');
+  assert.match(html, /data-use-current-location/, 'GPS remains an option, not a replacement');
+  // The paste box still ships, hidden, as the fallback for a missing key or
+  // an unreachable Google — a merchant must never be stranded mid-edit by
+  // someone else's outage.
+  assert.match(html, /data-paste-fallback/, 'the paste fallback still exists');
+  assert.match(html, /function parseCoords\(/, 'and its parser is still wired up');
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/places/* — the proxy in front of Google. These are the only
+// routes on this server that cost money per call, so the guards matter more
+// than usual.
+// ---------------------------------------------------------------------------
+
+/** The `error` slug from a places route's JSON body. */
+async function errorOf(res: Response): Promise<string | undefined> {
+  return ((await res.json()) as { error?: string }).error;
+}
+
+function postPlaces(path: string, body: unknown, withSession = true): Promise<Response> {
+  return fetch(`${baseUrl}${path}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(withSession ? { Cookie: cookie } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+test('the places routes refuse an anonymous caller with a JSON 401, not a redirect to /signin', async () => {
+  // A 302 would hand a fetch() the sign-in page's HTML with a 200 on it,
+  // which a JSON client reads as success — and would make our Places quota
+  // free for anyone who found the URL.
+  for (const path of ['/api/places/search', '/api/places/details', '/api/places/reverse']) {
+    const res = await postPlaces(path, { query: 'coffee' }, false);
+    assert.equal(res.status, 401, `${path} must require a merchant session`);
+    assert.equal(await errorOf(res), 'unauthenticated');
+  }
+});
+
+test('a query too short to be worth paying for answers empty, not an error', async () => {
+  // The merchant is still typing. A 400 here would be a red error message
+  // flashing on every first keystroke.
+  const res = await postPlaces('/api/places/search', { query: 'a' });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), { suggestions: [] });
+});
+
+test('a malformed place id is rejected before it can reach a URL', async () => {
+  for (const placeId of ['../../secrets', 'has space', '', null]) {
+    const res = await postPlaces('/api/places/details', { placeId });
+    assert.equal(res.status, 400, `place id ${JSON.stringify(placeId)} must be refused`);
+    assert.equal(await errorOf(res), 'invalid_place_id');
+  }
+});
+
+test('reverse geocoding refuses coordinates that are not coordinates', async () => {
+  for (const body of [
+    { latitude: 91, longitude: 0 },
+    { latitude: 0, longitude: 181 },
+    { latitude: '24.7', longitude: '46.6' },
+    {},
+  ]) {
+    const res = await postPlaces('/api/places/reverse', body);
+    assert.equal(res.status, 400, `${JSON.stringify(body)} must be refused`);
+    assert.equal(await errorOf(res), 'invalid_coordinates');
+  }
+});
+
+test('with no API key configured, a real search reports 503 rather than pretending', async () => {
+  // 503, not 500: nothing here is broken, the upstream is simply not
+  // configured. The designer reads any failure as "reveal the paste box",
+  // which is exactly the right response to this one.
+  if ((process.env.GOOGLE_MAPS_API_KEY ?? '').trim()) return; // a key is configured; nothing to assert
+  const res = await postPlaces('/api/places/search', { query: 'Loyanexa Cafe' });
+  assert.equal(res.status, 503);
+  assert.equal(await errorOf(res), 'disabled');
 });
 
 test('geolocation failures are told apart, and an in-app browser is named', async () => {

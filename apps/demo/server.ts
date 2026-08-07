@@ -68,7 +68,7 @@ import { pushCardDevices } from './cardPush.ts';
 import { pkpassCacheKey } from './pkpassCache.ts';
 import { createAppleCredentialsResolver } from './appleCredentials.ts';
 import { csvRow } from './csv.ts';
-import { createPassForEnrolment, deleteOrphanedPass, parseBirthday } from './enrol.ts';
+import { createPassForEnrolment, deleteOrphanedPass, parseBirthday, hasCustomerCapacity } from './enrol.ts';
 import { RateLimiter, resolveClientIp } from './rateLimit.ts';
 import {
   enqueueBroadcast,
@@ -119,6 +119,16 @@ import {
   MAX_CARD_LOCATIONS,
   type RawLocationRow,
 } from './locations.ts';
+import {
+  isPlaceSearchEnabled,
+  searchPlaces,
+  placeDetails,
+  reverseGeocode,
+  normaliseQuery,
+  normaliseSessionToken,
+  isValidPlaceId,
+  MIN_PLACE_QUERY_LENGTH,
+} from './placeSearch.ts';
 import {
   normalizeUpload,
   storeCardImage,
@@ -777,6 +787,19 @@ async function requireMerchant(req: http.IncomingMessage, res: http.ServerRespon
   const next = encodeURIComponent(req.url ?? '/app');
   res.writeHead(302, { Location: `/signin?next=${next}` });
   res.end();
+  return undefined;
+}
+
+/**
+ * The same guard for a `fetch` rather than a navigation: a 401 with a JSON
+ * body instead of a 302 to /signin. Redirecting an XHR just hands the caller
+ * the sign-in page's HTML with a 200 on it, which a JSON client reads as
+ * success and a merchant sees as a search that mysteriously returns nothing.
+ */
+async function requireMerchantJson(req: http.IncomingMessage, res: http.ServerResponse): Promise<Merchant | undefined> {
+  const merchant = await getMerchantForSession(sessionIdFromRequest(req));
+  if (merchant) return merchant;
+  sendJson(res, 401, { error: 'unauthenticated' });
   return undefined;
 }
 
@@ -2870,40 +2893,190 @@ function designerPreviewQs(values: EditCardFormValues, filled: number): URLSearc
   return qs;
 }
 
+// ---------------------------------------------------------------------------
+// Business search for the locations editor — a thin, authenticated proxy in
+// front of Google Places (apps/demo/placeSearch.ts holds the upstream
+// details). Three routes, all merchant-only, all rate-limited.
+//
+// These are the only routes on this server that spend money per call, so
+// they are also the only ones where the rate limit is about the bill rather
+// than about CPU. A stuck keystroke handler or a bored script with a valid
+// session should cost a few cents and then start getting 429s, not run all
+// night.
+// ---------------------------------------------------------------------------
+
+/**
+ * Keyed by merchant, not IP: the cost lands on our Google account no matter
+ * which coffee shop's wifi it came from, and a merchant switching between
+ * phone and laptop mid-edit is one budget, not two.
+ *
+ * 120 per minute sounds generous and is: at the client's 300ms debounce a
+ * human types perhaps 20 searches a minute, and each location needs one
+ * details call on top. This is set where a real merchant configuring all ten
+ * of their branches in one sitting never sees it, and a runaway loop hits it
+ * within seconds.
+ */
+const placeSearchLimiterByMerchant = new RateLimiter({ limit: 120, windowMs: 60 * 1000 });
+
+/** Suggestions for a partially-typed business name. */
+async function handlePlaceSearch(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  merchant: Merchant
+): Promise<void> {
+  const body = (await readJsonBody(req, 4 * 1024)) as Record<string, unknown>;
+  const query = normaliseQuery(body.query);
+  if (!query) {
+    // Too short to be worth an upstream request. Not an error — the merchant
+    // is still typing — so answer with an empty list rather than a 400 the
+    // client would have to special-case.
+    sendJson(res, 200, { suggestions: [] });
+    return;
+  }
+  const result = await searchPlaces(query, {
+    lang: resolveLang(req),
+    sessionToken: normaliseSessionToken(body.sessionToken),
+    regionCode: (process.env.PLACES_REGION_CODE ?? '').trim() || undefined,
+  });
+  if (!result.ok) {
+    // 503, not 500: nothing is broken here, the upstream is unavailable or
+    // unconfigured. The designer reads any failure as "reveal the paste box".
+    log.warn('place_search_failed', { merchantId: merchant.id, reason: result.reason });
+    sendJson(res, 503, { error: result.reason });
+    return;
+  }
+  sendJson(res, 200, { suggestions: result.value });
+}
+
+/** Resolves one chosen suggestion into the coordinates the pass needs. */
+async function handlePlaceDetails(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  merchant: Merchant
+): Promise<void> {
+  const body = (await readJsonBody(req, 4 * 1024)) as Record<string, unknown>;
+  if (!isValidPlaceId(body.placeId)) {
+    sendJson(res, 400, { error: 'invalid_place_id' });
+    return;
+  }
+  const result = await placeDetails(body.placeId, {
+    lang: resolveLang(req),
+    sessionToken: normaliseSessionToken(body.sessionToken),
+  });
+  if (!result.ok) {
+    log.warn('place_details_failed', { merchantId: merchant.id, reason: result.reason });
+    sendJson(res, result.reason === 'not_found' ? 404 : 503, { error: result.reason });
+    return;
+  }
+  sendJson(res, 200, result.value);
+}
+
+/** Names the address a GPS fix landed on, so "Use my current location" can show its work. */
+async function handlePlaceReverse(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  merchant: Merchant
+): Promise<void> {
+  const body = (await readJsonBody(req, 1024)) as Record<string, unknown>;
+  const latitude = typeof body.latitude === 'number' ? body.latitude : Number.NaN;
+  const longitude = typeof body.longitude === 'number' ? body.longitude : Number.NaN;
+  if (
+    !Number.isFinite(latitude) || !Number.isFinite(longitude) ||
+    latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180
+  ) {
+    sendJson(res, 400, { error: 'invalid_coordinates' });
+    return;
+  }
+  const result = await reverseGeocode(latitude, longitude, resolveLang(req));
+  if (!result.ok) {
+    log.warn('place_reverse_failed', { merchantId: merchant.id, reason: result.reason });
+    sendJson(res, result.reason === 'not_found' ? 404 : 503, { error: result.reason });
+    return;
+  }
+  sendJson(res, 200, { address: result.value });
+}
+
 /** A saved CardLocation as the all-strings shape the edit form's inputs need — the inverse of parseLocationsFromFields below. Used both for the initial GET render (from Card.locations) and is mirrored by the raw rows a rejected POST redisplays. */
-function locationToRawRow(loc: { name: string; latitude: number; longitude: number; relevantText?: string }): RawLocationRow {
-  return { name: loc.name, latitude: String(loc.latitude), longitude: String(loc.longitude), relevantText: loc.relevantText ?? '' };
+function locationToRawRow(loc: {
+  name: string;
+  latitude: number;
+  longitude: number;
+  relevantText?: string;
+  address?: string;
+}): RawLocationRow {
+  return {
+    name: loc.name,
+    latitude: String(loc.latitude),
+    longitude: String(loc.longitude),
+    relevantText: loc.relevantText ?? '',
+    address: loc.address ?? '',
+  };
 }
 
 /**
- * Groups `locations[i][name|lat|lng|relevantText]` fields (renderLocationRow's
- * own field-name pattern) back into an ordered list of raw rows. node's
- * built-in `querystring.parse` (readUrlencodedBody's own parser) does not
- * do bracket/array parsing itself — it returns these as literal flat keys —
- * so this does the grouping by hand. Index gaps (a row removed client-side
- * before submit) are fine: rows are sorted by their numeric index and
- * returned in that order, never assumed contiguous.
+ * Groups `locations[i][name|lat|lng|address|relevantText]` fields
+ * (renderLocationRow's own field-name pattern) back into an ordered list of
+ * raw rows. node's built-in `querystring.parse` (readUrlencodedBody's own
+ * parser) does not do bracket/array parsing itself — it returns these as
+ * literal flat keys — so this does the grouping by hand. Index gaps (a row
+ * removed client-side before submit) are fine: rows are sorted by their
+ * numeric index and returned in that order, never assumed contiguous.
  */
 function parseLocationsFromFields(fields: querystring.ParsedUrlQuery): RawLocationRow[] {
-  const byIndex = new Map<number, { name: string; lat: string; lng: string; relevantText: string }>();
+  const byIndex = new Map<
+    number,
+    { name: string; lat: string; lng: string; relevantText: string; address: string }
+  >();
   for (const key of Object.keys(fields)) {
-    const m = key.match(/^locations\[(\d+)\]\[(name|lat|lng|relevantText)\]$/);
+    const m = key.match(/^locations\[(\d+)\]\[(name|lat|lng|relevantText|address)\]$/);
     if (!m) continue;
     const idx = Number.parseInt(m[1]!, 10);
-    const field = m[2] as 'name' | 'lat' | 'lng' | 'relevantText';
+    const field = m[2] as 'name' | 'lat' | 'lng' | 'relevantText' | 'address';
     const raw = fields[key];
     const value = Array.isArray(raw) ? (raw[0] ?? '') : (raw ?? '');
-    const entry = byIndex.get(idx) ?? { name: '', lat: '', lng: '', relevantText: '' };
+    const entry = byIndex.get(idx) ?? { name: '', lat: '', lng: '', relevantText: '', address: '' };
     entry[field] = value;
     byIndex.set(idx, entry);
   }
   return [...byIndex.entries()]
     .sort((a, b) => a[0] - b[0])
-    .map(([, v]) => ({ name: v.name, latitude: v.lat, longitude: v.lng, relevantText: v.relevantText }));
+    .map(([, v]) => ({
+      name: v.name,
+      latitude: v.lat,
+      longitude: v.lng,
+      relevantText: v.relevantText,
+      address: v.address,
+    }));
+}
+
+/**
+ * The line under the green tick once a place is chosen — the *only*
+ * confirmation a merchant now gets that the geofence sits on their doorway,
+ * since latitude and longitude are no longer on screen.
+ *
+ * Falls back to the raw coordinate pair when there is no stored address,
+ * which is exactly the case for every location saved before search existed.
+ * Showing numbers is not the point of this screen, but showing nothing at
+ * all would be worse: a merchant reopening an old card would see a
+ * confirmed geofence with no evidence behind it. The alternative — a
+ * geocoding call on every page load, for every row — would put a bill on
+ * merely *looking* at a card.
+ */
+function chosenLocationText(row: RawLocationRow): string {
+  const address = row.address.trim();
+  if (address) return address;
+  const lat = row.latitude.trim();
+  const lng = row.longitude.trim();
+  return lat && lng ? `${lat}, ${lng}` : '';
 }
 
 /** One `<fieldset>`-style row for a saved (or just-submitted, on a validation error) location — shared by the server-rendered initial rows and the client-side "Add location" template (both must stay in sync: `wireLocationRows` below re-derives the field-name pattern `locations[i][...]` this produces). `index` need not be contiguous — server.ts's own parseLocationsFromFields groups by whatever index each field name carries, gaps and all. */
 function renderLocationRow(index: number, row: RawLocationRow, lang: Lang): string {
+  // Two mutually exclusive states, both rendered and one hidden, so
+  // switching between them client-side is a `hidden` toggle rather than a
+  // re-render that would have to rebuild the hidden inputs.
+  const chosenText = chosenLocationText(row);
+  const searchEnabled = isPlaceSearchEnabled();
   return `<div class="location-row" data-location-row data-index="${index}">
             <div class="row-head">
               <span class="row-title">${escapeHtml(t(lang, 'designerLocationsRowTitle', { n: arabicDigits(index + 1, lang) }))}</span>
@@ -2913,10 +3086,21 @@ function renderLocationRow(index: number, row: RawLocationRow, lang: Lang): stri
               <label>${escapeHtml(t(lang, 'designerLocationsNameLabel'))}</label>
               <input type="text" name="locations[${index}][name]" maxlength="80" value="${escapeHtml(row.name)}" placeholder="${escapeHtml(t(lang, 'designerLocationsNamePlaceholder'))}">
             </div>
-            <div class="geo-row">
-              <button type="button" class="btn secondary small" data-use-current-location>${escapeHtml(t(lang, 'designerLocationsUseCurrentButton'))}</button>
-              <span class="geo-status" data-geo-status></span>
-              <div class="field paste-coords">
+            <div data-place-picker ${chosenText ? 'hidden' : ''}>
+              <div class="field" data-place-search-field ${searchEnabled ? '' : 'hidden'}>
+                <label for="placeSearch${index}">${escapeHtml(t(lang, 'designerLocationsSearchLabel'))}</label>
+                <div class="place-search">
+                  <input type="text" id="placeSearch${index}" data-place-search role="combobox" aria-expanded="false" aria-autocomplete="list" aria-controls="placeResults${index}" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="${escapeHtml(t(lang, 'designerLocationsSearchPlaceholder'))}">
+                  <ul class="place-results" id="placeResults${index}" data-place-results role="listbox" hidden></ul>
+                </div>
+                <p class="place-search-status" data-place-status hidden></p>
+              </div>
+              <div class="geo-row">
+                <span class="or-divider" data-or-divider ${searchEnabled ? '' : 'hidden'}>${escapeHtml(t(lang, 'designerLocationsOr'))}</span>
+                <button type="button" class="btn secondary small" data-use-current-location>${escapeHtml(t(lang, 'designerLocationsUseCurrentButton'))}</button>
+                <span class="geo-status" data-geo-status></span>
+              </div>
+              <div class="field paste-coords" data-paste-fallback ${searchEnabled ? 'hidden' : ''}>
                 <label>${escapeHtml(t(lang, 'designerLocationsPasteLabel'))}</label>
                 <div class="hex-row">
                   <input type="text" data-paste-coords placeholder="${escapeHtml(t(lang, 'designerLocationsPastePlaceholder'))}" dir="ltr" autocapitalize="none" autocorrect="off" spellcheck="false" style="flex:1;">
@@ -2924,16 +3108,16 @@ function renderLocationRow(index: number, row: RawLocationRow, lang: Lang): stri
                 </div>
               </div>
             </div>
-            <div class="location-grid">
-              <div class="field">
-                <label>${escapeHtml(t(lang, 'designerLocationsLatLabel'))}</label>
-                <input type="text" inputmode="decimal" name="locations[${index}][lat]" data-lat value="${escapeHtml(row.latitude)}" placeholder="24.7136">
-              </div>
-              <div class="field">
-                <label>${escapeHtml(t(lang, 'designerLocationsLngLabel'))}</label>
-                <input type="text" inputmode="decimal" name="locations[${index}][lng]" data-lng value="${escapeHtml(row.longitude)}" placeholder="46.6753">
-              </div>
+            <div class="place-chosen" data-place-chosen ${chosenText ? '' : 'hidden'}>
+              <span class="tick" aria-hidden="true">&#10003;</span>
+              <span class="place-chosen-text">
+                <span class="place-chosen-address" data-chosen-address dir="auto">${escapeHtml(chosenText)}</span>
+              </span>
+              <button type="button" class="btn secondary small" data-change-place>${escapeHtml(t(lang, 'designerLocationsChangeButton'))}</button>
             </div>
+            <input type="hidden" name="locations[${index}][lat]" data-lat value="${escapeHtml(row.latitude)}">
+            <input type="hidden" name="locations[${index}][lng]" data-lng value="${escapeHtml(row.longitude)}">
+            <input type="hidden" name="locations[${index}][address]" data-address value="${escapeHtml(row.address)}">
             <div class="field" style="margin-bottom:0;">
               <label>${escapeHtml(t(lang, 'designerLocationsRelevantTextLabel'))}</label>
               <input type="text" name="locations[${index}][relevantText]" maxlength="160" value="${escapeHtml(row.relevantText)}" placeholder="${escapeHtml(t(lang, 'designerLocationsRelevantTextPlaceholder'))}">
@@ -3396,8 +3580,56 @@ ${LANG_TOGGLE_SCRIPT}
         var geoInApp = ${JSON.stringify(t(lang, 'designerLocationsGeoInApp'))};
         var geoUnavailable = ${JSON.stringify(t(lang, 'designerLocationsGeoUnavailable'))};
         var geoTimeout = ${JSON.stringify(t(lang, 'designerLocationsGeoTimeout'))};
+        var geoLookingUp = ${JSON.stringify(t(lang, 'designerLocationsGeoLookingUp'))};
         var pasteInvalid = ${JSON.stringify(t(lang, 'designerLocationsPasteInvalid'))};
         var pasteOk = ${JSON.stringify(t(lang, 'designerLocationsPasteOk'))};
+
+        /* Business search (apps/demo/placeSearch.ts). False when the server
+           has no GOOGLE_MAPS_API_KEY, in which case the search box never
+           renders and the paste-a-map-link box takes its place — a checkout
+           with no Google account still edits locations perfectly well. */
+        var PLACE_SEARCH_ENABLED = ${isPlaceSearchEnabled() ? 'true' : 'false'};
+        var PLACE_MIN_QUERY = ${MIN_PLACE_QUERY_LENGTH};
+        /* Long enough that a normal typist spends one request per word
+           rather than one per letter, short enough that the list feels like
+           it is keeping up. Every keystroke saved here is a request Google
+           does not bill us for. */
+        var PLACE_DEBOUNCE_MS = 300;
+        var searchBusy = ${JSON.stringify(t(lang, 'designerLocationsSearchBusy'))};
+        var searchNoResults = ${JSON.stringify(t(lang, 'designerLocationsSearchNoResults'))};
+        var searchFailed = ${JSON.stringify(t(lang, 'designerLocationsSearchFailed'))};
+
+        /* Groups a row's keystrokes and the single details lookup that ends
+           them into one billed Google session. crypto.randomUUID is absent
+           on http:// origins in some browsers and on a few older ones, so
+           fall back to a random UUID built by hand — the server drops
+           anything that is not UUID-shaped rather than forwarding it, and a
+           dropped token costs a little money, never a broken search. */
+        function newSessionToken() {
+          if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+            try { return window.crypto.randomUUID(); } catch (e) { /* fall through */ }
+          }
+          return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+            var r = (Math.random() * 16) | 0;
+            var v = c === 'x' ? r : ((r & 0x3) | 0x8);
+            return v.toString(16);
+          });
+        }
+
+        /* Posts JSON to one of our own /api/places/* routes. Never to
+           Google directly: the API key lives on the server, where it can be
+           locked to this machine's IP rather than to a referrer header
+           anyone can forge. */
+        function postPlaces(path, payload) {
+          return fetch(path, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          }).then(function (res) {
+            if (!res.ok) throw new Error('places request failed');
+            return res.json();
+          });
+        }
 
         /* An in-app browser — the webview inside Instagram, Facebook,
            Telegram and so on. Several of them deny geolocation outright and
@@ -3495,10 +3727,21 @@ ${LANG_TOGGLE_SCRIPT}
               '<label>${escapeHtml(t(lang, 'designerLocationsNameLabel'))}</label>' +
               '<input type="text" name="locations[' + index + '][name]" maxlength="80" placeholder="${escapeHtml(t(lang, 'designerLocationsNamePlaceholder'))}">' +
             '</div>' +
-            '<div class="geo-row">' +
-              '<button type="button" class="btn secondary small" data-use-current-location>${escapeHtml(t(lang, 'designerLocationsUseCurrentButton'))}</button>' +
-              '<span class="geo-status" data-geo-status></span>' +
-              '<div class="field paste-coords">' +
+            '<div data-place-picker>' +
+              '<div class="field" data-place-search-field' + (PLACE_SEARCH_ENABLED ? '' : ' hidden') + '>' +
+                '<label for="placeSearch' + index + '">${escapeHtml(t(lang, 'designerLocationsSearchLabel'))}</label>' +
+                '<div class="place-search">' +
+                  '<input type="text" id="placeSearch' + index + '" data-place-search role="combobox" aria-expanded="false" aria-autocomplete="list" aria-controls="placeResults' + index + '" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="${escapeHtml(t(lang, 'designerLocationsSearchPlaceholder'))}">' +
+                  '<ul class="place-results" id="placeResults' + index + '" data-place-results role="listbox" hidden></ul>' +
+                '</div>' +
+                '<p class="place-search-status" data-place-status hidden></p>' +
+              '</div>' +
+              '<div class="geo-row">' +
+                '<span class="or-divider" data-or-divider' + (PLACE_SEARCH_ENABLED ? '' : ' hidden') + '>${escapeHtml(t(lang, 'designerLocationsOr'))}</span>' +
+                '<button type="button" class="btn secondary small" data-use-current-location>${escapeHtml(t(lang, 'designerLocationsUseCurrentButton'))}</button>' +
+                '<span class="geo-status" data-geo-status></span>' +
+              '</div>' +
+              '<div class="field paste-coords" data-paste-fallback' + (PLACE_SEARCH_ENABLED ? ' hidden' : '') + '>' +
                 '<label>${escapeHtml(t(lang, 'designerLocationsPasteLabel'))}</label>' +
                 '<div class="hex-row">' +
                   '<input type="text" data-paste-coords placeholder="${escapeHtml(t(lang, 'designerLocationsPastePlaceholder'))}" dir="ltr" autocapitalize="none" autocorrect="off" spellcheck="false" style="flex:1;">' +
@@ -3506,16 +3749,16 @@ ${LANG_TOGGLE_SCRIPT}
                 '</div>' +
               '</div>' +
             '</div>' +
-            '<div class="location-grid">' +
-              '<div class="field">' +
-                '<label>${escapeHtml(t(lang, 'designerLocationsLatLabel'))}</label>' +
-                '<input type="text" inputmode="decimal" name="locations[' + index + '][lat]" data-lat placeholder="24.7136">' +
-              '</div>' +
-              '<div class="field">' +
-                '<label>${escapeHtml(t(lang, 'designerLocationsLngLabel'))}</label>' +
-                '<input type="text" inputmode="decimal" name="locations[' + index + '][lng]" data-lng placeholder="46.6753">' +
-              '</div>' +
+            '<div class="place-chosen" data-place-chosen hidden>' +
+              '<span class="tick" aria-hidden="true">&#10003;</span>' +
+              '<span class="place-chosen-text">' +
+                '<span class="place-chosen-address" data-chosen-address dir="auto"></span>' +
+              '</span>' +
+              '<button type="button" class="btn secondary small" data-change-place>${escapeHtml(t(lang, 'designerLocationsChangeButton'))}</button>' +
             '</div>' +
+            '<input type="hidden" name="locations[' + index + '][lat]" data-lat>' +
+            '<input type="hidden" name="locations[' + index + '][lng]" data-lng>' +
+            '<input type="hidden" name="locations[' + index + '][address]" data-address>' +
             '<div class="field" style="margin-bottom:0;">' +
               '<label>${escapeHtml(t(lang, 'designerLocationsRelevantTextLabel'))}</label>' +
               '<input type="text" name="locations[' + index + '][relevantText]" maxlength="160" placeholder="${escapeHtml(t(lang, 'designerLocationsRelevantTextPlaceholder'))}">' +
@@ -3535,8 +3778,73 @@ ${LANG_TOGGLE_SCRIPT}
           var status = row.querySelector('[data-geo-status]');
           var latInput = row.querySelector('[data-lat]');
           var lngInput = row.querySelector('[data-lng]');
+          var addressInput = row.querySelector('[data-address]');
+          var nameInput = row.querySelector('input[name$="[name]"]');
+          var picker = row.querySelector('[data-place-picker]');
+          var chosen = row.querySelector('[data-place-chosen]');
+          var chosenAddress = row.querySelector('[data-chosen-address]');
+          var changeBtn = row.querySelector('[data-change-place]');
+          var searchField = row.querySelector('[data-place-search-field]');
+          var searchInput = row.querySelector('[data-place-search]');
+          var resultsList = row.querySelector('[data-place-results]');
+          var placeStatus = row.querySelector('[data-place-status]');
+          var orDivider = row.querySelector('[data-or-divider]');
+          var pasteFallback = row.querySelector('[data-paste-fallback]');
           var pasteInput = row.querySelector('[data-paste-coords]');
           var pasteBtn = row.querySelector('[data-paste-apply]');
+
+          /* Commits a location: the coordinates go into the hidden inputs
+             the form actually submits, and the merchant sees the address
+             they picked. The label is what they read; the numbers are never
+             shown unless there is no address to show instead. */
+          function setChosen(label, lat, lng, address) {
+            latInput.value = lat.toFixed(6);
+            lngInput.value = lng.toFixed(6);
+            addressInput.value = address || '';
+            chosenAddress.textContent = label || (lat.toFixed(6) + ', ' + lng.toFixed(6));
+            chosen.hidden = false;
+            picker.hidden = true;
+            closeResults();
+            setPlaceStatus('', false);
+            status.textContent = '';
+            status.classList.remove('error');
+          }
+
+          /* Back to picking. Clears the coordinates rather than leaving them
+             behind the chosen panel: a merchant who presses "Change" and
+             then saves without choosing again must get the "choose a place"
+             error, not silently keep the old geofence they were trying to
+             replace. */
+          function clearChosen() {
+            latInput.value = '';
+            lngInput.value = '';
+            addressInput.value = '';
+            chosenAddress.textContent = '';
+            chosen.hidden = true;
+            picker.hidden = false;
+            if (searchInput && !searchField.hidden) {
+              searchInput.value = '';
+              searchInput.focus();
+            }
+          }
+
+          if (changeBtn) changeBtn.addEventListener('click', clearChosen);
+
+          /* Search has failed or was never available. Show the paste box so
+             the row is still completable — an expired billing account on our
+             side must not stop a merchant from saving their own card. */
+          function revealPasteFallback() {
+            if (pasteFallback) pasteFallback.hidden = false;
+          }
+
+          function setPlaceStatus(message, isError) {
+            if (!placeStatus) return;
+            placeStatus.textContent = message;
+            placeStatus.hidden = !message;
+            if (isError) placeStatus.classList.add('error');
+            else placeStatus.classList.remove('error');
+          }
+
           if (pasteBtn && pasteInput) {
             var applyPaste = function () {
               var coords = parseCoords(pasteInput.value);
@@ -3545,11 +3853,13 @@ ${LANG_TOGGLE_SCRIPT}
                 status.classList.add('error');
                 return;
               }
-              latInput.value = coords.lat.toFixed(6);
-              lngInput.value = coords.lng.toFixed(6);
-              status.classList.remove('error');
-              status.textContent = pasteOk;
               pasteInput.value = '';
+              /* No label and no address: a pasted link carries coordinates
+                 and nothing else, so the chosen panel falls back to showing
+                 the pair, and the reassurance goes in the status line where
+                 it does not have to survive a page reload. */
+              setChosen('', coords.lat, coords.lng, '');
+              status.textContent = pasteOk;
             };
             pasteBtn.addEventListener('click', applyPaste);
             /* Enter should work: this sits inside the card form, so without
@@ -3569,9 +3879,32 @@ ${LANG_TOGGLE_SCRIPT}
             status.textContent = geoRequesting;
             navigator.geolocation.getCurrentPosition(
               function (pos) {
-                latInput.value = pos.coords.latitude.toFixed(6);
-                lngInput.value = pos.coords.longitude.toFixed(6);
-                status.textContent = geoSuccess;
+                var lat = pos.coords.latitude;
+                var lng = pos.coords.longitude;
+                /* The fix alone is not a confirmation any more — there are
+                   no coordinate fields left for the merchant to read it off.
+                   Ask the server what address it lands on so this path
+                   confirms itself exactly like a search result does. */
+                if (!PLACE_SEARCH_ENABLED) {
+                  setChosen('', lat, lng, '');
+                  status.textContent = geoSuccess;
+                  return;
+                }
+                status.textContent = geoLookingUp;
+                postPlaces('/api/places/reverse', { latitude: lat, longitude: lng })
+                  .then(function (data) {
+                    var address = data && data.address ? String(data.address) : '';
+                    setChosen(address, lat, lng, address);
+                    if (!address) status.textContent = geoSuccess;
+                  })
+                  .catch(function () {
+                    /* A failed lookup loses the address, never the fix: the
+                       geofence is already correct, so fall back to showing
+                       the coordinates rather than throwing away a position
+                       the merchant just waited for. */
+                    setChosen('', lat, lng, '');
+                    status.textContent = geoSuccess;
+                  });
               },
               function (err) {
                 /* One message per cause. "Couldn't get your location" is true
@@ -3599,6 +3932,170 @@ ${LANG_TOGGLE_SCRIPT}
                 maximumAge: 300000
               }
             );
+          });
+
+          // -----------------------------------------------------------------
+          // Business search. A combobox over our own /api/places/* proxy:
+          // type a shop name, arrow through the matches, Enter to take one.
+          // -----------------------------------------------------------------
+          if (!PLACE_SEARCH_ENABLED || !searchInput) return;
+
+          var sessionToken = newSessionToken();
+          var debounceTimer = null;
+          /* Monotonic per row. Autocomplete responses can land out of order —
+             the request for "loy" may answer after the one for "loyanexa" —
+             and rendering a stale one would put the wrong shops under a
+             merchant's cursor at the moment they click. Only the newest
+             request is allowed to write to the list. */
+          var latestQueryId = 0;
+          var suggestions = [];
+          var activeIndex = -1;
+
+          /* Hoisted, so setChosen above can call it — including on the rows
+             that return early below because search is switched off, where
+             there is no list to close. */
+          function closeResults() {
+            if (!resultsList || !searchInput) return;
+            resultsList.hidden = true;
+            resultsList.innerHTML = '';
+            searchInput.setAttribute('aria-expanded', 'false');
+            suggestions = [];
+            activeIndex = -1;
+          }
+
+          function highlight(next) {
+            var items = resultsList.querySelectorAll('li');
+            if (!items.length) return;
+            if (activeIndex >= 0 && items[activeIndex]) items[activeIndex].classList.remove('is-active');
+            activeIndex = next < 0 ? items.length - 1 : (next >= items.length ? 0 : next);
+            items[activeIndex].classList.add('is-active');
+            /* Keep the highlighted row on screen: the list scrolls once
+               five results with wrapped addresses exceed its max height. */
+            if (items[activeIndex].scrollIntoView) {
+              items[activeIndex].scrollIntoView({ block: 'nearest' });
+            }
+          }
+
+          function choose(suggestion) {
+            setPlaceStatus(searchBusy, false);
+            closeResults();
+            postPlaces('/api/places/details', {
+              placeId: suggestion.placeId,
+              sessionToken: sessionToken
+            })
+              .then(function (place) {
+                /* The session ends with this lookup — Google bills the next
+                   keystrokes as a new one, so a merchant editing a second
+                   location does not ride on the first one's token. */
+                sessionToken = newSessionToken();
+                var label = place.address || suggestion.secondaryText || suggestion.primaryText;
+                setChosen(label, place.latitude, place.longitude, place.address || '');
+                /* Fill the merchant's own label only if they left it blank.
+                   Someone who typed "Downtown branch" meant it, and having
+                   the shop's Google name overwrite that would be rude. */
+                if (nameInput && !nameInput.value.trim()) {
+                  nameInput.value = (place.name || suggestion.primaryText).slice(0, 80);
+                }
+              })
+              .catch(function () {
+                setPlaceStatus(searchFailed, true);
+                revealPasteFallback();
+              });
+          }
+
+          function renderResults(list) {
+            resultsList.innerHTML = '';
+            suggestions = list;
+            activeIndex = -1;
+            for (var i = 0; i < list.length; i++) {
+              (function (suggestion) {
+                var li = document.createElement('li');
+                li.setAttribute('role', 'option');
+                var btn = document.createElement('button');
+                btn.type = 'button';
+                var primary = document.createElement('span');
+                primary.className = 'place-primary';
+                primary.textContent = suggestion.primaryText;
+                btn.appendChild(primary);
+                if (suggestion.secondaryText) {
+                  var secondary = document.createElement('span');
+                  secondary.className = 'place-secondary';
+                  secondary.textContent = suggestion.secondaryText;
+                  btn.appendChild(secondary);
+                }
+                /* mousedown, not click: the input's own blur handler closes
+                   the list, and on blur-then-click the button is gone before
+                   the click lands. */
+                btn.addEventListener('mousedown', function (e) {
+                  e.preventDefault();
+                  choose(suggestion);
+                });
+                li.appendChild(btn);
+                resultsList.appendChild(li);
+              })(list[i]);
+            }
+            resultsList.hidden = list.length === 0;
+            searchInput.setAttribute('aria-expanded', list.length > 0 ? 'true' : 'false');
+          }
+
+          function runSearch(query) {
+            latestQueryId += 1;
+            var queryId = latestQueryId;
+            setPlaceStatus(searchBusy, false);
+            postPlaces('/api/places/search', { query: query, sessionToken: sessionToken })
+              .then(function (data) {
+                if (queryId !== latestQueryId) return;
+                var list = (data && data.suggestions) || [];
+                renderResults(list);
+                setPlaceStatus(list.length === 0 ? searchNoResults : '', false);
+              })
+              .catch(function () {
+                if (queryId !== latestQueryId) return;
+                closeResults();
+                setPlaceStatus(searchFailed, true);
+                /* Google is unreachable or unconfigured. Put the paste box
+                   back so this row is still completable today. */
+                revealPasteFallback();
+              });
+          }
+
+          searchInput.addEventListener('input', function () {
+            if (debounceTimer) clearTimeout(debounceTimer);
+            var query = searchInput.value.trim();
+            if (query.length < PLACE_MIN_QUERY) {
+              latestQueryId += 1; // abandon any in-flight response
+              closeResults();
+              setPlaceStatus('', false);
+              return;
+            }
+            debounceTimer = setTimeout(function () { runSearch(query); }, PLACE_DEBOUNCE_MS);
+          });
+
+          searchInput.addEventListener('keydown', function (e) {
+            if (e.key === 'ArrowDown') {
+              e.preventDefault();
+              highlight(activeIndex + 1);
+            } else if (e.key === 'ArrowUp') {
+              e.preventDefault();
+              highlight(activeIndex - 1);
+            } else if (e.key === 'Enter') {
+              /* Always swallowed. This input sits inside the card form, so
+                 an unhandled Enter would submit the whole designer — with a
+                 half-typed search and no coordinates — instead of picking
+                 the shop the merchant is looking straight at. */
+              e.preventDefault();
+              if (activeIndex >= 0 && suggestions[activeIndex]) choose(suggestions[activeIndex]);
+            } else if (e.key === 'Escape') {
+              closeResults();
+            }
+          });
+
+          /* A timeout, not a bare blur: the click that picks a result fires
+             after blur, and closing the list synchronously would remove the
+             button out from under it. mousedown above covers the mouse; this
+             covers tabbing away. */
+          searchInput.addEventListener('blur', function () {
+            setTimeout(closeResults, 150);
           });
         }
 
@@ -3740,9 +4237,11 @@ async function handleUpdateCard(req: http.IncomingMessage, res: http.ServerRespo
         ? t(lang, 'designerLocationsMaxReached', { max: arabicDigits(MAX_CARD_LOCATIONS, lang) })
         : locationsResult.reason === 'name_required'
           ? t(lang, 'designerLocationsNameRequired', { n: arabicDigits(locationsResult.index + 1, lang) })
-          : locationsResult.reason === 'invalid_latitude'
-            ? t(lang, 'designerLocationsLatInvalid', { n: arabicDigits(locationsResult.index + 1, lang) })
-            : t(lang, 'designerLocationsLngInvalid', { n: arabicDigits(locationsResult.index + 1, lang) });
+          // Both coordinate reasons render as one message. The merchant has
+          // no latitude field on screen to correct, so what actually went
+          // wrong is that this row never got a place — naming the axis would
+          // describe a control that no longer exists.
+          : t(lang, 'designerLocationsPlaceRequired', { n: arabicDigits(locationsResult.index + 1, lang) });
     const wideIconForError = await isStoredLogoWide(card.iconHash);
     sendHtml(
       res,
@@ -5463,6 +5962,43 @@ function sendRateLimited(res: http.ServerResponse, lang: Lang): void {
   sendHtml(res, 429, layout('Too many requests', `<div class="panel"><h1>429</h1><p>${escapeHtml(t(lang, 'rateLimited'))}</p></div>`, undefined, lang));
 }
 
+/**
+ * True when the merchant's plan still has room for this enrolment; sends the
+ * customer-facing refusal and returns false when it does not.
+ *
+ * Shared by both wallet routes so Apple and Google cannot enforce different
+ * caps — the same customer tapping the other button must not get a different
+ * answer. 503 rather than 402/403: nothing is wrong with the customer's
+ * request, and the condition is temporary from their point of view.
+ */
+async function enrolmentHasCapacity(
+  res: http.ServerResponse,
+  card: Card,
+  custPhone: string
+): Promise<boolean> {
+  const merchant = await prisma.merchant.findUnique({ where: { id: card.merchantId } });
+  // A missing merchant row cannot be the customer's problem. Failing open
+  // here issues one extra pass in a situation that should not arise; failing
+  // closed would refuse a paying merchant's customers over a lookup miss.
+  if (!merchant) return true;
+  const plan = effectivePlan(merchant);
+  if (await hasCustomerCapacity(card, custPhone, plan.customers)) return true;
+
+  const lang: Lang = card.lang === 'en' ? 'en' : 'ar';
+  sendHtml(
+    res,
+    503,
+    layout(
+      t(lang, 'enrolCardFullTitle'),
+      `<div class="panel"><h1>${escapeHtml(t(lang, 'enrolCardFullTitle'))}</h1>` +
+        `<p>${escapeHtml(t(lang, 'enrolCardFullBody'))}</p></div>`,
+      undefined,
+      lang
+    )
+  );
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Route: POST /:code/pass — issue a real, signed .pkpass for this card and
 // hand it back with the exact MIME type iOS uses to decide whether to offer
@@ -5495,6 +6031,7 @@ async function handleIssuePass(req: http.IncomingMessage, res: http.ServerRespon
   }
 
   const { custName, custPhone, idempotencyKey, birthday } = await readEnrolFields(req);
+  if (!(await enrolmentHasCapacity(res, card, custPhone))) return;
   const credentials = resolveAppleCredentials();
 
   const stripSet = await renderAllDensities(PASS_STRIP_STORE, await stripSpecForCard(card, card.starterStamps));
@@ -5620,6 +6157,7 @@ async function handleIssueGooglePass(
   }
 
   const { custName, custPhone, idempotencyKey, birthday } = await readEnrolFields(req);
+  if (!(await enrolmentHasCapacity(res, card, custPhone))) return;
   const { pass, created } = await createPassForEnrolment(card, custName, custPhone, idempotencyKey, birthday);
 
   // Same reasoning as POST /:code/pass just above: a freshly-inserted row
@@ -6619,6 +7157,32 @@ const server = http.createServer(async (req, res) => {
       await handleStaffSignOut(req, res);
       return;
     }
+    // Business search for the locations editor. Merchant-only and
+    // rate-limited: each of these costs real money upstream, so an
+    // unauthenticated or unmetered version would be someone else's free
+    // Places quota. resolveStampAuth is deliberately not used — staff have
+    // no business editing a card, only stamping one.
+    if (method === 'POST' && pathname.startsWith('/api/places/')) {
+      const merchant = await requireMerchantJson(req, res);
+      if (!merchant) return;
+      if (!placeSearchLimiterByMerchant.check(merchant.id)) {
+        sendJson(res, 429, { error: 'rate_limited' });
+        return;
+      }
+      if (pathname === '/api/places/search') {
+        await handlePlaceSearch(req, res, merchant);
+        return;
+      }
+      if (pathname === '/api/places/details') {
+        await handlePlaceDetails(req, res, merchant);
+        return;
+      }
+      if (pathname === '/api/places/reverse') {
+        await handlePlaceReverse(req, res, merchant);
+        return;
+      }
+    }
+
     if (method === 'POST' && pathname === '/api/stamp') {
       const auth = await resolveStampAuth(req);
       if (!auth) {
