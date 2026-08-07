@@ -553,7 +553,7 @@ html[lang="ar"] .triad b{letter-spacing:0;line-height:1.3}
 }
 
 .plan{padding:32px 28px;border-radius:var(--r-2xl);border:1px solid var(--line);text-align:center;
-  background:var(--paper);
+  background:var(--paper);position:relative;overflow:hidden;
   display:flex;flex-direction:column;
   transition:transform var(--t) var(--ease),box-shadow var(--t) var(--ease),border-color var(--t) var(--ease)}
 .plan:hover{border-color:var(--accent-line)}
@@ -591,9 +591,27 @@ html[lang="ar"] .price span{padding-bottom:0}
   display:grid;place-items:center;flex:none}
 .cross svg{width:9px;height:9px}
 .plan .btn{margin-top:auto}
-.badge-pop{position:absolute;top:-12px;inset-inline-end:22px;height:24px;padding:0 11px;border-radius:99px;
+/* Inside the card, not straddling its edge. At top:-12px it sat half outside,
+   which both broke the rounded corner it crossed and let it run past the
+   card's right edge on a narrow screen. */
+@keyframes planSaveIn{
+  from{opacity:0;transform:translateY(-6px) scale(.96)}
+  to{opacity:1;transform:none}
+}
+.plan-save{display:inline-flex;align-items:center;gap:6px;margin:2px auto 0;
+  padding:5px 12px;border-radius:99px;font-size:.78rem;font-weight:700;
+  background:var(--accent-t);color:var(--accent-light);border:1px solid var(--accent-line);
+  animation:planSaveIn 320ms var(--ease) both}
+.plan-save::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.pricing-aurora .plan-save{background:rgba(242,140,56,.18);color:#F7B267;
+  border-color:rgba(242,140,56,.42)}
+@media (prefers-reduced-motion:reduce){.plan-save{animation:none}}
+
+.badge-pop{position:absolute;top:14px;inset-inline-end:14px;height:24px;padding:0 11px;border-radius:99px;
   background:var(--accent);color:var(--on-accent);font-size:.7rem;font-weight:700;
-  letter-spacing:.05em;text-transform:uppercase;display:grid;place-items:center}
+  letter-spacing:.05em;text-transform:uppercase;display:grid;place-items:center;
+  max-width:calc(100% - 76px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+html[lang="ar"] .badge-pop{text-transform:none;letter-spacing:0}
 
 /* faq --------------------------------------------------------- */
 .faq{max-width:760px;margin-inline:auto;border-top:1px solid var(--line)}
@@ -1310,6 +1328,7 @@ en:{
   pr_note:'7-day free trial. No card details required.',
   pr_scope:'Applies to Starter and Business. Enterprise is quoted separately.',
   pr_year:'/year', pr_billed:'billed annually',
+  pr_saved:'You save {x} a year',
   start_now:'Start now',
 
   ind_h:'Built for businesses people come back to',
@@ -1515,6 +1534,7 @@ ar:{
   pr_note:'تجربة مجانية ٧ أيام. بدون بيانات بطاقة.',
   pr_scope:'ينطبق على الأساسية والأعمال. أما المؤسسات فبعرض سعر منفصل.',
   pr_year:'/سنوياً', pr_billed:'تُدفع سنوياً',
+  pr_saved:'توفّر {x} سنوياً',
   start_now:'ابدأ الآن',
 
   ind_h:'مصمَّمة للأنشطة التي يعود إليها الناس',
@@ -2098,6 +2118,7 @@ function homeView(){
           <div class="price"><b data-price="${annual?annualTotal(19):19}">${price(19)}</b>
             <span>${annual?t('pr_year'):t('p_month')}</span></div>
           <p class="small">${annual?t('pr_billed'):t('pr_note')}</p>
+          ${annual?`<p class="plan-save">${t('pr_saved').replace('{x}',cur(19*12-annualTotal(19)))}</p>`:''}
           <div class="plan-any"><span>${t('pr_cancel')}</span></div>
           <ul>${t('p1f').map(planRow).join('')}</ul>
           <a href="/signin" class="btn btn-ghost btn-block">${t('start_now')}</a>
@@ -2111,6 +2132,7 @@ function homeView(){
           <div class="price"><b data-price="${annual?annualTotal(23):23}">${price(23)}</b>
             <span>${annual?t('pr_year'):t('p_month')}</span></div>
           <p class="small">${annual?t('pr_billed'):t('pr_note')}</p>
+          ${annual?`<p class="plan-save">${t('pr_saved').replace('{x}',cur(23*12-annualTotal(23)))}</p>`:''}
           <div class="plan-any"><span>${t('pr_cancel')}</span></div>
           <ul>${t('p2f').map(planRow).join('')}</ul>
           <a href="/signup" class="btn btn-primary btn-block">${t('start_now')}</a>
@@ -2273,6 +2295,7 @@ function walletView(){
    Router + effects
    ============================================================ */
 
+let _lastRenderedRoute = null;
 function render(){
   const html=document.documentElement;
   html.lang=S.lang; html.dir=T[S.lang].dir;
@@ -2289,8 +2312,16 @@ function render(){
   else if(r==='/login'){ location.replace('/signin'); return; }
   else if(r==='/card'){ view=walletView(); }
   else { view=homeView(); }
+  /* Preserve the scroll across a re-render that is not a navigation.
+     render() rebuilds the whole page, and it used to scroll to the top every
+     time — so switching Monthly/Annual threw the visitor back to the hero,
+     away from the prices they were reading. A route change should still start
+     at the top; a state change should not move them at all. */
+  const sameRoute = r === _lastRenderedRoute;
+  const keepY = sameRoute ? window.scrollY : 0;
   root.innerHTML=view + (S.menuOpen?mobMenu():'') + (S.sheet==='contact'?contactSheet():'');
-  window.scrollTo(0,0);
+  if(sameRoute) window.scrollTo(0, keepY); else window.scrollTo(0,0);
+  _lastRenderedRoute = r;
   afterRender();
 }
 function closeMenu(){
