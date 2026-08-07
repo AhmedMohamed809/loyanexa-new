@@ -215,7 +215,14 @@ html.anim .rise-scale.in{transform:none;
   *,*::before,*::after{animation-duration:.001ms !important;animation-iteration-count:1 !important;
     animation-delay:0ms !important;transition-duration:.001ms !important;transition-delay:0ms !important;
     scroll-behavior:auto !important}
-  html.anim .rise,html.anim .rise.in{opacity:1 !important;transform:none !important;will-change:auto !important}
+  /* Reduce Motion asks for less movement, not less feedback. Vestibular
+     triggers are travel, parallax, scale and spin; a plain opacity
+     cross-fade is the substitute the guidance recommends. So the reveal
+     survives here with every transform stripped out — the page still tells
+     you a section arrived, it just no longer slides to say so. */
+  html.anim .rise,html.anim .rise-scale,html.anim .rise.in{
+    transform:none !important;will-change:auto !important}
+  html.anim .rise.in{transition:opacity .4s linear !important}
   html.anim .iphone{animation:none !important;transform:none !important;
     transition:none !important;will-change:auto !important}
   .ip-glare{display:none}
@@ -605,7 +612,13 @@ html[lang="ar"] .price span{padding-bottom:0}
 .plan-save::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
 .pricing-aurora .plan-save{background:rgba(242,140,56,.18);color:#F7B267;
   border-color:rgba(242,140,56,.42)}
-@media (prefers-reduced-motion:reduce){.plan-save{animation:none}}
+/* Reduce Motion strips the travel and the scale, but a cross-fade is not a
+   vestibular trigger — so the pill still announces itself when the discount
+   is applied rather than blinking into existence. */
+@keyframes planSaveFade{from{opacity:0}to{opacity:1}}
+@media (prefers-reduced-motion:reduce){
+  .plan-save{animation:planSaveFade 260ms linear both !important}
+}
 
 .badge-pop{position:absolute;top:14px;inset-inline-end:14px;height:24px;padding:0 11px;border-radius:99px;
   background:var(--accent);color:var(--on-accent);font-size:.7rem;font-weight:700;
@@ -1391,7 +1404,7 @@ en:{
 ar:{
   dir:'rtl', flag:'ع',
   nav_features:'المزايا', nav_ai:'الذكاء الاصطناعي', nav_pricing:'الأسعار', nav_faq:'الأسئلة',
-  signin:'تسجيل الدخول', trial:'ابدأ التجربة المجانية', demo:'احجز عرضاً',
+  signin:'تسجيل الدخول', trial:'ابدأ التجربة المجانية', demo:'احجز عرضاً توضيحياً',
   dashboard_cta:'الذهاب إلى لوحة التحكّم',
   tagline:'بسيط. ذكي. سريع.',
   hero_eyebrow:'الولاء من جديد',
@@ -1406,7 +1419,7 @@ ar:{
   tri3:'سريع', tri3p:'يُسجَّل الختم لحظة المسح.',
   f0:'جاهزة في أقل من ٣ دقائق',
   f0p:'اختر المكافأة واللون، وانتهى. بطاقتك جاهزة للمسح قبل أن تبرد قهوتك.',
-  band:'يثق بنا المقاهي والصالونات والنوادي ومتاجر التجزئة المستقلة',
+  band:'تثق بنا المقاهي والصالونات والنوادي ومتاجر التجزئة المستقلة',
   f_eyebrow:'ماذا تحصل عليه', f_h2:'كل ما يحتاجه برنامج الولاء. ولا شيء زائد.',
   f_p:'مكان واحد للنقاط والمكافآت والحملات وبيانات العملاء، مصمّم ليستخدمه موظف المناوبة بدون تدريب.',
   f1:'تصميم مخصص', f1p:'اختر ألوانك وشعارك ومكافأتك. بدون برمجة ولا مصمّم ولا انتظار.',
@@ -1430,7 +1443,7 @@ ar:{
   ai_cta:'أرسل إلى ٤٧ عميلاً',
   p_eyebrow:'الأسعار', p_h2:'أسعار واضحة. بلا مفاجآت.',
   p_p:'خطتان تشترك فيهما مباشرة، شهرياً أو سنوياً. وللعمليات الأكبر عرض سعر مبني على طريقة عملها.',
-  p_month:'/شهرياً', p_vat:'فوترة شهرية. غير شامل الضريبة. يمكن الإلغاء في أي وقت.',
+  p_month:'/شهرياً', p_vat:'فوترة شهرية. الأسعار لا تشمل الضريبة. يمكن الإلغاء في أي وقت.',
   p1:'الأساسية', p1d:'متجر واحد يجمع عملاءه الدائمين على بطاقة.',
   p2:'الأعمال', p2d:'كل المميزات مفعّلة، لمتجر بقاعدة عملاء حقيقية.',
   pop:'الأكثر اختياراً',
@@ -1467,7 +1480,7 @@ ar:{
   ask_ph:'اسأل عن عملائك…', ask:'اسأل',
   insights:'ما لاحظته اليوم',
   ins1:'<b>٤٧ عميلاً</b> لم يزوروا منذ ٢٦ يوماً. عرض النقاط المضاعفة من الإثنين إلى الأربعاء استعاد ٣١٪ سابقاً.',
-  ins2:'<b>القهوة المجانية</b> تُستبدل ٣٫٤ أضعاف أي مكافأة أخرى. فكّر برفعها من ٨ إلى ٩ أختام.',
+  ins2:'<b>القهوة المجانية</b> تُستبدل ٣٫٤ أضعاف أي مكافأة أخرى. فكّر في رفعها من ٨ إلى ٩ أختام.',
   ins3:'<b>الخميس ٤–٦ مساءً</b> أهدأ ساعاتك المدفوعة. حملة «ساعة سعيدة» هنا لها أكبر أثر ممكن.',
   th_cust:'العميل', th_pts:'النقاط', th_visits:'الزيارات', th_last:'آخر زيارة', th_tier:'المستوى', th_spend:'الإنفاق',
   th_when:'الوقت', th_branch:'الفرع', th_type:'النوع', th_amount:'المبلغ', th_status:'الحالة',
@@ -1510,7 +1523,7 @@ ar:{
 
   what_h:'ما هي بطاقة الولاء الرقمية؟',
   what_p1:'هي بطاقة الأختام الورقية التي يعرفها عملاؤك، بلا ورق. بدل بطاقة تضيع في الجيب أو تتلف في الغسالة، يحصل عميلك على بطاقة تستقر في محفظة آبل أو جوجل: لا تطبيق يُثبَّت ولا رقم عضوية يُحفظ.',
-  what_p2:'في كل زيارة يعرض رمز QR عند الكاشير فيُضاف ختم. وحين تمتلئ البطاقة ينال المكافأة التي تحدّدها أنت: قهوة مجانية أو خصماً أو هدية. أنت تختار المكافأة وعدد الأختام اللازمة.',
+  what_p2:'في كل زيارة يعرض عميلك رمز QR عند الكاشير فيُضاف ختم. وحين تمتلئ البطاقة ينال المكافأة التي تحدّدها أنت: قهوة مجانية أو خصماً أو هدية. أنت تختار المكافأة وعدد الأختام اللازمة.',
 
   why_h2:'لماذا الرقمية بدل الورقية',
   why_sub:'ثمانية أشياء لم تستطع البطاقة الورقية فعلها يوماً.',
@@ -1521,7 +1534,7 @@ ar:{
   y5:'ماسح يعمل بدون إنترنت', y5p:'يختم موظفوك من أي هاتف أو جهاز لوحي. وإن انقطع الاتصال وسط الزحام، تُحفظ العمليات وتُرسل فور عودته.',
   y6:'أختام البداية', y6p:'امنح العميل الجديد ختمين في يومه الأول. الشعور بقرب المكافأة هو ما يعجّل عودته.',
   y7:'تقييمات تستحق القراءة', y7p:'اطلب تقييم ما اشتراه فعلاً، وشاهد النمط عبر الزيارات بدل مراجعة غاضبة واحدة.',
-  y8:'عربي وإنجليزي بإتقان', y8p:'البطاقات والرسائل والإيصالات تتحول لغةً كاملة بتخطيط من اليمين إلى اليسار. لا ترجمة مضافة على عجل.',
+  y8:'عربي وإنجليزي بإتقان', y8p:'البطاقات والرسائل والإيصالات تتحوّل بالكامل إلى العربية بتخطيط من اليمين إلى اليسار. لا ترجمة مضافة على عجل.',
 
   how_h:'كيف تعمل', how_sub:'ثلاث خطوات. أغلب المتاجر تنطلق في اليوم نفسه.',
   step:'الخطوة',
@@ -2406,7 +2419,9 @@ function mobMenu(){
 }
 
 const REDUCED = () => matchMedia('(prefers-reduced-motion:reduce)').matches;
-const CAN_ANIMATE = () => 'IntersectionObserver' in window && !REDUCED();
+/* CAN_ANIMATE used to fold "no observer" and "Reduce Motion" into one gate.
+   They call for different answers — no observer means show everything, Reduce
+   Motion means fade instead of slide — so each is now tested where it applies. */
 
 function afterRender(){
   /* --- already signed in? ---------------------------------------------
@@ -2443,9 +2458,14 @@ function afterRender(){
   wireToggleIndicator();
   wireAccordion();
 
-  if(!CAN_ANIMATE()){                       /* content stays as shipped */
+  /* Only a missing observer disables the reveal outright — without one there
+     is no way to know when a section arrives, and content must never be left
+     hidden. Reduce Motion is NOT disqualifying: it downgrades the reveal to a
+     cross-fade in CSS (see the prefers-reduced-motion block) instead of
+     removing it, and the genuinely motion-heavy effects below keep their own
+     REDUCED() guards. */
+  if(!('IntersectionObserver' in window)){  /* content stays as shipped */
     document.documentElement.classList.remove('anim');
-    document.querySelectorAll('[data-count]').forEach(el=>{});
     return;
   }
   document.documentElement.classList.add('anim');
@@ -2464,8 +2484,24 @@ function afterRender(){
     e.target.classList.add('in');
     obs.unobserve(e.target);
     e.target.addEventListener('transitionend',()=>e.target.classList.add('done'),{once:true});
-  }),{rootMargin:'-100px 0px',threshold:0.2});
+  }),{
+      /* -100px + 20% is a demanding pair: a section taller than the viewport
+         has to push a long way in before a fifth of it is visible, and on a
+         phone some blocks never quite got there — so they sat at opacity 0
+         until scrolled well past, which reads as "the animation is broken".
+         A small margin and a low threshold fire as soon as the block is
+         genuinely on screen. */
+      rootMargin:'0px 0px -10% 0px',threshold:0.01});
   document.querySelectorAll('.rise').forEach(el=>io.observe(el));
+
+  /* Safety net. A reveal that fails to fire for any reason — an observer
+     quirk, a layout that never satisfies the threshold — must not leave the
+     page permanently blank. Anything still hidden after 1.2s is revealed
+     outright: a missed animation is a cosmetic loss, invisible content is
+     not. */
+  setTimeout(()=>{
+    document.querySelectorAll('.rise:not(.in)').forEach(el=>el.classList.add('in'));
+  },1200);
 
   /* --- hero plays on load, no scroll needed ---------------------- */
   const hero=document.querySelector('.hero');
