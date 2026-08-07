@@ -1749,6 +1749,8 @@ interface NewCardFormValues {
   coverHash?: string | undefined;
 }
 
+const SAMPLE_SERIAL = '8804DD32';
+
 function renderNewCardForm(
   { name = '', rewardText = '', goal = 8, bg = '#203757', active = '#F96400', inactive = '#8794A5', lang: cardLang = 'ar', template, coverHash }: NewCardFormValues = {},
   error?: string,
@@ -1833,18 +1835,59 @@ ${renderLangToggle(cardLang, lang)}
          merchant reading an English dashboard may well be building an Arabic
          card. Which SIDE it sits on follows the page, via the grid. -->
     <aside class="sim-rail">
-      <p class="sim-head">${escapeHtml(t(lang, 'simTitle'))}</p>
-      <div class="sim-card" id="simCard" dir="${cardLang === 'ar' ? 'rtl' : 'ltr'}" lang="${cardLang}"
-        style="background:${escapeHtml(bg)};color:#FFFFFF;">
-        <div class="sim-top">
-          <span class="sim-brand" id="simBrand">${escapeHtml(name || t(simLang, 'simYourBusiness'))}</span>
-          <span class="sim-chip" id="simRewardLabel">${escapeHtml(t(simLang, 'simRewardLabel'))}</span>
+      <div class="wp">
+        <div class="wp-top">
+          <span class="wp-title">${escapeHtml(t(lang, 'walletPreviewTitle'))}</span>
+          <span class="wp-tabs">
+            <button type="button" class="wp-tab on" data-wallet="apple" aria-label="${escapeHtml(t(lang, 'walletApple'))}" title="${escapeHtml(t(lang, 'walletApple'))}">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.4 12.8c0-2.2 1.8-3.3 1.9-3.3-1-1.5-2.6-1.7-3.2-1.7-1.4-.1-2.7.8-3.4.8-.7 0-1.8-.8-2.9-.8-1.5 0-2.9.9-3.7 2.2-1.6 2.7-.4 6.8 1.1 9 .8 1.1 1.6 2.3 2.8 2.3 1.1 0 1.5-.7 2.9-.7 1.3 0 1.7.7 2.9.7 1.2 0 1.9-1.1 2.7-2.2.8-1.2 1.2-2.4 1.2-2.5-.1 0-2.3-.9-2.3-3.8ZM14.2 5.9c.6-.8 1-1.8.9-2.9-.9 0-2 .6-2.6 1.4-.6.7-1.1 1.7-.9 2.8 1 .1 2-.5 2.6-1.3Z"/></svg>
+            </button>
+            <button type="button" class="wp-tab" data-wallet="google" aria-label="${escapeHtml(t(lang, 'walletGoogle'))}" title="${escapeHtml(t(lang, 'walletGoogle'))}">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M21.6 12.2c0-.7-.1-1.3-.2-1.9H12v3.7h5.4a4.6 4.6 0 0 1-2 3v2.5h3.2c1.9-1.7 3-4.3 3-7.3Z"/><path fill="#34A853" d="M12 22c2.7 0 5-.9 6.6-2.4l-3.2-2.5c-.9.6-2 1-3.4 1-2.6 0-4.8-1.8-5.6-4.1H3.1v2.6A10 10 0 0 0 12 22Z"/><path fill="#FBBC05" d="M6.4 14c-.2-.6-.3-1.3-.3-2s.1-1.4.3-2V7.4H3.1a10 10 0 0 0 0 9.2L6.4 14Z"/><path fill="#EA4335" d="M12 5.9c1.5 0 2.8.5 3.8 1.5l2.8-2.8A10 10 0 0 0 3.1 7.4L6.4 10c.8-2.3 3-4.1 5.6-4.1Z"/></svg>
+            </button>
+          </span>
         </div>
-        <p class="sim-reward" id="simReward">${escapeHtml(rewardText || t(simLang, 'newCardRewardPlaceholder'))}</p>
-        <img class="sim-strip" id="preview" src="/preview.png?${previewQs.toString()}" alt="" width="375" height="144">
-        <div class="sim-foot">
-          <span id="simCount">${escapeHtml(t(simLang, 'simStampsOf', { filled: arabicDigits(defaultFilled(goalNum), simLang), goal: arabicDigits(goalNum, simLang) }))}</span>
+
+        <!-- APPLE. Logo, then the strip, then fields, then the barcode at the
+             bottom — the order a real .pkpass renders in. -->
+        <div class="wp-layout on" data-layout="apple">
+          <div class="wp-card is-apple" id="wpApple" dir="${cardLang === 'ar' ? 'rtl' : 'ltr'}" lang="${cardLang}" style="background:${escapeHtml(bg)};">
+            <div class="wp-head">
+              <span class="wp-wordmark" data-brand>${escapeHtml(name || t(simLang, 'simYourBusiness'))}</span>
+            </div>
+            <img class="wp-strip" data-strip src="/preview.png?${previewQs.toString()}" alt="" width="375" height="144">
+            <div class="wp-fields">
+              <div class="wp-field"><div class="k" data-k-rewards>${escapeHtml(t(simLang, 'walletRewardsLabel'))}</div><div class="v" data-v-rewards>${escapeHtml(t(simLang, 'walletRewardsUnit', { count: arabicDigits(0, simLang) }))}</div></div>
+              <div class="wp-field"><div class="k" data-k-stamps>${escapeHtml(t(simLang, 'walletStampsLeftLabel'))}</div><div class="v" data-v-stamps>${escapeHtml(t(simLang, 'walletStampsUnit', { count: arabicDigits(goalNum - defaultFilled(goalNum), simLang) }))}</div></div>
+            </div>
+            <div class="wp-code">
+              <img data-qr src="/qr.png?${new URLSearchParams({ data: SAMPLE_SERIAL, size: '4' }).toString()}" alt="" width="132" height="132">
+              <div class="serial">${escapeHtml(SAMPLE_SERIAL)}</div>
+            </div>
+          </div>
         </div>
+
+        <!-- GOOGLE. Logo and title lead, fields next, barcode in the body,
+             and the hero image is the LAST thing on the card. -->
+        <div class="wp-layout" data-layout="google">
+          <div class="wp-card is-google" id="wpGoogle" dir="${cardLang === 'ar' ? 'rtl' : 'ltr'}" lang="${cardLang}" style="background:${escapeHtml(bg)};">
+            <div class="wp-head">
+              <span class="wp-wordmark" data-brand>${escapeHtml(name || t(simLang, 'simYourBusiness'))}</span>
+            </div>
+            <p class="wp-title-lg" data-reward>${escapeHtml(rewardText || t(simLang, 'newCardRewardPlaceholder'))}</p>
+            <div class="wp-fields">
+              <div class="wp-field"><div class="k" data-k-stamps>${escapeHtml(t(simLang, 'walletStampsLeftLabel'))}</div><div class="v" data-v-stamps-n>${arabicDigits(goalNum - defaultFilled(goalNum), simLang)}</div></div>
+              <div class="wp-field"><div class="k" data-k-rewards>${escapeHtml(t(simLang, 'walletRewardsLabel'))}</div><div class="v">${arabicDigits(0, simLang)}</div></div>
+            </div>
+            <div class="wp-code">
+              <img data-qr src="/qr.png?${new URLSearchParams({ data: SAMPLE_SERIAL, size: '4' }).toString()}" alt="" width="132" height="132">
+              <div class="serial">${escapeHtml(SAMPLE_SERIAL)}</div>
+            </div>
+            <img class="wp-strip" data-strip src="/preview.png?${previewQs.toString()}" alt="" width="375" height="144">
+          </div>
+        </div>
+
+        <div class="wp-status"><span>${escapeHtml(t(lang, 'walletStatusActive'))}</span></div>
       </div>
       <p class="sim-hint">${escapeHtml(t(lang, 'simHint'))}</p>
     </aside>
@@ -1858,7 +1901,6 @@ ${LANG_TOGGLE_SCRIPT}
         var bgInput = document.getElementById('bg');
         var activeInput = document.getElementById('active');
         var inactiveInput = document.getElementById('inactive');
-        var preview = document.getElementById('preview');
 
         function refresh() {
           var goal = parseInt(goalInput.value, 10);
@@ -1882,7 +1924,11 @@ ${LANG_TOGGLE_SCRIPT}
           }
           // Point the <img> at the render endpoint — the preview is the same
           // renderer used everywhere else, never a re-implementation here.
-          preview.src = '/preview.png?' + qs.toString();
+          // Both layouts carry a strip; updating only the visible one would
+          // leave the other stale until the next keystroke.
+          document.querySelectorAll('[data-strip]').forEach(function (img) {
+            img.src = '/preview.png?' + qs.toString();
+          });
         }
 
         // A template seeds its reward text in the card's default language
@@ -1907,38 +1953,38 @@ ${LANG_TOGGLE_SCRIPT}
            they type, so the card they are imagining is the card in front of
            them. The strip itself is the real renderer (see refresh above) —
            the surrounding chrome is what this fills in. */
-        var simCard = document.getElementById('simCard');
-        var simBrand = document.getElementById('simBrand');
-        var simReward = document.getElementById('simReward');
-        var simCount = document.getElementById('simCount');
+        /* --- the wallet preview -------------------------------------------
+           Both layouts are updated together rather than only the visible one:
+           switching tabs then has nothing to catch up on, which is what stops
+           the hidden card showing stale text for a frame. */
+        var wpCards = Array.prototype.slice.call(document.querySelectorAll('.wp-card'));
+        var wpTabs = Array.prototype.slice.call(document.querySelectorAll('.wp-tab'));
+        var wpLayouts = Array.prototype.slice.call(document.querySelectorAll('.wp-layout'));
         var nameInput = document.getElementById('name');
-        /* BOTH languages are shipped to the page, not just the one it was
-           rendered in. The preview is a picture of the card the CUSTOMER
-           will hold, so choosing English has to translate the whole mock —
-           its "Reward" chip, its stamp count, and its placeholder text — not
-           only flip its direction. Baking one language at render time meant
-           picking English left an Arabic card on screen, which is the exact
-           opposite of what this preview is for. */
-        var SIM_COPY = {
+
+        var WALLET_COPY = {
           ar: {
-            stampsOf: ${JSON.stringify(t('ar', 'simStampsOf', { filled: '__F__', goal: '__G__' }))},
+            rewardsLabel: ${JSON.stringify(t('ar', 'walletRewardsLabel'))},
+            stampsLabel: ${JSON.stringify(t('ar', 'walletStampsLeftLabel'))},
+            stampsUnit: ${JSON.stringify(t('ar', 'walletStampsUnit', { count: '__N__' }))},
+            rewardsUnit: ${JSON.stringify(t('ar', 'walletRewardsUnit', { count: '__N__' }))},
             brand: ${JSON.stringify(t('ar', 'simYourBusiness'))},
-            reward: ${JSON.stringify(t('ar', 'newCardRewardPlaceholder'))},
-            rewardLabel: ${JSON.stringify(t('ar', 'simRewardLabel'))}
+            reward: ${JSON.stringify(t('ar', 'newCardRewardPlaceholder'))}
           },
           en: {
-            stampsOf: ${JSON.stringify(t('en', 'simStampsOf', { filled: '__F__', goal: '__G__' }))},
+            rewardsLabel: ${JSON.stringify(t('en', 'walletRewardsLabel'))},
+            stampsLabel: ${JSON.stringify(t('en', 'walletStampsLeftLabel'))},
+            stampsUnit: ${JSON.stringify(t('en', 'walletStampsUnit', { count: '__N__' }))},
+            rewardsUnit: ${JSON.stringify(t('en', 'walletRewardsUnit', { count: '__N__' }))},
             brand: ${JSON.stringify(t('en', 'simYourBusiness'))},
-            reward: ${JSON.stringify(t('en', 'newCardRewardPlaceholder'))},
-            rewardLabel: ${JSON.stringify(t('en', 'simRewardLabel'))}
+            reward: ${JSON.stringify(t('en', 'newCardRewardPlaceholder'))}
           }
         };
         var simLangNow = ${JSON.stringify(simLang)};
-        var simRewardLabelEl = document.getElementById('simRewardLabel');
 
         /* Arabic cards show Arabic-Indic digits, exactly as the real pass
-           does — a preview that prints 8 where the pass will print ٨ is not
-           a preview of that pass. */
+           does — a preview printing 8 where the pass prints ٨ is not a
+           preview of that pass. */
         function simNum(v) {
           if (simLangNow !== 'ar') return String(v);
           return String(v).replace(/[0-9]/g, function (d) {
@@ -1946,32 +1992,47 @@ ${LANG_TOGGLE_SCRIPT}
           });
         }
 
+        function setAll(sel, fn) {
+          wpCards.forEach(function (card) {
+            card.querySelectorAll(sel).forEach(fn);
+          });
+        }
+
         function refreshSim() {
           var goal = parseInt(goalInput.value, 10);
           var filled = Math.max(1, Math.floor(goal / 3));
-          var copy = SIM_COPY[simLangNow] || SIM_COPY.ar;
-          simCard.style.background = bgInput.value;
-          simBrand.textContent = nameInput.value.trim() || copy.brand;
-          simReward.textContent = rewardInput.value.trim() || copy.reward;
-          if (simRewardLabelEl) simRewardLabelEl.textContent = copy.rewardLabel;
-          simCount.textContent = copy.stampsOf
-            .replace('__F__', simNum(filled))
-            .replace('__G__', simNum(goal));
+          var left = Math.max(goal - filled, 0);
+          var copy = WALLET_COPY[simLangNow] || WALLET_COPY.ar;
+
+          wpCards.forEach(function (card) {
+            card.style.background = bgInput.value;
+            card.setAttribute('dir', simLangNow === 'ar' ? 'rtl' : 'ltr');
+            card.setAttribute('lang', simLangNow);
+          });
+          setAll('[data-brand]', function (el) { el.textContent = nameInput.value.trim() || copy.brand; });
+          setAll('[data-reward]', function (el) { el.textContent = rewardInput.value.trim() || copy.reward; });
+          setAll('[data-k-rewards]', function (el) { el.textContent = copy.rewardsLabel; });
+          setAll('[data-k-stamps]', function (el) { el.textContent = copy.stampsLabel; });
+          setAll('[data-v-rewards]', function (el) { el.textContent = copy.rewardsUnit.replace('__N__', simNum(0)); });
+          setAll('[data-v-stamps]', function (el) { el.textContent = copy.stampsUnit.replace('__N__', simNum(left)); });
+          setAll('[data-v-stamps-n]', function (el) { el.textContent = simNum(left); });
         }
+
+        wpTabs.forEach(function (tab) {
+          tab.addEventListener('click', function () {
+            var which = tab.getAttribute('data-wallet');
+            wpTabs.forEach(function (t2) { t2.classList.toggle('on', t2 === tab); });
+            wpLayouts.forEach(function (l) { l.classList.toggle('on', l.getAttribute('data-layout') === which); });
+          });
+        });
 
         [goalInput, bgInput, activeInput, inactiveInput, nameInput, rewardInput].forEach(function (el) {
           if (el) el.addEventListener('input', refreshSim);
         });
 
-        /* Switching the CARD's language flips the mock too. A preview that
-           keeps showing a left-to-right card after the merchant has chosen
-           Arabic is showing them a card that will not exist. */
         document.querySelectorAll('input[name="lang"]').forEach(function (radio) {
           radio.addEventListener('change', function () {
-            var ar = radio.value !== 'en';
-            simLangNow = ar ? 'ar' : 'en';
-            simCard.setAttribute('dir', ar ? 'rtl' : 'ltr');
-            simCard.setAttribute('lang', simLangNow);
+            simLangNow = radio.value === 'en' ? 'en' : 'ar';
             refreshSim();
           });
         });

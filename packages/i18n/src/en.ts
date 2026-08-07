@@ -309,6 +309,16 @@ export const en = {
   themeDark: 'Dark',
   themeSwitchToDark: 'Dark mode',
   themeSwitchToLight: 'Light mode',
+  // The wallet preview (owner's ask, 6 Aug 2026): show the card as each
+  // wallet actually renders it, not as a generic mock.
+  walletPreviewTitle: 'Card preview',
+  walletApple: 'Apple Wallet',
+  walletGoogle: 'Google Wallet',
+  walletStatusActive: 'Active',
+  walletRewardsLabel: 'Rewards',
+  walletStampsLeftLabel: 'Stamps left',
+  walletStampsUnit: '{count} stamps',
+  walletRewardsUnit: '{count} rewards',
   navPrimary: 'Main navigation',
   /** The fifth tab, holding what does not fit in a five-tab bar (Reports, Settings, language, sign out). */
   navMore: 'More',
