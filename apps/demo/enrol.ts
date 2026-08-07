@@ -121,6 +121,47 @@ export interface EnrolmentResult {
 }
 
 /**
+ * The live pass this phone number already holds on this card, if any.
+ *
+ * Shared by createPassForEnrolment and the plan-capacity check below so the
+ * two cannot disagree about what counts as a returning customer. If they
+ * did, a returning customer could be turned away as "new" at a full plan
+ * while still being handed their existing card — or vice versa.
+ */
+async function findReusablePass(card: Card, custPhone: string): Promise<Pass | undefined> {
+  const candidates = await prisma.pass.findMany({
+    where: { cardId: card.id, custPhone },
+    orderBy: { createdAt: 'desc' },
+  });
+  return candidates.find((p) => !isPassExpired(card, p));
+}
+
+/**
+ * Whether the merchant's plan has room for this enrolment.
+ *
+ * Only a genuinely new customer counts against the cap. A returning
+ * customer re-adding a card they already hold is not a new customer, and
+ * turning them away at the counter over the merchant's plan tier would
+ * punish the wrong person entirely.
+ *
+ * The cap blocks the next enrolment; it never touches passes already
+ * issued. Same rule as every other limit here — "you cannot create more",
+ * never "what you have stops working" — except that the person inconvenienced
+ * is the customer standing at the till, which is why the message they see
+ * says nothing about the merchant's subscription.
+ */
+export async function hasCustomerCapacity(
+  card: Card,
+  custPhone: string,
+  limit: number
+): Promise<boolean> {
+  if (limit === Infinity) return true;
+  if (custPhone && (await findReusablePass(card, custPhone))) return true;
+  const used = await prisma.pass.count({ where: { merchantId: card.merchantId } });
+  return used < limit;
+}
+
+/**
  * Creates (or reuses) the Pass row for an enrolment on `card` — see this
  * file's own doc comment above for the two reuse paths. Whichever wallet
  * button the customer taps, and whether or not this is a resubmission, the
@@ -169,11 +210,7 @@ export async function createPassForEnrolment(
   }
 ): Promise<EnrolmentResult> {
   if (custPhone) {
-    const candidates = await prisma.pass.findMany({
-      where: { cardId: card.id, custPhone },
-      orderBy: { createdAt: 'desc' },
-    });
-    const reusable = candidates.find((p) => !isPassExpired(card, p));
+    const reusable = await findReusablePass(card, custPhone);
     if (reusable) return { pass: reusable, created: false };
   } else if (idempotencyKey) {
     const passId = idempotencyStore.get(idempotencyStoreKey(card.id, idempotencyKey));

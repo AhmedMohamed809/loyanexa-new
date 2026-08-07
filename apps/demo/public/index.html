@@ -597,6 +597,19 @@ html[lang="ar"] .price span{padding-bottom:0}
 .cross{width:16px;height:16px;border-radius:99px;background:rgba(19,28,43,.05);color:var(--ink-3);
   display:grid;place-items:center;flex:none}
 .cross svg{width:9px;height:9px}
+/* Roadmap rows. Pitched between the tick and the cross on purpose: the row
+   is legible but visibly not one of the things being paid for, and the tag
+   spells that out in words so the mark alone never has to carry it. */
+.plan li.soon{color:var(--ink-3)}
+.clock{width:16px;height:16px;border-radius:99px;background:var(--accent-t);color:var(--accent-light);
+  display:grid;place-items:center;flex:none}
+.clock svg{width:9px;height:9px}
+.soon-tag{margin-inline-start:auto;flex:none;font-size:.68rem;font-weight:700;letter-spacing:.01em;
+  padding:2px 7px;border-radius:99px;background:var(--accent-t);color:var(--accent-light);
+  border:1px solid var(--accent-line);white-space:nowrap}
+.pricing-aurora .plan li.soon{color:rgba(255,255,255,.55)}
+.pricing-aurora .clock,.pricing-aurora .soon-tag{background:rgba(242,140,56,.16);color:#F7B267;
+  border-color:rgba(242,140,56,.34)}
 .plan .btn{margin-top:auto}
 /* Inside the card, not straddling its edge. At top:-12px it sat half outside,
    which both broke the rounded corner it crossed and let it run past the
@@ -1239,14 +1252,22 @@ en:{
   p1:'Starter', p1d:'One shop, getting its regulars onto a card.',
   p2:'Business', p2d:'Everything switched on, for shops with a real customer base.',
   pop:'Most popular',
-  p1f:[['Two card designs',1],['Up to 500 customers',1],['Unlimited cards',1],
+  p1f:[['1 loyalty card',1],['1 location',1],['Up to 500 customers',1],
        ['Custom card design',1],['Location reminders',1],['Card stats',1],['Anti-fraud protection',1],
-       ['Push messages',0],['Targeted messages',0],['Remote stamping',0],['Collect customer emails',0],
-       ['Data export',0],['AI assistant',0]],
-  p2f:[['Two card designs',1],['Unlimited customers',1],['Unlimited cards',1],
-       ['Custom card design',1],['Location reminders',1],['Card stats',1],['Anti-fraud protection',1],
-       ['Push messages',1],['Targeted messages',1],['Remote stamping',1],['Collect customer emails',1],
-       ['Data export',1],['AI assistant',1]],
+       ['Collect reviews',2],
+       ['Push notifications',0],['Staff accounts',0],['Data export',0],['Custom fields',0],
+       ['Automated messages',0]],
+  p2f:[['3 loyalty cards',1],['2 locations',1],['10 staff accounts',1],['Unlimited customers',1],
+       ['Unlimited push notifications',1],['Custom card design',1],['Location reminders',1],
+       ['Card stats',1],['Anti-fraud protection',1],['Data export',1],
+       ['Collect reviews',2],['Custom fields',2],
+       ['Automated messages',0]],
+  p3f:[['10 loyalty cards',1],['10 locations',1],['50 staff accounts',1],['Unlimited customers',1],
+       ['Unlimited push notifications',1],
+       ['Automated messages (welcome, birthday, win-back)',1],
+       ['Data export',1],['API access',1],
+       ['Collect reviews',2],['Data-driven review collecting',2],['Custom fields',2]],
+  pr_soon:'Coming soon',
   choose:'Choose Starter', choose2:'Start free trial',
   faq_h2:'Questions, answered',
   faq:[
@@ -1447,14 +1468,22 @@ ar:{
   p1:'الأساسية', p1d:'متجر واحد يجمع عملاءه الدائمين على بطاقة.',
   p2:'الأعمال', p2d:'كل المميزات مفعّلة، لمتجر بقاعدة عملاء حقيقية.',
   pop:'الأكثر اختياراً',
-  p1f:[['تصميم بطاقتين',1],['حتى ٥٠٠ عميل',1],['بطاقات بلا حدود',1],
+  p1f:[['بطاقة ولاء واحدة',1],['موقع واحد',1],['حتى ٥٠٠ عميل',1],
        ['تصميم مخصص للبطاقة',1],['تذكير بالموقع',1],['إحصاءات البطاقة',1],['حماية من الاحتيال',1],
-       ['رسائل فورية',0],['رسائل موجّهة',0],['ختم عن بُعد',0],['جمع بريد العملاء',0],
-       ['تصدير البيانات',0],['المساعد الذكي',0]],
-  p2f:[['تصميم بطاقتين',1],['عملاء بلا حدود',1],['بطاقات بلا حدود',1],
-       ['تصميم مخصص للبطاقة',1],['تذكير بالموقع',1],['إحصاءات البطاقة',1],['حماية من الاحتيال',1],
-       ['رسائل فورية',1],['رسائل موجّهة',1],['ختم عن بُعد',1],['جمع بريد العملاء',1],
-       ['تصدير البيانات',1],['المساعد الذكي',1]],
+       ['جمع التقييمات',2],
+       ['الإشعارات الفورية',0],['حسابات الموظفين',0],['تصدير البيانات',0],['حقول مخصصة',0],
+       ['الرسائل التلقائية',0]],
+  p2f:[['٣ بطاقات ولاء',1],['موقعان',1],['١٠ حسابات موظفين',1],['عملاء بلا حدود',1],
+       ['إشعارات فورية بلا حدود',1],['تصميم مخصص للبطاقة',1],['تذكير بالموقع',1],
+       ['إحصاءات البطاقة',1],['حماية من الاحتيال',1],['تصدير البيانات',1],
+       ['جمع التقييمات',2],['حقول مخصصة',2],
+       ['الرسائل التلقائية',0]],
+  p3f:[['١٠ بطاقات ولاء',1],['١٠ مواقع',1],['٥٠ حساب موظف',1],['عملاء بلا حدود',1],
+       ['إشعارات فورية بلا حدود',1],
+       ['رسائل تلقائية (ترحيب، عيد ميلاد، استعادة)',1],
+       ['تصدير البيانات',1],['الوصول إلى الواجهة البرمجية',1],
+       ['جمع التقييمات',2],['جمع التقييمات المبني على البيانات',2],['حقول مخصصة',2]],
+  pr_soon:'قريباً',
   choose:'اختر الأساسية', choose2:'ابدأ التجربة المجانية',
   faq_h2:'أسئلة وإجابات',
   faq:[
@@ -1699,6 +1728,9 @@ const I = {
   heart:'<path d="M20.8 6.6a5 5 0 0 0-7.1 0L12 8.3l-1.7-1.7a5 5 0 1 0-7.1 7.1L12 21l8.8-9a5 5 0 0 0 0-5.4Z"/>',
   coins:'<ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/>',
   copy:'<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>',
+  /* Marks a pricing row that is on the roadmap rather than included. Not a
+     tick (it is not included) and not a cross (it is not excluded either). */
+  clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7.2V12l3.2 2"/>',
 };
 const ic = (name, size=18, sw=1.7) =>
   `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor"
@@ -1919,9 +1951,18 @@ function loyaltyCard(cd){
   </div>`;
 }
 
-const planRow = f => `<li${f[1]?'':' class="off"'}>${f[1]
-  ? `<i class="tick">${ic('check',9,3.5)}</i>`
-  : `<i class="cross">${ic('x',9,3.2)}</i>`}${f[0]}</li>`;
+/* Three states, not two. 1 = included, 0 = not on this plan, 2 = built and
+   billed for later ("Coming soon"). A roadmap row rendered as a tick would
+   be selling something that does not exist yet; rendered as a cross it would
+   understate the plan. It gets its own mark and an explicit label so nobody
+   can read it as included. */
+const SOON = 2;
+const planRow = f => f[1]===SOON
+  ? `<li class="soon"><i class="clock">${ic('clock',9,2.6)}</i>${f[0]}`
+    + `<span class="soon-tag">${t('pr_soon')}</span></li>`
+  : `<li${f[1]?'':' class="off"'}>${f[1]
+      ? `<i class="tick">${ic('check',9,3.5)}</i>`
+      : `<i class="cross">${ic('x',9,3.2)}</i>`}${f[0]}</li>`;
 
 const TONES=['denim','teal','olive','orange','plum','brass'];
 
@@ -2184,6 +2225,7 @@ function homeView(){
           <h3>${t('p3')}</h3>
           <span class="plan-ic">${ic('planNetwork',21,1.7)}</span>
           <p class="ent-lead">${t('p3d')}</p>
+          <ul>${t('p3f').map(planRow).join('')}</ul>
           <div class="ent-mid">
             <p class="small">${t('p3_note')}</p>
           </div>

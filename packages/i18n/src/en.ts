@@ -286,6 +286,9 @@ export const en = {
   planTrialEnds: 'Free trial — ends {date}',
   planUsageCards: 'Cards',
   planUsageStaff: 'Staff PINs',
+  planUsageCustomers: 'Customers',
+  /** Shown in place of a "used / limit" gauge when the allowance is unbounded. */
+  planUnlimited: 'unlimited',
   planUpgradeSoon: 'Upgrading is not available yet. Get in touch and we will move you across.',
   // Footer on the sign-in / sign-up pages.
   legalPrivacy: 'Privacy',
@@ -472,6 +475,14 @@ export const en = {
   enrolPhonePlaceholder: 'Your phone number',
   enrolPrivacyLink: 'How your details are used',
   enrolConsent: "I agree to join {name}’s loyalty card and receive updates about my rewards.",
+  /**
+   * Shown to the *customer* when the merchant's plan has no room for another
+   * card. Says nothing about plans, limits or billing: the person reading it
+   * is standing at a till and the merchant's subscription is none of their
+   * business, nor their fault.
+   */
+  enrolCardFullTitle: 'Not taking new members right now',
+  enrolCardFullBody: 'This loyalty card is not accepting new members at the moment. Please ask a member of staff — they can sort this out.',
   walletAddApple: 'Add to Apple Wallet',
   walletAddGoogle: 'Add to Google Wallet',
   poweredByLoyaNexa: 'Powered by LoyaNexa',

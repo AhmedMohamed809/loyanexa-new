@@ -218,3 +218,94 @@ test('a phone match that is expired is not reused — a fresh Pass is created in
     await cleanup(fx);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Plan capacity (BUILD.md §14). Starter caps customers at 500; the cap must
+// block the next *new* customer and never a returning one.
+// ---------------------------------------------------------------------------
+
+const { hasCustomerCapacity } = await import('../enrol.ts');
+
+test('an unlimited allowance never blocks, and never counts rows to find that out', async () => {
+  const fx = await makeFixture();
+  try {
+    // Infinity short-circuits before touching the database — a per-enrolment
+    // COUNT on every merchant would be paid by the plans that do not need it.
+    assert.equal(await hasCustomerCapacity(fx.card, '0550000001', Infinity), true);
+  } finally {
+    await cleanup(fx);
+  }
+});
+
+test('a full plan blocks a genuinely new customer', async () => {
+  const fx = await makeFixture();
+  try {
+    await createPassForEnrolment(fx.card, 'First', '0551110001');
+    await createPassForEnrolment(fx.card, 'Second', '0551110002');
+    // Two passes exist, so a limit of 2 is already reached.
+    assert.equal(
+      await hasCustomerCapacity(fx.card, '0551110003', 2),
+      false,
+      'the third customer must be turned away when the plan allows two'
+    );
+    assert.equal(await hasCustomerCapacity(fx.card, '0551110003', 3), true);
+  } finally {
+    await cleanup(fx);
+  }
+});
+
+test('a returning customer is never blocked by a full plan', async () => {
+  // The important case. Someone who already holds this card re-adding it to a
+  // new phone is not a new customer, and refusing them at the counter over
+  // the merchant's plan tier would punish entirely the wrong person.
+  const fx = await makeFixture();
+  try {
+    await createPassForEnrolment(fx.card, 'Regular', '0552220001');
+    await createPassForEnrolment(fx.card, 'Another', '0552220002');
+    assert.equal(
+      await hasCustomerCapacity(fx.card, '0552220001', 1),
+      true,
+      'the existing holder must still get their card even though the plan is over its cap'
+    );
+    assert.equal(
+      await hasCustomerCapacity(fx.card, '0559990000', 1),
+      false,
+      'a new number at the same cap is still refused'
+    );
+  } finally {
+    await cleanup(fx);
+  }
+});
+
+test('the cap counts the whole merchant, not just the one card', async () => {
+  // Two cards on one Starter account share the 500 allowance; counting per
+  // card would have let a merchant multiply their cap by making more cards.
+  const fx = await makeFixture();
+  try {
+    const second = await prisma.card.create({
+      data: {
+        merchantId: fx.merchantId,
+        slot: 2,
+        linkCode: randomLinkCode(),
+        shortCode: `D${randomHex(4)}`.toUpperCase(),
+        name: 'Second Card',
+        stampsGoal: 6,
+        bgColor: '#203757',
+        fgColor: '#FFFFFF',
+        stampActive: '#F96400',
+        stampInactive: '#8794A5',
+        rewardText: 'Free pastry',
+      },
+    });
+    await createPassForEnrolment(fx.card, 'On card one', '0553330001');
+    await createPassForEnrolment(second, 'On card two', '0553330002');
+    assert.equal(
+      await hasCustomerCapacity(second, '0553330003', 2),
+      false,
+      'both cards draw on the same merchant allowance'
+    );
+    await prisma.stampEvent.deleteMany({ where: { cardId: second.id } });
+  } finally {
+    await cleanup(fx);
+  }
+});

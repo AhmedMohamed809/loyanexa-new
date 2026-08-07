@@ -18,18 +18,49 @@ export type PlanId = 'STARTER' | 'GROWTH' | 'PRO';
 
 export interface Plan {
   id: PlanId;
-  /** Monthly and annual price in pence, so no money is ever a float. */
-  monthlyPence: number;
-  annualPence: number;
+  /**
+   * Monthly and annual price in pence, so no money is ever a float.
+   *
+   * `null` means the plan is not self-serve — the price is quoted per
+   * customer. PRO is sold that way (chains and franchises differ too much
+   * for one number to be honest), so the pricing page shows a contact
+   * button where the other two show a figure. A sentinel like 0 or -1 would
+   * have formatted as "£0" the first time somebody forgot to special-case
+   * it; null cannot survive `formatPrice` unnoticed.
+   */
+  monthlyPence: number | null;
+  annualPence: number | null;
   cards: number;
   locations: number;
   staff: number;
+  /**
+   * Customers who may hold a live pass. `Infinity` is "unlimited" — it
+   * compares correctly in checkLimit() without a magic number, and reads as
+   * unlimited at a glance.
+   */
+  customers: number;
   /** §14's feature rows, which differ by plan rather than by capacity. */
   targetedMessages: boolean;
   dataExport: boolean;
   automatedMessages: boolean;
   api: boolean;
 }
+
+/**
+ * Features named on the pricing page that are NOT built yet.
+ *
+ * Deliberately kept out of `Plan`. If these were plan fields, the first
+ * thing anyone would do is gate on them — and gating on a capability that
+ * does not exist yet either dead-codes the branch or, worse, half-enables
+ * something. They live here as presentation only: the pricing page marks
+ * these rows "Coming soon", and nothing in the product reads this map.
+ *
+ * When one ships, delete it from here and add a real field to Plan. The
+ * test suite asserts every id listed here is absent from Plan, so the two
+ * cannot quietly overlap.
+ */
+export const UPCOMING_FEATURE_IDS = ['collectReviews', 'customFields', 'dataDrivenReviews'] as const;
+export type UpcomingFeatureId = (typeof UPCOMING_FEATURE_IDS)[number];
 
 /**
  * The trial (§14: "Seven-day free trial, no card details").
@@ -41,14 +72,34 @@ export interface Plan {
  */
 export const TRIAL_DAYS = 7;
 
+/**
+ * The annual discount the pricing page advertises, as a fraction.
+ *
+ * The page computes its own annual figures from this same rule. Keeping the
+ * rule here and deriving `annualPence` from it means the two cannot drift:
+ * the previous hardcoded 19000 claimed £190/year for a plan the page was
+ * selling at £182, and nothing caught it because neither file knew about
+ * the other.
+ */
+export const ANNUAL_DISCOUNT = 0.2;
+
+/** Twelve months less the annual discount, rounded to whole pounds as the page rounds. */
+export function annualFromMonthly(monthlyPence: number): number {
+  return Math.round((monthlyPence / 100) * 12 * (1 - ANNUAL_DISCOUNT)) * 100;
+}
+
 export const PLANS: Record<PlanId, Plan> = {
   STARTER: {
     id: 'STARTER',
     monthlyPence: 1900,
-    annualPence: 19000,
+    annualPence: annualFromMonthly(1900), // £182 — was hardcoded 19000 (£190)
     cards: 1,
     locations: 1,
     staff: 0,
+    // One shop's worth of regulars. The cap is what separates this from
+    // GROWTH, so it has to be a real number rather than a courtesy limit.
+    customers: 500,
+    // Push is the headline reason to move up a plan, so it is off here.
     targetedMessages: false,
     dataExport: false,
     automatedMessages: false,
@@ -56,11 +107,14 @@ export const PLANS: Record<PlanId, Plan> = {
   },
   GROWTH: {
     id: 'GROWTH',
-    monthlyPence: 3900,
-    annualPence: 39000,
+    // £23. Was £39 here while the pricing page said £23 — two files, two
+    // prices, and the one the customer read is the one that binds.
+    monthlyPence: 2300,
+    annualPence: annualFromMonthly(2300), // £221
     cards: 3,
-    locations: 3,
+    locations: 2,
     staff: 10,
+    customers: Infinity,
     targetedMessages: true,
     dataExport: true,
     automatedMessages: false,
@@ -68,11 +122,13 @@ export const PLANS: Record<PlanId, Plan> = {
   },
   PRO: {
     id: 'PRO',
-    monthlyPence: 6900,
-    annualPence: 69000,
+    // Quoted per customer — see the note on Plan.monthlyPence.
+    monthlyPence: null,
+    annualPence: null,
     cards: 10,
     locations: 10,
     staff: 50,
+    customers: Infinity,
     targetedMessages: true,
     dataExport: true,
     automatedMessages: true,
@@ -117,12 +173,25 @@ export function effectivePlan(
   return isPlanId(merchant.plan) ? PLANS[merchant.plan] : PLANS.STARTER;
 }
 
-/** Formats pence as a price string. Kept here so the pricing page and the billing screen cannot disagree. */
-export function formatPrice(pence: number): string {
+/**
+ * Formats pence as a price string. Kept here so the pricing page and the
+ * billing screen cannot disagree.
+ *
+ * Returns null for a quote-only plan rather than a string, so a caller that
+ * forgets to handle PRO renders nothing visible and gets caught, instead of
+ * confidently printing "£0" at a customer.
+ */
+export function formatPrice(pence: number | null): string | null {
+  if (pence === null) return null;
   return pence % 100 === 0 ? `£${pence / 100}` : `£${(pence / 100).toFixed(2)}`;
 }
 
-export type LimitKind = 'cards' | 'locations' | 'staff';
+/** True when the plan is quoted per customer rather than sold self-serve. */
+export function isQuoteOnly(plan: Plan): boolean {
+  return plan.monthlyPence === null;
+}
+
+export type LimitKind = 'cards' | 'locations' | 'staff' | 'customers';
 
 export interface LimitCheck {
   allowed: boolean;

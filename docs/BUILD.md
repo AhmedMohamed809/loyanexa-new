@@ -952,21 +952,40 @@ every API route.
 
 ## 14 · Pricing
 
-Three plans, all features included; the difference is capacity.
+Three plans. The first two are self-serve; the third is quoted per customer, because
+chains and franchises differ too much for one number to be honest.
 
-| | Starter | Growth ⭐ | Pro |
+The plan **ids** in code are `STARTER` / `GROWTH` / `PRO` (they match the Prisma enum and
+cannot be renamed without a migration). The **names customers see** are Starter, Business
+and Enterprise.
+
+| | Starter | Business ⭐ | Enterprise |
 |---|---|---|---|
-| Monthly | £19 | £39 | £69 |
-| Annual | £190 | £390 | £690 |
+| Monthly | £19 | £23 | quoted |
+| Annual (20% off) | £182 | £221 | quoted |
 | Loyalty cards | 1 | 3 | 10 |
-| Locations | 1 | 3 | 10 |
+| Locations | 1 | 2 | 10 |
 | Staff accounts | — | 10 | 50 |
-| Unlimited customers · notifications | ✓ | ✓ | ✓ |
+| Customers | 500 | unlimited | unlimited |
+| Push notifications | — | unlimited | unlimited |
 | Location reminders · stats · anti-fraud · logo stamps | ✓ | ✓ | ✓ |
-| Targeted messages · data export | — | ✓ | ✓ |
-| Automated messages · API | — | — | ✓ |
+| Data export | — | ✓ | ✓ |
+| Automated messages (welcome · birthday · win-back) · API | — | — | ✓ |
+| Collect reviews · custom fields · data-driven review collecting | *coming soon* | *coming soon* | *coming soon* |
 
-Seven-day free trial, no card details. Build the matrix data-driven so prices are one constant.
+Seven-day free trial, no card details. Build the matrix data-driven so prices are one
+constant — `apps/demo/plans.ts` is that constant, and `annualPence` is **derived** from
+`monthlyPence` rather than typed twice (it was once hardcoded at £190 while the pricing
+page advertised £182 for the same plan, and nothing compared them).
+
+The three *coming soon* rows are **not built**. They are deliberately absent from the
+`Plan` interface — see `UPCOMING_FEATURE_IDS` in `plans.ts` — so nothing in the product
+can gate on a capability that does not exist. They appear on the pricing page marked
+"Coming soon", never as an included feature.
+
+Capacity is enforced where the thing is created: cards and staff on the dashboard,
+customers at enrolment (`hasCustomerCapacity`). A cap only ever blocks the *next* one —
+a lapsed or full plan never breaks a card a customer is already carrying.
 
 ---
 
