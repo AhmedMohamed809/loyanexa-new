@@ -48,7 +48,15 @@ export type BuiltinIconId =
   | 'paw'
   | 'tooth'
   | 'bottle'
-  | 'kettlebell';
+  | 'kettlebell'
+  // A second trade batch, 6 August 2026, for the categories the catalogue
+  // gained at the same time: nurseries, music schools, tyre shops, boxing
+  // gyms and martial-arts clubs.
+  | 'glove'
+  | 'gi'
+  | 'baby'
+  | 'musicNote'
+  | 'tyre';
 
 /** Every built-in icon id, in the order the designer's picker shows them. */
 export const BUILTIN_ICON_IDS: readonly BuiltinIconId[] = [
@@ -72,6 +80,11 @@ export const BUILTIN_ICON_IDS: readonly BuiltinIconId[] = [
   'tooth',
   'bottle',
   'kettlebell',
+  'glove',
+  'gi',
+  'baby',
+  'musicNote',
+  'tyre',
 ];
 
 /** True for any string that names a real built-in icon — the guard every caller reading one off a query string or a Card row needs before trusting it. */
@@ -571,6 +584,69 @@ function drawKettlebell(s: Surface, cx: number, cy: number, r: number, c: RGBA):
   ]), w, c);
 }
 
+
+function drawGlove(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
+  const w = strokeWidth(r);
+  // A rounded mitt with a thumb bump low on one side and a cuff beneath.
+  // The first attempt used straight segments and read as an angular arrow;
+  // a boxing glove is defined by being round everywhere except the cuff.
+  strokeArc(s, cx + 0.06 * r, cy - 0.18 * r, 0.56 * r, Math.PI * 1.05, Math.PI * 2.15, w, c);
+  strokePath(s, project(cx, cy, r, [[-0.5, -0.14], [-0.5, 0.24]]), w, c);
+  strokePath(s, project(cx, cy, r, [[0.62, -0.14], [0.62, 0.24]]), w, c);
+  // Thumb.
+  strokeArc(s, cx - 0.5 * r, cy + 0.06 * r, 0.22 * r, Math.PI * 0.5, Math.PI * 1.5, w, c);
+  // Cuff.
+  strokePath(s, project(cx, cy, r, [[-0.5, 0.24], [-0.5, 0.74], [0.62, 0.74], [0.62, 0.24], [-0.5, 0.24]]), w, c);
+}
+
+function drawGi(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
+  const w = strokeWidth(r);
+  // Two lapels meeting in a V, over a belt. The first attempt put the collar
+  // points high and apart, which made a crown; bringing them down and in is
+  // what turns the same outline into a jacket.
+  strokePath(s, project(cx, cy, r, [[-0.66, -0.44], [-0.2, -0.6], [0, -0.26], [0.2, -0.6], [0.66, -0.44]]), w, c);
+  strokePath(s, project(cx, cy, r, [[-0.66, -0.44], [-0.56, 0.16]]), w, c);
+  strokePath(s, project(cx, cy, r, [[0.66, -0.44], [0.56, 0.16]]), w, c);
+  // Belt, and the skirt below it.
+  strokePath(s, project(cx, cy, r, [[-0.66, 0.16], [0.66, 0.16]]), w, c);
+  strokePath(s, project(cx, cy, r, [[-0.56, 0.16], [-0.56, 0.74], [0.56, 0.74], [0.56, 0.16]]), w, c);
+  strokePath(s, project(cx, cy, r, [[0, -0.26], [0, 0.16]]), w, c);
+}
+
+function drawBaby(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
+  const w = strokeWidth(r);
+  // Head with a single curl, and two eyes. A face reads as an infant far
+  // more reliably than a body does at this size.
+  strokeArc(s, cx, cy + 0.08 * r, 0.62 * r, 0, Math.PI * 2, w, c);
+  strokeArc(s, cx + 0.06 * r, cy - 0.62 * r, 0.2 * r, Math.PI * 0.7, Math.PI * 1.9, w, c);
+  strokeArc(s, cx - 0.22 * r, cy - 0.02 * r, 0.05 * r, 0, Math.PI * 2, w * 0.8, c);
+  strokeArc(s, cx + 0.22 * r, cy - 0.02 * r, 0.05 * r, 0, Math.PI * 2, w * 0.8, c);
+  strokeArc(s, cx, cy + 0.16 * r, 0.2 * r, Math.PI * 0.15, Math.PI * 0.85, w * 0.85, c);
+}
+
+function drawMusicNote(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
+  const w = strokeWidth(r);
+  // A beamed pair. One note alone is thinner and reads less clearly small.
+  strokePath(s, project(cx, cy, r, [[-0.3, 0.42], [-0.3, -0.66], [0.56, -0.86], [0.56, 0.2]]), w, c);
+  strokePath(s, project(cx, cy, r, [[-0.3, -0.34], [0.56, -0.54]]), w, c);
+  strokeArc(s, cx - 0.52 * r, cy + 0.46 * r, 0.24 * r, 0, Math.PI * 2, w, c);
+  strokeArc(s, cx + 0.34 * r, cy + 0.24 * r, 0.24 * r, 0, Math.PI * 2, w, c);
+}
+
+function drawTyre(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
+  const w = strokeWidth(r);
+  // Outer wall, hub, and four spokes — a plain ring would read as a circle.
+  strokeArc(s, cx, cy, 0.86 * r, 0, Math.PI * 2, w, c);
+  strokeArc(s, cx, cy, 0.34 * r, 0, Math.PI * 2, w, c);
+  for (let i = 0; i < 4; i++) {
+    const a = Math.PI / 4 + (i * Math.PI) / 2;
+    strokePath(s, [
+      [cx + Math.cos(a) * 0.36 * r, cy + Math.sin(a) * 0.36 * r],
+      [cx + Math.cos(a) * 0.84 * r, cy + Math.sin(a) * 0.84 * r],
+    ], w, c);
+  }
+}
+
 export function drawBuiltinIcon(s: Surface, cx: number, cy: number, r: number, color: RGBA, id: BuiltinIconId): void {
   switch (id) {
     case 'coffee':
@@ -591,6 +667,21 @@ export function drawBuiltinIcon(s: Surface, cx: number, cy: number, r: number, c
       return drawHeart(s, cx, cy, r, color);
     case 'check':
       return drawCheck(s, cx, cy, r, color);
+    case 'glove':
+      drawGlove(s, cx, cy, r, color);
+      return;
+    case 'gi':
+      drawGi(s, cx, cy, r, color);
+      return;
+    case 'baby':
+      drawBaby(s, cx, cy, r, color);
+      return;
+    case 'musicNote':
+      drawMusicNote(s, cx, cy, r, color);
+      return;
+    case 'tyre':
+      drawTyre(s, cx, cy, r, color);
+      return;
     case 'cutlery':
       drawCutlery(s, cx, cy, r, color);
       return;

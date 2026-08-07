@@ -2810,6 +2810,11 @@ const ICON_LABEL_KEYS: Record<BuiltinIconId, MessageKey> = {
   tooth: 'iconLabelTooth',
   bottle: 'iconLabelBottle',
   kettlebell: 'iconLabelKettlebell',
+  glove: 'iconLabelGlove',
+  gi: 'iconLabelGi',
+  baby: 'iconLabelBaby',
+  musicNote: 'iconLabelMusicNote',
+  tyre: 'iconLabelTyre',
 };
 
 /** Neutral colour the icon picker's own swatches render in — deliberately not the card's live active-stamp colour, so the picker never needs to reload all ten swatches every time a merchant nudges a colour slider. The strip *preview* (designerPreviewQs below) always uses the real active colour. */
