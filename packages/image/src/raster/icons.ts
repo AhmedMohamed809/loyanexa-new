@@ -34,7 +34,21 @@ export type BuiltinIconId =
   | 'star'
   | 'heart'
   | 'check'
-  | 'gift';
+  | 'gift'
+  // Trade marks, added 6 August 2026. The first ten cover a café and a gym
+  // and then run out: a butcher stamping a star, or a dental clinic stamping
+  // a heart, is a card that looks like it was assembled from whatever was to
+  // hand. These are the trades the template catalogue actually ships.
+  | 'cutlery'
+  | 'hanger'
+  | 'basket'
+  | 'fish'
+  | 'cleaver'
+  | 'shoe'
+  | 'paw'
+  | 'tooth'
+  | 'bottle'
+  | 'kettlebell';
 
 /** Every built-in icon id, in the order the designer's picker shows them. */
 export const BUILTIN_ICON_IDS: readonly BuiltinIconId[] = [
@@ -48,6 +62,16 @@ export const BUILTIN_ICON_IDS: readonly BuiltinIconId[] = [
   'heart',
   'check',
   'gift',
+  'cutlery',
+  'hanger',
+  'basket',
+  'fish',
+  'cleaver',
+  'shoe',
+  'paw',
+  'tooth',
+  'bottle',
+  'kettlebell',
 ];
 
 /** True for any string that names a real built-in icon — the guard every caller reading one off a query string or a Card row needs before trusting it. */
@@ -431,6 +455,122 @@ function drawGift(s: Surface, cx: number, cy: number, r: number, c: RGBA): void 
   }
 }
 
+
+function drawCutlery(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
+  const w = strokeWidth(r);
+  // Fork on one side, knife on the other — the pair is what reads as
+  // "restaurant"; either alone reads as a utensil.
+  strokePath(s, project(cx, cy, r, [[-0.42, -0.86], [-0.42, -0.3]]), w, c);
+  strokePath(s, project(cx, cy, r, [[-0.66, -0.86], [-0.66, -0.42], [-0.18, -0.42], [-0.18, -0.86]]), w, c);
+  strokePath(s, project(cx, cy, r, [[-0.42, -0.42], [-0.42, 0.86]]), w, c);
+  strokePath(s, project(cx, cy, r, [[0.46, 0.86], [0.46, -0.24]]), w, c);
+  strokePath(s, project(cx, cy, r, [[0.46, -0.24], [0.2, -0.44], [0.34, -0.86], [0.6, -0.86], [0.66, -0.5], [0.46, -0.24]]), w, c);
+}
+
+function drawHanger(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
+  const w = strokeWidth(r);
+  strokeArc(s, cx, cy - 0.52 * r, 0.22 * r, Math.PI * 0.15, Math.PI * 0.85, w, c);
+  strokePath(s, project(cx, cy, r, [[0, -0.3], [0, -0.08]]), w, c);
+  strokePath(s, project(cx, cy, r, [[0, -0.08], [-0.86, 0.5], [0.86, 0.5], [0, -0.08]]), w, c);
+}
+
+function drawBasket(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
+  const w = strokeWidth(r);
+  // The handle is what separates a basket from a box.
+  strokeArc(s, cx, cy - 0.16 * r, 0.36 * r, Math.PI, Math.PI * 2, w, c);
+  strokePath(s, project(cx, cy, r, [[-0.88, -0.16], [0.88, -0.16]]), w, c);
+  strokePath(s, project(cx, cy, r, [[-0.72, -0.16], [-0.5, 0.76], [0.5, 0.76], [0.72, -0.16]]), w, c);
+}
+
+function drawFish(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
+  const w = strokeWidth(r);
+  // Body as two mirrored arcs meeting at nose and tail, then the tail fin.
+  strokePath(s, project(cx, cy, r, [
+    [-0.3, 0], [-0.02, -0.44], [0.42, -0.34], [0.7, 0], [0.42, 0.34], [-0.02, 0.44], [-0.3, 0],
+  ]), w, c);
+  strokePath(s, project(cx, cy, r, [[-0.3, 0], [-0.82, -0.36], [-0.82, 0.36], [-0.3, 0]]), w, c);
+  strokeArc(s, cx + 0.46 * r, cy - 0.1 * r, 0.07 * r, 0, Math.PI * 2, w * 0.8, c);
+}
+
+function drawCleaver(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
+  const w = strokeWidth(r);
+  // A deep rectangular blade with the handle coming off its top-right
+  // corner. The first attempt drew the handle at mid-height and the result
+  // read as a blocky letter rather than as a tool — on a cleaver the handle
+  // sits ABOVE the spine, which is what makes the silhouette recognisable.
+  strokePath(s, project(cx, cy, r, [
+    [-0.8, -0.34], [0.24, -0.34], [0.24, 0.56], [-0.8, 0.56],
+  ]), w, c, true);
+  strokePath(s, project(cx, cy, r, [[0.24, -0.2], [0.8, -0.2], [0.8, -0.48], [0.24, -0.48]]), w, c);
+  // The hanging hole, which nothing else in the set has.
+  strokeArc(s, cx - 0.56 * r, cy - 0.1 * r, 0.1 * r, 0, Math.PI * 2, w * 0.75, c);
+}
+
+function drawShoe(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
+  const w = strokeWidth(r);
+  // Side profile: a flat sole, a toe that lifts at one end, and an ankle
+  // opening at the other. The first attempt had no opening and no toe lift,
+  // so it read as a wedge — those two features are the whole silhouette.
+  strokePath(s, project(cx, cy, r, [
+    [-0.86, 0.5],        // heel, on the ground
+    [-0.86, -0.2],       // up the back
+    [-0.42, -0.34],      // ankle collar
+    [-0.28, 0.04],       // down into the instep
+    [0.34, 0.12],        // along the foot
+    [0.86, 0.34],        // toe, lifting
+    [0.86, 0.5],         // toe tip down to the sole
+  ]), w, c);
+  strokePath(s, project(cx, cy, r, [[-0.86, 0.5], [0.86, 0.5]]), w, c);
+  // Laces.
+  strokePath(s, project(cx, cy, r, [[-0.18, -0.06], [0.06, 0.0]]), w * 0.7, c);
+  strokePath(s, project(cx, cy, r, [[-0.06, -0.18], [0.18, -0.1]]), w * 0.7, c);
+}
+
+function drawPaw(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
+  // Four toes and a pad, filled in one pass so nothing seams where they meet.
+  const parts: Array<(x: number, y: number) => number> = [];
+  const toes: Array<[number, number, number]> = [
+    [-0.52, -0.3, 0.24], [-0.18, -0.56, 0.25], [0.18, -0.56, 0.25], [0.52, -0.3, 0.24],
+  ];
+  for (const [tx, ty, tr] of toes) {
+    parts.push((x, y) => discCoverage(x, y, cx + tx * r, cy + ty * r, tr * r));
+  }
+  parts.push((x, y) => discCoverage(x, y, cx, cy + 0.36 * r, 0.44 * r));
+  parts.push((x, y) => discCoverage(x, y, cx - 0.3 * r, cy + 0.2 * r, 0.3 * r));
+  parts.push((x, y) => discCoverage(x, y, cx + 0.3 * r, cy + 0.2 * r, 0.3 * r));
+  fillUnion(s, cx - r - 2, cy - r - 2, cx + r + 2, cy + r + 2, c, parts);
+}
+
+function drawTooth(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
+  const w = strokeWidth(r);
+  // Crown across the top, two roots below.
+  strokePath(s, project(cx, cy, r, [
+    [-0.62, -0.36], [-0.5, -0.72], [0.5, -0.72], [0.62, -0.36],
+    [0.5, 0.2], [0.24, 0.78], [0.06, 0.2], [-0.06, 0.2], [-0.24, 0.78], [-0.5, 0.2], [-0.62, -0.36],
+  ]), w, c);
+}
+
+function drawBottle(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
+  const w = strokeWidth(r);
+  // Neck, shoulder, body — a grooming or shampoo bottle.
+  strokePath(s, project(cx, cy, r, [[-0.2, -0.86], [0.2, -0.86], [0.2, -0.56]]), w, c);
+  strokePath(s, project(cx, cy, r, [[-0.2, -0.86], [-0.2, -0.56]]), w, c);
+  strokePath(s, project(cx, cy, r, [
+    [-0.2, -0.56], [-0.56, -0.26], [-0.56, 0.78], [0.56, 0.78], [0.56, -0.26], [0.2, -0.56],
+  ]), w, c);
+  strokePath(s, project(cx, cy, r, [[-0.56, 0.14], [0.56, 0.14]]), w, c);
+}
+
+function drawKettlebell(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
+  const w = strokeWidth(r);
+  // Handle over a heavy bell. The gym already has a dumbbell; a kettlebell
+  // is the mark a studio or a personal trainer actually uses.
+  strokeArc(s, cx, cy - 0.4 * r, 0.3 * r, Math.PI * 1.05, Math.PI * 1.95, w, c);
+  strokePath(s, project(cx, cy, r, [
+    [-0.3, -0.32], [-0.62, 0.06], [-0.62, 0.5], [-0.4, 0.78], [0.4, 0.78], [0.62, 0.5], [0.62, 0.06], [0.3, -0.32],
+  ]), w, c);
+}
+
 export function drawBuiltinIcon(s: Surface, cx: number, cy: number, r: number, color: RGBA, id: BuiltinIconId): void {
   switch (id) {
     case 'coffee':
@@ -451,6 +591,36 @@ export function drawBuiltinIcon(s: Surface, cx: number, cy: number, r: number, c
       return drawHeart(s, cx, cy, r, color);
     case 'check':
       return drawCheck(s, cx, cy, r, color);
+    case 'cutlery':
+      drawCutlery(s, cx, cy, r, color);
+      return;
+    case 'hanger':
+      drawHanger(s, cx, cy, r, color);
+      return;
+    case 'basket':
+      drawBasket(s, cx, cy, r, color);
+      return;
+    case 'fish':
+      drawFish(s, cx, cy, r, color);
+      return;
+    case 'cleaver':
+      drawCleaver(s, cx, cy, r, color);
+      return;
+    case 'shoe':
+      drawShoe(s, cx, cy, r, color);
+      return;
+    case 'paw':
+      drawPaw(s, cx, cy, r, color);
+      return;
+    case 'tooth':
+      drawTooth(s, cx, cy, r, color);
+      return;
+    case 'bottle':
+      drawBottle(s, cx, cy, r, color);
+      return;
+    case 'kettlebell':
+      drawKettlebell(s, cx, cy, r, color);
+      return;
     case 'gift':
       return drawGift(s, cx, cy, r, color);
   }
