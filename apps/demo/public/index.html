@@ -1613,7 +1613,10 @@ const isAr = () => S.lang === 'ar';
 const n = v => isAr() ? String(v).replace(/\d/g, d => '٠١٢٣٤٥٦٧٨٩'[d]) : String(v);
 /* English keeps the symbol; Arabic spells the unit out after the figure,
    which is how prices read naturally in Arabic. */
-const CUR_AR = 'بوند';
+/* جنيه, not بوند. بوند only spells the English word out in Arabic letters —
+   it is not the currency's name. The AI answers further down already said
+   جنيه, so every price on the page disagreed with every price in the demo. */
+const CUR_AR = 'جنيه';
 const cur = v => isAr() ? `${n(v)} ${CUR_AR}` : '£' + v;
 /* inverse of n(): Arabic-Indic -> Latin, so figures stay machine-readable */
 const dn = v => String(v).replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d));
@@ -1724,7 +1727,7 @@ const TX = [
 ];
 const REWARDS = [
   {n:'Free coffee',      ar:'قهوة مجانية',       cost:8,  used:412, rate:74, on:true},
-  {n:'£5 off your bill', ar:'خصم ٥ بوند',      cost:15, used:186, rate:41, on:true},
+  {n:'£5 off your bill', ar:'خصم ٥ جنيهات',      cost:15, used:186, rate:41, on:true},
   {n:'Free pastry',      ar:'معجنات مجانية',      cost:6,  used:298, rate:63, on:true},
   {n:'Birthday cake slice',ar:'قطعة كعك الميلاد',cost:0,  used:57,  rate:88, on:true},
   {n:'Bring a friend 2-for-1',ar:'اثنان بسعر واحد',cost:10,used:94, rate:29, on:false},
