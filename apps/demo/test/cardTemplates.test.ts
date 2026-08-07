@@ -38,28 +38,35 @@ function randomHex(bytes: number): string {
 // The catalogue itself
 // ---------------------------------------------------------------------------
 
-test('every trade offers three templates, and every photo it names exists on disk', async () => {
+test('every category has templates, and every photo a template names exists on disk', async () => {
   const fs = await import('node:fs');
   const path = await import('node:path');
   const assetDir = path.join(ROOT, 'apps/demo/assets/templates');
 
-  // Three per trade was the ask. A trade with one is a trade nobody browses.
-  const byTrade = new Map<string, number>();
+  // A category rendered as a heading with nothing under it looks broken.
+  const byCategory = new Map<string, number>();
   for (const tpl of CARD_TEMPLATES) {
-    const trade = tpl.id.split('-')[0]!;
-    byTrade.set(trade, (byTrade.get(trade) ?? 0) + 1);
+    byCategory.set(tpl.category, (byCategory.get(tpl.category) ?? 0) + 1);
   }
-  for (const [trade, count] of byTrade) {
-    assert.equal(count, 3, `${trade} should offer exactly three templates, has ${count}`);
+  assert.ok(byCategory.size >= 6, `expected the catalogue to span the trades, got ${byCategory.size} categories`);
+  for (const [category, count] of byCategory) {
+    assert.ok(count >= 1, `${category} has no templates`);
   }
 
   // A template naming a photo that is not there renders as a flat colour and
   // nothing anywhere reports it — so check the file, not just the field.
   for (const tpl of CARD_TEMPLATES) {
-    if (!tpl.photo) continue;
+    assert.ok(tpl.photo, `${tpl.id} has no photo`);
     const file = path.join(assetDir, `${tpl.photo}.jpg`);
     assert.ok(fs.existsSync(file), `${tpl.id} names a missing photo: ${tpl.photo}.jpg`);
     assert.ok(fs.statSync(file).size > 8000, `${tpl.photo}.jpg looks truncated`);
+  }
+
+  // And nothing ships an orphaned photo, which is dead weight in the repo
+  // and in the boot-time ingest.
+  const named = new Set(CARD_TEMPLATES.map((t) => `${t.photo}.jpg`));
+  for (const file of fs.readdirSync(assetDir).filter((f) => f.endsWith('.jpg'))) {
+    assert.ok(named.has(file), `${file} is not used by any template`);
   }
 });
 
@@ -101,21 +108,21 @@ test('every template ships both languages — an Arabic card must never be seede
 
 test('search matches across both languages, and by code', () => {
   // A merchant on an Arabic dashboard may still think "gym".
-  assert.ok(searchTemplates('gym').some((t) => t.id === 'gym'));
-  assert.ok(searchTemplates('نادي').some((t) => t.id === 'gym'));
+  assert.ok(searchTemplates('gym').some((t) => t.id === 'gymclub'));
+  assert.ok(searchTemplates('نادي').some((t) => t.id === 'gymclub'));
   // Keywords, not just the label.
-  assert.ok(searchTemplates('espresso').some((t) => t.id === 'cafe'));
-  assert.ok(searchTemplates('قهوة').some((t) => t.id === 'cafe'));
-  assert.ok(searchTemplates('TMP-CAFE01').some((t) => t.id === 'cafe'));
+  assert.ok(searchTemplates('seafood').some((t) => t.id === 'fishmonger'));
+  assert.ok(searchTemplates('لحوم').some((t) => t.id === 'butcher'));
+  assert.ok(searchTemplates('TMP-TAIL01').some((t) => t.id === 'tailor'));
 
   assert.equal(searchTemplates('   ').length, CARD_TEMPLATES.length, 'a blank query returns everything');
   assert.equal(searchTemplates('zzzznope').length, 0);
 });
 
 test('import by code is forgiving about case and whitespace, but not about being wrong', () => {
-  assert.equal(findTemplateByCode('TMP-CAFE01')?.id, 'cafe');
-  assert.equal(findTemplateByCode('  tmp-cafe01  ')?.id, 'cafe', 'typed by hand from a printed gallery');
-  assert.equal(findTemplateByCode('TMPCAFE01'), undefined, 'a missing dash must not fuzzy-match');
+  assert.equal(findTemplateByCode('TMP-TAIL01')?.id, 'tailor');
+  assert.equal(findTemplateByCode('  tmp-tail01  ')?.id, 'tailor', 'typed by hand from a printed gallery');
+  assert.equal(findTemplateByCode('TMPTAIL01'), undefined, 'a missing dash must not fuzzy-match');
   assert.equal(findTemplateByCode(''), undefined);
   assert.equal(findTemplateByCode('TMP-NOPE99'), undefined);
 });
@@ -124,7 +131,7 @@ test('grouping keeps catalogue order and drops empty categories', () => {
   const groups = groupByCategory(CARD_TEMPLATES);
   assert.deepEqual(
     groups.map((g) => g.category),
-    ['food', 'beauty', 'fitness', 'services']
+    ['fashion', 'grocery', 'fitness', 'education', 'automotive', 'pets']
   );
   assert.ok(groups.every((g) => g.templates.length > 0));
 
@@ -216,10 +223,10 @@ test('the gallery renders every template as a real /preview.png, not a mock-up',
 });
 
 test('the gallery filters by search and says so when nothing matches', async () => {
-  const hit = await fetch(`${server.baseUrl}/cards/new/templates?q=barber`, { headers: { Cookie: cookie } });
+  const hit = await fetch(`${server.baseUrl}/cards/new/templates?q=shoe`, { headers: { Cookie: cookie } });
   const hitHtml = await hit.text();
-  assert.ok(hitHtml.includes('/cards/new?template=barber'));
-  assert.ok(!hitHtml.includes('/cards/new?template=gym'), 'a search must actually narrow the gallery');
+  assert.ok(hitHtml.includes('/cards/new?template=shoestore'));
+  assert.ok(!hitHtml.includes('/cards/new?template=butcher'), 'a search must actually narrow the gallery');
 
   const miss = await fetch(`${server.baseUrl}/cards/new/templates?q=zzzznope`, { headers: { Cookie: cookie } });
   const missHtml = await miss.text();
@@ -228,12 +235,12 @@ test('the gallery filters by search and says so when nothing matches', async () 
 });
 
 test('a valid import code redirects straight to the prefilled form; a bad one explains itself', async () => {
-  const good = await fetch(`${server.baseUrl}/cards/new/templates?code=tmp-cafe01`, {
+  const good = await fetch(`${server.baseUrl}/cards/new/templates?code=tmp-tail01`, {
     headers: { Cookie: cookie },
     redirect: 'manual',
   });
   assert.equal(good.status, 303);
-  assert.equal(good.headers.get('location'), '/cards/new?template=cafe');
+  assert.equal(good.headers.get('location'), '/cards/new?template=tailor');
 
   const bad = await fetch(`${server.baseUrl}/cards/new/templates?code=TMP-NOPE99`, {
     headers: { Cookie: cookie },
@@ -244,11 +251,11 @@ test('a valid import code redirects straight to the prefilled form; a bad one ex
 });
 
 test('picking a template prefills the create form, icon included', async () => {
-  const res = await fetch(`${server.baseUrl}/cards/new?template=barber`, { headers: { Cookie: cookie } });
+  const res = await fetch(`${server.baseUrl}/cards/new?template=shoestore`, { headers: { Cookie: cookie } });
   assert.equal(res.status, 200);
   const html = await res.text();
 
-  const barber = findTemplate('barber')!;
+  const barber = findTemplate('shoestore')!;
   assert.ok(html.includes(`value="${barber.bgColor}"`), 'the background colour must be prefilled');
   assert.ok(html.includes(barber.rewardAr), 'the Arabic reward seed must be prefilled (cards default to ar)');
   assert.ok(
@@ -269,7 +276,7 @@ test('the preview shows the card as EACH wallet actually renders it', async () =
   //
   // Those orderings are the thing being asserted; get them the same way round
   // and the preview stops being a preview of anything.
-  const html = await (await fetch(`${server.baseUrl}/cards/new?template=bakery`, { headers: { Cookie: cookie } })).text();
+  const html = await (await fetch(`${server.baseUrl}/cards/new?template=butcher`, { headers: { Cookie: cookie } })).text();
 
   assert.match(html, /data-wallet="apple"/, 'an Apple tab must exist');
   assert.match(html, /data-wallet="google"/, 'a Google tab must exist');

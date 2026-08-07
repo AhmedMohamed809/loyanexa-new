@@ -56,7 +56,9 @@ export type BuiltinIconId =
   | 'gi'
   | 'baby'
   | 'musicNote'
-  | 'tyre';
+  | 'tyre'
+  | 'phone'
+  | 'needle';
 
 /** Every built-in icon id, in the order the designer's picker shows them. */
 export const BUILTIN_ICON_IDS: readonly BuiltinIconId[] = [
@@ -85,6 +87,8 @@ export const BUILTIN_ICON_IDS: readonly BuiltinIconId[] = [
   'baby',
   'musicNote',
   'tyre',
+  'phone',
+  'needle',
 ];
 
 /** True for any string that names a real built-in icon — the guard every caller reading one off a query string or a Card row needs before trusting it. */
@@ -647,6 +651,27 @@ function drawTyre(s: Surface, cx: number, cy: number, r: number, c: RGBA): void 
   }
 }
 
+
+function drawPhone(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
+  const w = strokeWidth(r);
+  strokePath(s, project(cx, cy, r, [
+    [-0.46, -0.86], [0.46, -0.86], [0.46, 0.86], [-0.46, 0.86],
+  ]), w, c, true);
+  // Earpiece and home indicator — without them this is a rounded rectangle.
+  strokePath(s, project(cx, cy, r, [[-0.16, -0.66], [0.16, -0.66]]), w * 0.8, c);
+  strokePath(s, project(cx, cy, r, [[-0.2, 0.66], [0.2, 0.66]]), w * 0.8, c);
+}
+
+function drawNeedle(s: Surface, cx: number, cy: number, r: number, c: RGBA): void {
+  const w = strokeWidth(r);
+  // A needle on the diagonal with an eye at the top and thread looping from
+  // it. The loop is what makes it a tailor's mark rather than a pin.
+  strokePath(s, project(cx, cy, r, [[0.62, -0.66], [-0.5, 0.72]]), w, c);
+  strokeArc(s, cx + 0.52 * r, cy - 0.54 * r, 0.16 * r, 0, Math.PI * 2, w * 0.8, c);
+  strokeArc(s, cx + 0.06 * r, cy - 0.2 * r, 0.3 * r, Math.PI * 1.1, Math.PI * 2.4, w * 0.85, c);
+  strokeArc(s, cx - 0.24 * r, cy + 0.16 * r, 0.28 * r, Math.PI * 0.1, Math.PI * 1.4, w * 0.85, c);
+}
+
 export function drawBuiltinIcon(s: Surface, cx: number, cy: number, r: number, color: RGBA, id: BuiltinIconId): void {
   switch (id) {
     case 'coffee':
@@ -667,6 +692,12 @@ export function drawBuiltinIcon(s: Surface, cx: number, cy: number, r: number, c
       return drawHeart(s, cx, cy, r, color);
     case 'check':
       return drawCheck(s, cx, cy, r, color);
+    case 'phone':
+      drawPhone(s, cx, cy, r, color);
+      return;
+    case 'needle':
+      drawNeedle(s, cx, cy, r, color);
+      return;
     case 'glove':
       drawGlove(s, cx, cy, r, color);
       return;

@@ -2110,9 +2110,12 @@ async function handleTemplateGallery(req: http.IncomingMessage, res: http.Server
   const codeError = code && !findTemplateByCode(code) ? t(lang, 'templatesCodeInvalid') : '';
 
   const catLabel: Record<TemplateCategory, string> = {
-    food: t(lang, 'templatesCatFood'),
-    beauty: t(lang, 'templatesCatBeauty'),
+    fashion: t(lang, 'templatesCatFashion'),
+    grocery: t(lang, 'templatesCatGrocery'),
     fitness: t(lang, 'templatesCatFitness'),
+    education: t(lang, 'templatesCatEducation'),
+    automotive: t(lang, 'templatesCatAutomotive'),
+    pets: t(lang, 'templatesCatPets'),
     services: t(lang, 'templatesCatServices'),
   };
 
@@ -2815,6 +2818,8 @@ const ICON_LABEL_KEYS: Record<BuiltinIconId, MessageKey> = {
   baby: 'iconLabelBaby',
   musicNote: 'iconLabelMusicNote',
   tyre: 'iconLabelTyre',
+  phone: 'iconLabelPhone',
+  needle: 'iconLabelNeedle',
 };
 
 /** Neutral colour the icon picker's own swatches render in — deliberately not the card's live active-stamp colour, so the picker never needs to reload all ten swatches every time a merchant nudges a colour slider. The strip *preview* (designerPreviewQs below) always uses the real active colour. */
