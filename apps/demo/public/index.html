@@ -477,6 +477,81 @@ html[lang="ar"] .triad b{letter-spacing:0;line-height:1.3}
   padding:22px 0;margin:18px 0 22px;border-block:1px solid var(--line)}
 .plan-ent .ent-mid .small{max-width:34ch;line-height:1.7}
 .plan-ent .plan-ic{background:rgba(19,28,43,.05);border-color:var(--line-2);color:var(--ink-2)}
+/* ============================================================
+   Aurora pricing — a deliberate exception to the white minimalism.
+
+   Everything else on this page is white with a hairline border. This one
+   section is dark with drifting colour behind it, and that contrast is the
+   point: it is the last thing before the call to action, and a single change
+   of register carries more weight than the same effect used everywhere.
+
+   Built in plain CSS. The reference for this was a React component pulling in
+   framer-motion, lucide-react and shadcn — several hundred packages and a
+   build step for a project that currently has three dependencies and no
+   bundler at all. Two @keyframes and a blur do the same job here.
+
+   The blobs are the expensive part: a 100px blur over a large area repaints
+   on every frame. They are therefore composited on their own layer, paused
+   entirely under prefers-reduced-motion, and dropped on small screens where
+   the cost is highest and the effect least visible.
+   ============================================================ */
+.pricing-aurora{position:relative;border-radius:28px;overflow:hidden;
+  background:#0B1020;padding:64px 28px 72px;margin-top:8px}
+.pricing-aurora .sec-head .h2,.pricing-aurora .sec-head .lede{color:#fff}
+.pricing-aurora .sec-head .lede{opacity:.72}
+.aurora-field{position:absolute;inset:0;z-index:0;pointer-events:none;
+  filter:blur(90px);opacity:.55;will-change:transform}
+.aurora-blob{position:absolute;border-radius:50%}
+.aurora-1{width:min(46vw,560px);aspect-ratio:1;background:rgba(242,140,56,.55);
+  top:-12%;inset-inline-start:4%;animation:auroraDrift1 22s ease-in-out infinite alternate}
+.aurora-2{width:min(38vw,460px);aspect-ratio:1;background:rgba(120,86,255,.45);
+  bottom:-14%;inset-inline-end:2%;animation:auroraDrift2 27s ease-in-out infinite alternate}
+.aurora-3{width:min(30vw,380px);aspect-ratio:1;background:rgba(0,168,232,.32);
+  top:34%;inset-inline-start:46%;animation:auroraDrift1 31s ease-in-out infinite alternate-reverse}
+@keyframes auroraDrift1{from{transform:translate3d(0,0,0) scale(1)}
+  to{transform:translate3d(90px,60px,0) scale(1.12)}}
+@keyframes auroraDrift2{from{transform:translate3d(0,0,0) scale(1)}
+  to{transform:translate3d(-80px,-50px,0) scale(1.08)}}
+.pricing-aurora .shell,.pricing-aurora .prices,
+.pricing-aurora .sec-head,.pricing-aurora .pr-wrap{position:relative;z-index:1}
+
+/* The cards on this section only. Glass is justified here because there is
+   now something behind it worth seeing through. */
+.pricing-aurora .plan{background:rgba(255,255,255,.05);
+  border-color:rgba(255,255,255,.14);color:#fff;
+  -webkit-backdrop-filter:blur(14px) saturate(150%);backdrop-filter:blur(14px) saturate(150%)}
+.pricing-aurora .plan:hover{border-color:rgba(242,140,56,.55);transform:translateY(-4px)}
+.pricing-aurora .plan h3,.pricing-aurora .price b{color:#fff}
+.pricing-aurora .plan .small,.pricing-aurora .price span,
+.pricing-aurora .ent-lead{color:rgba(255,255,255,.66)}
+.pricing-aurora .plan li{color:rgba(255,255,255,.86)}
+.pricing-aurora .plan li.off{color:rgba(255,255,255,.38)}
+.pricing-aurora .plan-any span{color:rgba(255,255,255,.6)}
+.pricing-aurora .plan-any::before,.pricing-aurora .plan-any::after{background:rgba(255,255,255,.16)}
+.pricing-aurora .plan-ic{background:rgba(242,140,56,.16);color:#F7B267;border-color:rgba(242,140,56,.34)}
+.pricing-aurora .tick{background:rgba(242,140,56,.18);color:#F7B267}
+.pricing-aurora .cross{background:rgba(255,255,255,.08);color:rgba(255,255,255,.45)}
+/* The featured plan lifts out of the glass rather than sitting in it. */
+.pricing-aurora .plan-top{background:rgba(255,255,255,.10);
+  border-color:rgba(242,140,56,.5);box-shadow:0 24px 60px -20px rgba(0,0,0,.7)}
+.pricing-aurora .plan-top .price b{color:#F7B267}
+.pricing-aurora .pr-toggle{background:rgba(255,255,255,.07);border-color:rgba(255,255,255,.16)}
+.pricing-aurora .pr-toggle button{color:rgba(255,255,255,.62)}
+.pricing-aurora .pr-toggle button.on{color:var(--on-accent)}
+.pricing-aurora .btn-ghost{color:#fff;border-color:rgba(255,255,255,.28)}
+.pricing-aurora .btn-ghost:hover{border-color:#F7B267;color:#F7B267;background:rgba(242,140,56,.12)}
+
+@media (prefers-reduced-motion:reduce){
+  .aurora-1,.aurora-2,.aurora-3{animation:none}
+  .pricing-aurora .plan:hover{transform:none}
+}
+/* A 90px blur across a full-width element is the most expensive thing on the
+   page. On a phone it costs the most and shows the least, so it goes. */
+@media (max-width:720px){
+  .aurora-field{display:none}
+  .pricing-aurora{padding:48px 18px 56px;background:#0B1020}
+}
+
 .plan{padding:32px 28px;border-radius:var(--r-2xl);border:1px solid var(--line);text-align:center;
   background:var(--paper);
   display:flex;flex-direction:column;
@@ -1992,7 +2067,13 @@ function homeView(){
       </div>
     </section>
 
-    <section class="sec shell" id="pricing">
+    <section class="sec pricing-aurora" id="pricing">
+      <div class="aurora-field" aria-hidden="true">
+        <span class="aurora-blob aurora-1"></span>
+        <span class="aurora-blob aurora-2"></span>
+        <span class="aurora-blob aurora-3"></span>
+      </div>
+      <div class="shell">
       <div class="sec-head sec-center rise">
         <h2 class="h2">${t('p_h2')}</h2><p class="lede">${t('p_p')}</p>
       </div>
@@ -2040,6 +2121,7 @@ function homeView(){
           <button class="btn btn-primary btn-block" data-act="contact">${t('p3_cta')}${ic('arrow',15)}</button>
           <p class="small" style="margin-top:12px">${t('p3_sub')}</p>
         </article>
+      </div>
       </div>
     </section>
 
@@ -2543,7 +2625,12 @@ function aiReply(container,question,answerHTML){
 }
 
 document.addEventListener('click',e=>{
-  const el=e.target.closest('[data-act],[data-ask],[data-toggle],[data-brand]');
+  /* [data-bill] belongs in this list. Without it closest() never matched the
+     pricing toggle, the handler returned early, and the `if(el.dataset.bill)`
+     branch below was unreachable — so BOTH billing buttons were dead, not
+     just the annual one. The branch existed and looked correct, which is why
+     it survived: the bug was in the selector, three hundred lines away. */
+  const el=e.target.closest('[data-act],[data-ask],[data-toggle],[data-brand],[data-bill]');
   if(!el) return;
   const act=el.dataset.act;
 
