@@ -16,12 +16,14 @@ import {
   parseReverseGeocodeResponse,
   normaliseQuery,
   normaliseSessionToken,
+  parseRegionCodes,
   isValidPlaceId,
   isPlaceSearchEnabled,
   MAX_PLACE_SUGGESTIONS,
   MAX_PLACE_QUERY_LENGTH,
   MIN_PLACE_QUERY_LENGTH,
   MAX_PLACE_ADDRESS_LENGTH,
+  MAX_INCLUDED_REGIONS,
 } from '../placeSearch.ts';
 
 // ---------------------------------------------------------------------------
@@ -201,6 +203,42 @@ test('normaliseSessionToken passes a UUID and drops everything else', () => {
   assert.equal(normaliseSessionToken(''), undefined);
   assert.equal(normaliseSessionToken(undefined), undefined);
   assert.equal(normaliseSessionToken({ toString: () => uuid }), undefined);
+});
+
+test('parseRegionCodes reads the market list the rollout is currently open in', () => {
+  // One market today, more as they launch — adding a country must be an env
+  // var edit, never a code change.
+  assert.deepEqual(parseRegionCodes('GB'), ['GB']);
+  assert.deepEqual(parseRegionCodes('GB,SA'), ['GB', 'SA']);
+  assert.deepEqual(parseRegionCodes(' gb , sa , ae '), ['GB', 'SA', 'AE']);
+  assert.deepEqual(parseRegionCodes('GB,GB,SA'), ['GB', 'SA'], 'duplicates collapse');
+});
+
+test('parseRegionCodes corrects UK to GB — the mistake anyone launching in Britain will make', () => {
+  // "UK" is not an ISO-3166-1 code; the United Kingdom is GB. It is exactly
+  // two letters, so shape-checking never catches it, and forwarding it
+  // restricts every search to a country that does not exist — zero results
+  // for every merchant in the market you just launched in, with no error to
+  // explain why.
+  assert.deepEqual(parseRegionCodes('UK'), ['GB']);
+  assert.deepEqual(parseRegionCodes('uk'), ['GB']);
+  assert.deepEqual(parseRegionCodes('UK,SA'), ['GB', 'SA']);
+  assert.deepEqual(parseRegionCodes('GB,UK'), ['GB'], 'the alias must not double up');
+});
+
+test('parseRegionCodes drops anything that is not shaped like a country code', () => {
+  assert.deepEqual(parseRegionCodes('GBR'), []);
+  assert.deepEqual(parseRegionCodes('united kingdom'), []);
+  assert.deepEqual(parseRegionCodes('G1'), []);
+  assert.deepEqual(parseRegionCodes('GB,,SA'), ['GB', 'SA'], 'an empty entry is skipped, not fatal');
+  assert.deepEqual(parseRegionCodes(''), [], 'unset means worldwide');
+  assert.deepEqual(parseRegionCodes('   '), []);
+  assert.deepEqual(parseRegionCodes(undefined), []);
+});
+
+test('parseRegionCodes stops at Google\'s own limit of 15 regions', () => {
+  const many = Array.from({ length: 20 }, (_, i) => `A${String.fromCharCode(65 + i)}`).join(',');
+  assert.equal(parseRegionCodes(many).length, MAX_INCLUDED_REGIONS);
 });
 
 test('isValidPlaceId accepts Google ids and rejects anything that could escape the URL', () => {

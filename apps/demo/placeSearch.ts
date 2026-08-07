@@ -112,6 +112,54 @@ function languageCode(lang: string): string {
   return lang === 'ar' ? 'ar' : 'en';
 }
 
+/** Google accepts at most 15 entries in `includedRegionCodes`. */
+export const MAX_INCLUDED_REGIONS = 15;
+
+/**
+ * Everyday names for countries that are not that country's ISO code,
+ * corrected rather than rejected.
+ *
+ * `UK` is the one that matters and the reason this exists: the United
+ * Kingdom's ISO-3166-1 code is **GB**, but nobody outside a standards
+ * committee writes that, and `PLACES_REGION_CODE=UK` is a restriction to a
+ * country that does not exist — every search returns nothing, in the market
+ * you just launched in, with no error anywhere to explain it. It is exactly
+ * two letters, so no amount of shape-checking catches it.
+ */
+const REGION_ALIASES: Record<string, string> = { UK: 'GB' };
+
+/**
+ * Reads `PLACES_REGION_CODE` into the country list search is confined to.
+ *
+ * A comma-separated list rather than one value, because the rollout is
+ * country by country — "GB" today, "GB,SA" when Saudi opens, and so on —
+ * and adding a market should be an env var edit and a restart, never a
+ * code change. Order is preserved; Google treats the list as a set.
+ *
+ * Anything that is not two letters is dropped rather than forwarded, and
+ * the aliases above are corrected, so `UK` quietly becomes `GB`. Beyond
+ * that this validates shape, not membership: a well-formed code for a
+ * country Google has never heard of still goes upstream, where it restricts
+ * the search to nothing. Carrying all ~250 ISO codes to catch that seemed a
+ * poor trade against one alias table that catches the mistake anyone
+ * launching in Britain will actually make.
+ *
+ * Returns [] for an unset or entirely unusable value, which means worldwide
+ * search.
+ */
+export function parseRegionCodes(raw: unknown): string[] {
+  if (typeof raw !== 'string') return [];
+  const out: string[] = [];
+  for (const part of raw.split(',')) {
+    const trimmed = part.trim().toUpperCase();
+    if (!/^[A-Z]{2}$/.test(trimmed)) continue;
+    const code = REGION_ALIASES[trimmed] ?? trimmed;
+    if (!out.includes(code)) out.push(code);
+    if (out.length >= MAX_INCLUDED_REGIONS) break;
+  }
+  return out;
+}
+
 /** Trims and caps a merchant's raw search text. Returns '' for anything too short to be worth a request. */
 export function normaliseQuery(raw: unknown): string {
   if (typeof raw !== 'string') return '';
@@ -260,24 +308,25 @@ async function fetchJson(url: string, init: RequestInit): Promise<unknown | null
 /**
  * Suggests places for a merchant's partial input.
  *
- * `regionCode`, when set, becomes `includedRegionCodes` — which *restricts*
- * results to that country rather than merely preferring it. That is a
- * stronger setting than it first looks, and it is deliberate: measured
- * against the live API, Google's own `regionCode` field barely moves the
- * ranking. Searching "Kudu" — a Saudi fast-food chain with branches on most
- * high streets — returned Kudus, Indonesia as the top three hits with
+ * `regionCodes` becomes `includedRegionCodes` — which *restricts* results to
+ * those countries rather than merely preferring them. That is a stronger
+ * setting than it first looks, and it is deliberate: measured against the
+ * live API, Google's own `regionCode` field barely moves the ranking.
+ * Searching "Kudu" — a Saudi fast-food chain with branches on most high
+ * streets — returned Kudus, Indonesia as the top three hits with
  * `regionCode: "SA"` set, and the actual Riyadh and Jeddah branches only
  * once the region was an inclusion filter.
  *
  * A merchant who cannot find their own shop has no use for the fact that
  * the search was technically worldwide, so this trades reach for results
- * that exist. It stays opt-in: with `PLACES_REGION_CODE` unset the search is
- * global, which is the right default for a self-host that does not know
- * where its merchants are.
+ * that exist. It follows the rollout: set `PLACES_REGION_CODE` to the
+ * markets that are actually open, add to the list as more launch, and leave
+ * it unset for a worldwide search — the right default for a self-host that
+ * does not know where its merchants are.
  */
 export async function searchPlaces(
   query: string,
-  opts: { lang: string; sessionToken?: string; regionCode?: string }
+  opts: { lang: string; sessionToken?: string; regionCodes?: string[] }
 ): Promise<PlaceResult<PlaceSuggestion[]>> {
   const key = apiKey();
   if (!key) return { ok: false, reason: 'disabled' };
@@ -291,7 +340,9 @@ export async function searchPlaces(
     body: JSON.stringify({
       input: query,
       languageCode: languageCode(opts.lang),
-      ...(opts.regionCode ? { includedRegionCodes: [opts.regionCode] } : {}),
+      ...(opts.regionCodes && opts.regionCodes.length > 0
+        ? { includedRegionCodes: opts.regionCodes }
+        : {}),
       ...(opts.sessionToken ? { sessionToken: opts.sessionToken } : {}),
     }),
   });

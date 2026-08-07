@@ -127,6 +127,7 @@ import {
   normaliseQuery,
   normaliseSessionToken,
   isValidPlaceId,
+  parseRegionCodes,
   MIN_PLACE_QUERY_LENGTH,
 } from './placeSearch.ts';
 import {
@@ -2936,7 +2937,7 @@ async function handlePlaceSearch(
   const result = await searchPlaces(query, {
     lang: resolveLang(req),
     sessionToken: normaliseSessionToken(body.sessionToken),
-    regionCode: (process.env.PLACES_REGION_CODE ?? '').trim() || undefined,
+    regionCodes: parseRegionCodes(process.env.PLACES_REGION_CODE),
   });
   if (!result.ok) {
     // 503, not 500: nothing is broken here, the upstream is unavailable or
