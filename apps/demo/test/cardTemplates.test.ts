@@ -259,28 +259,41 @@ test('picking a template prefills the create form, icon included', async () => {
   assert.ok(html.includes(`data-seed-en="${barber.rewardEn}"`));
 });
 
-test('the create form carries a live card simulation whose side follows the page and whose content follows the CARD', async () => {
-  // The owner's ask: see the card before releasing it. Two things are easy to
-  // get subtly wrong here and both are checked.
-  const res = await fetch(`${server.baseUrl}/cards/new?template=cafe`, { headers: { Cookie: cookie } });
-  const html = await res.text();
+test('the preview shows the card as EACH wallet actually renders it', async () => {
+  // The owner's ask: see the real thing, on both platforms, before releasing.
+  // The two wallets order a loyalty card differently, and a single generic
+  // mock teaches a merchant the wrong thing about what customers will see:
+  //
+  //   Apple   logo -> strip -> fields -> barcode
+  //   Google  logo -> title -> fields -> barcode -> hero image last
+  //
+  // Those orderings are the thing being asserted; get them the same way round
+  // and the preview stops being a preview of anything.
+  const html = await (await fetch(`${server.baseUrl}/cards/new?template=bakery`, { headers: { Cookie: cookie } })).text();
 
-  assert.match(html, /class="with-sim"/, 'the form and the simulation must sit in one two-column grid');
-  assert.match(html, /class="sim-rail"/);
+  assert.match(html, /data-wallet="apple"/, 'an Apple tab must exist');
+  assert.match(html, /data-wallet="google"/, 'a Google tab must exist');
 
-  // 1. SIDE follows the document. Nothing may hardcode left or right — the
-  //    grid plus the document dir is what puts it on the correct side, and an
-  //    explicit side would have to be undone for the other language.
-  assert.ok(!/\.sim-rail[^}]*(^|[^-])(right|left)\s*:/.test(html), 'the rail must not pin itself to a side');
+  const apple = html.slice(html.indexOf('data-layout="apple"'), html.indexOf('data-layout="google"'));
+  const google = html.slice(html.indexOf('data-layout="google"'));
 
-  // 2. CONTENT follows the card, not the dashboard. A merchant reading an
-  //    English dashboard may be building an Arabic card, and the preview is a
-  //    picture of what the CUSTOMER will hold.
-  assert.match(html, /id="simCard" dir="rtl" lang="ar"/, 'a card defaulting to Arabic must preview right-to-left');
+  assert.ok(
+    apple.indexOf('data-strip') < apple.indexOf('wp-fields'),
+    'Apple puts the strip directly under the header, above the fields'
+  );
+  assert.ok(
+    google.indexOf('wp-code') < google.indexOf('data-strip'),
+    'Google ends on the hero image, with the barcode above it'
+  );
 
-  // The strip is the real renderer, never a second drawing of it.
-  assert.match(html, /id="preview" src="\/preview\.png\?/);
-  assert.match(html, /builtinIcon=coffee/, "the template's stamp icon must show in the preview");
+  // Both use the real renderers, never a second drawing of the card.
+  assert.match(html, /data-strip src="\/preview\.png\?/);
+  assert.match(html, /data-qr src="\/qr\.png\?/);
+  assert.match(html, /cover=[0-9a-f]{64}/, "the template's photo must reach the preview");
+
+  // Both layouts are refreshed together, so switching tabs never reveals a
+  // card showing stale text.
+  assert.match(html, /setAll\('\[data-brand\]'/);
 });
 
 test('choosing English translates the whole preview, not just its direction', async () => {
@@ -292,11 +305,11 @@ test('choosing English translates the whole preview, not just its direction', as
   const html = await (await fetch(`${server.baseUrl}/cards/new`, { headers: { Cookie: cookie } })).text();
 
   // Both languages must reach the page, or the toggle has nothing to switch to.
-  assert.match(html, /var SIM_COPY = \{[\s\S]*?ar: \{[\s\S]*?en: \{/, 'both dictionaries must be shipped');
-  assert.match(html, /id="simRewardLabel"/, 'the Reward chip must be addressable to be translated');
-  assert.match(html, /simLangNow = ar \? 'ar' : 'en'/, 'the toggle must switch the language, not only the direction');
+  assert.match(html, /var WALLET_COPY = \{[\s\S]*?ar: \{[\s\S]*?en: \{/, 'both dictionaries must be shipped');
+  assert.match(html, /data-k-rewards/, 'field labels must be addressable to be translated');
+  assert.match(html, /simLangNow = radio\.value === 'en' \? 'en' : 'ar'/, 'the toggle must switch the language, not only the direction');
   // And the English copy must actually be present, not just the Arabic.
-  assert.ok(html.includes('of __G__ stamps'), 'the English stamp-count template must be shipped');
+  assert.ok(html.includes('__N__ stamps'), 'the English stamp-count template must be shipped');
 });
 
 test('an unknown template id opens an ordinary blank form rather than an error', async () => {

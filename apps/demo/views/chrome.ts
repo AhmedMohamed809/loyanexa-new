@@ -789,6 +789,76 @@ export const PAGE_CSS = `
      first thing anyone touches, and often on a phone. */
   .auth-card input { padding: 13px 15px; font-size: 16px; }
 
+  /* -------------------------------------------------------------------
+     Wallet preview.
+
+     Two layouts, because the two wallets genuinely lay a loyalty card out
+     differently, and a single generic mock teaches a merchant the wrong
+     thing about what their customers will see:
+
+       Apple   logo strip fields barcode   — the strip sits directly under
+                                             the header, fields below it, and
+                                             the barcode anchors the bottom
+       Google  logo title fields barcode hero
+                                           — fields lead, the barcode sits in
+                                             the body, and the hero image is
+                                             the last thing on the card
+
+     Both use the real /preview.png strip and the real /qr.png, so what is
+     previewed is drawn by the code that draws the pass.
+     ------------------------------------------------------------------- */
+  .wp { border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--paper); padding: 16px; }
+  .wp-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+  .wp-title { font-size: 13px; font-weight: 600; color: var(--ink-2); }
+  .wp-tabs { display: inline-flex; gap: 4px; }
+  .wp-tab {
+    width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid transparent; border-radius: 9px; background: none; cursor: pointer; padding: 0;
+    color: var(--ink-3); transition: background-color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+  }
+  .wp-tab svg { width: 18px; height: 18px; display: block; }
+  .wp-tab:hover { background: var(--hover-wash); }
+  .wp-tab.on { background: var(--sunk); border-color: var(--line); color: var(--ink); }
+
+  /* The card itself. Rounded like a real pass, and clipped so the strip and
+     hero images meet the edges exactly as they do on a phone. */
+  .wp-card {
+    border-radius: 14px; overflow: hidden; color: #FFFFFF;
+    box-shadow: 0 1px 3px rgba(32,33,36,.14);
+    transition: background-color var(--dur-2) var(--ease);
+  }
+  .wp-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px; }
+  .wp-logo { max-height: 26px; max-width: 120px; width: auto; display: block; }
+  .wp-wordmark { font-size: 14px; font-weight: 700; letter-spacing: .01em; }
+  /* Google puts the issuer on the opposite side to Apple. */
+  .wp-card.is-google .wp-head { justify-content: flex-end; border-bottom: 1px solid rgba(255,255,255,.14); }
+  .wp-card.is-google .wp-logo { max-height: 42px; }
+
+  .wp-strip { display: block; width: 100%; height: auto; }
+  .wp-title-lg { font-size: 22px; font-weight: 700; text-align: center; margin: 14px 12px 4px; line-height: 1.3; }
+
+  .wp-fields { display: flex; gap: 12px; padding: 12px 14px 6px; }
+  .wp-field { flex: 1 1 0; min-width: 0; }
+  .wp-field .k { font-size: 10px; font-weight: 600; opacity: .72; letter-spacing: .04em; text-transform: uppercase; }
+  html[lang="ar"] .wp-field .k { text-transform: none; letter-spacing: 0; }
+  .wp-field .v { font-size: 17px; font-weight: 600; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .wp-code { text-align: center; padding: 14px; }
+  .wp-code img { width: 132px; height: 132px; display: block; margin: 0 auto; background: #fff; padding: 8px; border-radius: 8px; image-rendering: pixelated; }
+  .wp-code .serial { margin-top: 8px; font-size: 13px; font-weight: 700; letter-spacing: .06em; font-variant-numeric: tabular-nums; }
+
+  .wp-status { display: flex; justify-content: center; margin-top: 12px; }
+  .wp-status span {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: rgba(21,128,61,.10); color: var(--green);
+    border-radius: 100px; padding: 5px 12px; font-size: 12px; font-weight: 600;
+  }
+  .wp-status span::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+  /* Only one layout is in the document flow at a time. */
+  .wp-layout { display: none; }
+  .wp-layout.on { display: block; animation: lnx-fade var(--dur-2) var(--ease) both; }
+
   /* Copy-to-clipboard control. The value and its button read as one object,
      because a button floating beside a code block looks like it belongs to
      the row rather than to the value. */
