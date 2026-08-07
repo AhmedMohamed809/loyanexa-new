@@ -1306,7 +1306,7 @@ en:{
   s3:'Scan and go', s3p:'You and your staff open the scanner, point it at the customer\u2019s card, and add a stamp or redeem a reward. Everything updates instantly.',
   try_now:'Try it now', stamps_left:'Stamps left', rewards_avail:'Rewards available',
 
-  pr_monthly:'Monthly', pr_annual:'Annual', pr_save:'2 months free',
+  pr_monthly:'Monthly', pr_annual:'Annual', pr_save:'Save 20%',
   pr_note:'7-day free trial. No card details required.',
   pr_scope:'Applies to Starter and Business. Enterprise is quoted separately.',
   pr_year:'/year', pr_billed:'billed annually',
@@ -1511,7 +1511,7 @@ ar:{
   s3:'امسح وانطلق', s3p:'تفتح أنت أو موظفوك الماسح، توجّهه إلى بطاقة العميل، فتضيف ختماً أو تصرف مكافأة. كل شيء يتحدّث فوراً.',
   try_now:'جرّبها الآن', stamps_left:'الأختام المتبقية', rewards_avail:'المكافآت المتاحة',
 
-  pr_monthly:'شهري', pr_annual:'سنوي', pr_save:'شهران مجاناً',
+  pr_monthly:'شهري', pr_annual:'سنوي', pr_save:'وفّر ٢٠٪',
   pr_note:'تجربة مجانية ٧ أيام. بدون بيانات بطاقة.',
   pr_scope:'ينطبق على الأساسية والأعمال. أما المؤسسات فبعرض سعر منفصل.',
   pr_year:'/سنوياً', pr_billed:'تُدفع سنوياً',
@@ -1871,7 +1871,12 @@ function homeView(){
                gym:   ['cg_biz','cg_rew','cg_meta','',  'gym']};
   const cd=CARDS[S.cardType]||CARDS.coffee;
   const annual=S.billing==='annual';
-  const price=(m)=>annual?cur(m*10):cur(m);
+  /* Annual is a true 20% discount: twelve months at 0.8, not the old
+     "ten months for twelve" (which is 16.7% and would make the badge a lie).
+     Rounded to whole pounds — a price ending .40 reads as a mistake. */
+  const ANNUAL_DISCOUNT = 0.2;
+  const annualTotal = (m) => Math.round(m * 12 * (1 - ANNUAL_DISCOUNT));
+  const price=(m)=>annual?cur(annualTotal(m)):cur(m);
 
   return `${topbar()}
   <main id="main">
@@ -2090,7 +2095,7 @@ function homeView(){
         <article class="plan rise">
           <h3>${t('p1')}</h3>
           <span class="plan-ic">${ic('ring',20,1.8)}</span>
-          <div class="price"><b data-price="${annual?190:19}">${price(19)}</b>
+          <div class="price"><b data-price="${annual?annualTotal(19):19}">${price(19)}</b>
             <span>${annual?t('pr_year'):t('p_month')}</span></div>
           <p class="small">${annual?t('pr_billed'):t('pr_note')}</p>
           <div class="plan-any"><span>${t('pr_cancel')}</span></div>
@@ -2103,7 +2108,7 @@ function homeView(){
           <span class="badge-pop">${t('pop')}</span>
           <h3>${t('p2')}</h3>
           <span class="plan-ic">${ic('plus',20,2.4)}</span>
-          <div class="price"><b data-price="${annual?230:23}">${price(23)}</b>
+          <div class="price"><b data-price="${annual?annualTotal(23):23}">${price(23)}</b>
             <span>${annual?t('pr_year'):t('p_month')}</span></div>
           <p class="small">${annual?t('pr_billed'):t('pr_note')}</p>
           <div class="plan-any"><span>${t('pr_cancel')}</span></div>
@@ -2552,7 +2557,11 @@ function countUp(){
 function animatePrices(prev){
   document.querySelectorAll('[data-price]').forEach(el=>{
     const to=parseFloat(el.dataset.price);
-    const from=prev==='annual'? to/10 : to*10;
+    /* The two prices are related by 12 x 0.8 = 9.6, not by 10. Getting this
+       wrong only showed as the count-up starting from the wrong number and
+       racing to the right one, which is easy to miss and still wrong. */
+    const RATIO=12*0.8;
+    const from=prev==='annual'? to/RATIO : to*RATIO;
     tween(el,from,to,300,v=>cur(Math.round(v)));
   });
 }
